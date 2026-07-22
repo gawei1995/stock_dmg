@@ -1,0 +1,54 @@
+{
+  "name": "trading-cockpit-desktop",
+  "version": "0.9.0",
+  "private": true,
+  "description": "Local-first TradingView + Longbridge + trading agent cockpit",
+  "author": "Gawei",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "dev": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "pack": "npm test && electron-builder --dir",
+    "dist:mac": "npm test && electron-builder --mac dmg zip"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0"
+  },
+  "devDependencies": {
+    "electron": "43.1.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.gawei.tradingcockpit",
+    "productName": "交易驾驶舱",
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.mjs",
+      "preload.cjs",
+      "renderer/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.finance",
+      "icon": "assets/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "交易驾驶舱 ${version}"
+    }
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
