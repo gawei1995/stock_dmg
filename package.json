@@ -11,7 +11,11 @@
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:test": "npm --prefix desktop test",
+    "desktop:pack": "npm --prefix desktop run pack",
+    "desktop:dist": "npm --prefix desktop run dist:mac"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

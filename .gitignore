@@ -31,6 +31,16 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# Desktop build artifacts and private local state
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+desktop/.cache/
+desktop/*.log
+
+# Nested local clone used as a GitHub transfer target
+stock_dmg/
+
 # vercel
 .vercel
 

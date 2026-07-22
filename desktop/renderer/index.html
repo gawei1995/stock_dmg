@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <title>交易驾驶舱</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div><strong>交易驾驶舱</strong><span>TRADING COCKPIT / DESKTOP</span></div>
+      </div>
+      <div class="system-strip" aria-live="polite">
+        <span class="status-chip" id="longbridge-chip"><i></i>长桥未连接</span>
+        <span class="status-chip tv" id="tv-chip"><i></i>TradingView 启动中</span>
+        <span class="status-chip readonly"><i></i>READ ONLY</span>
+        <span class="status-message" id="system-message">本地安全边界已启用</span>
+      </div>
+      <div class="top-actions">
+        <button class="ghost-button" id="refresh-button" type="button">刷新持仓</button>
+        <button class="primary-button" id="connect-button" type="button">连接长桥</button>
+      </div>
+    </header>
+
+    <main class="cockpit-grid" id="cockpit-grid">
+      <aside class="portfolio-pane" id="portfolio-pane" aria-labelledby="portfolio-heading">
+        <div class="pane-heading">
+          <div><span>LONG BRIDGE</span><h1 id="portfolio-heading">真实账户</h1></div>
+          <span class="snapshot-state" id="snapshot-state">NO DATA</span>
+        </div>
+
+        <section class="account-card" id="account-card">
+          <div class="account-empty">
+            <span class="empty-orbit" aria-hidden="true"></span>
+            <strong>等待长桥授权</strong>
+            <p>连接后直接显示账户净资产、现金、购买力与真实持仓；应用不具备下单能力。</p>
+          </div>
+        </section>
+
+        <div class="position-toolbar">
+          <label for="position-search">持仓 <span id="position-count">0</span></label>
+          <input id="position-search" type="search" placeholder="搜索代码" autocomplete="off" />
+        </div>
+        <div class="position-list" id="position-list" aria-live="polite"></div>
+
+        <section class="portfolio-foot" id="portfolio-foot">
+          <div><span>TOP 1</span><strong>—</strong></div>
+          <div><span>TOP 5</span><strong>—</strong></div>
+          <div><span>最大主题</span><strong>—</strong></div>
+          <div><span>现金</span><strong>—</strong></div>
+        </section>
+      </aside>
+
+      <div
+        class="pane-resizer"
+        id="portfolio-resizer"
+        role="separator"
+        aria-label="调整持仓与 TradingView 的宽度"
+        aria-controls="portfolio-pane"
+        aria-orientation="vertical"
+        tabindex="0"
+      ></div>
+
+      <section class="chart-pane" aria-label="TradingView 个人看盘工作区">
+        <div class="chart-toolbar">
+          <div class="chart-nav">
+            <button class="pane-toggle" id="toggle-portfolio" type="button" aria-controls="portfolio-pane" aria-expanded="true" aria-label="隐藏持仓栏" title="隐藏持仓栏">◀ <span>持仓</span></button>
+            <button class="icon-button" id="tv-reload" type="button" aria-label="重新加载 TradingView">↻</button>
+            <button class="icon-button" id="tv-home" type="button" aria-label="回到已保存的 TradingView 布局">⌂</button>
+          </div>
+          <div class="chart-context">
+            <span class="tv-wordmark">TRADINGVIEW / PERSONAL SESSION</span>
+            <span class="mapping" id="symbol-mapping">选择持仓后可同步标的</span>
+          </div>
+          <div class="chart-actions">
+            <button class="sync-button" id="sync-tv" type="button" disabled>同步标的到 TV</button>
+            <button class="pane-toggle" id="toggle-agent" type="button" aria-controls="agent-pane" aria-expanded="true" aria-label="隐藏 Agent 栏" title="隐藏 Agent 栏"><span>Agent</span> ▶</button>
+          </div>
+        </div>
+        <div class="tv-surface" id="tv-surface" aria-label="TradingView 独立网页视图">
+          <div class="tv-placeholder">
+            <span class="loader"></span>
+            <strong>正在启动 TradingView 个人会话</strong>
+            <p>首次使用请直接在中间区域登录。Cookie 和图表状态只保存在本机独立会话中。</p>
+          </div>
+        </div>
+      </section>
+
+      <div
+        class="pane-resizer"
+        id="agent-resizer"
+        role="separator"
+        aria-label="调整 TradingView 与 Agent 的宽度"
+        aria-controls="agent-pane"
+        aria-orientation="vertical"
+        tabindex="0"
+      ></div>
+
+      <aside class="agent-pane" id="agent-pane" aria-labelledby="agent-heading">
+        <div class="agent-header">
+          <div>
+            <span>CODEX APP SERVER · SINGLE HARNESS</span>
+            <h2 id="agent-heading">交易 Agent</h2>
+          </div>
+          <div class="agent-badges"><button id="history-toggle" type="button" aria-expanded="false" aria-controls="agent-history">本机对话</button><span id="codex-badge">CODEX</span><span>只读</span></div>
+        </div>
+
+        <div class="agent-session-bar" aria-label="Agent 会话">
+          <label for="agent-session-select">会话</label>
+          <select id="agent-session-select" aria-label="切换独立 Agent 会话" disabled>
+            <option>正在读取…</option>
+          </select>
+          <button id="new-agent-session" type="button" disabled>＋ 新建</button>
+        </div>
+
+        <div class="agent-context" id="agent-context">
+          <div><span>上下文</span><strong>未选择持仓</strong></div>
+          <div><span>周期</span><strong>1D</strong></div>
+          <div><span>数据</span><strong>—</strong></div>
+        </div>
+
+        <section class="agent-history" id="agent-history" aria-label="最近 30 天本机 Codex 对话" hidden>
+          <div class="history-toolbar">
+            <div><strong>最近 30 天 · 本机 Codex</strong><span>不是 ChatGPT 网页聊天；更早对话归档后隐藏</span></div>
+            <input id="history-search" type="search" maxlength="200" placeholder="本地筛选对话标题或摘要" autocomplete="off" />
+          </div>
+          <div class="history-list" id="history-list"></div>
+        </section>
+
+        <div class="agent-thread" id="agent-thread">
+          <article class="agent-welcome">
+            <span class="agent-orbit" aria-hidden="true">A</span>
+            <div>
+              <strong>Codex 项目线程已接入交易驾驶舱。</strong>
+              <p>每条本机对话都可直接打开并继续；不同对话可通过同一条 Codex 链路并行调用 Skills、MCP、Apps 与项目工具。</p>
+            </div>
+          </article>
+        </div>
+        <div class="sr-only" id="agent-live-status" role="status" aria-live="polite"></div>
+
+        <form class="agent-composer" id="agent-form">
+          <div class="analysis-scope">
+            <span>分析范围</span>
+            <div class="scope-segmented" role="radiogroup" aria-label="选择分析范围">
+              <button type="button" data-scope="position" role="radio" aria-checked="true">当前持仓</button>
+              <button type="button" data-scope="candidate" role="radio" aria-checked="false">候选买入</button>
+              <button type="button" data-scope="portfolio" role="radio" aria-checked="false">全部组合</button>
+            </div>
+            <label class="candidate-symbol" id="candidate-symbol-field" for="candidate-symbol" hidden>
+              <span>候选代码</span>
+              <input id="candidate-symbol" type="text" maxlength="32" placeholder="例如 NVDA.US" autocomplete="off" spellcheck="false" />
+            </label>
+          </div>
+          <div class="quick-actions" aria-label="快捷 Agent 任务">
+            <button type="button" data-scope="position" data-task="分析当前持仓的技术结构与仓位风险">持仓分析</button>
+            <button type="button" data-scope="portfolio" data-task="检查全部持仓的集中度、主题重复暴露、风险预算与组合健康度">组合体检</button>
+            <button type="button" data-scope="candidate" data-task="为未持有标的生成候选买入计划，包括触发、失效与仓位预算">候选买入</button>
+          </div>
+          <label class="risk-budget" for="risk-budget">
+            <span>单标的组合风险预算</span>
+            <input id="risk-budget" type="number" min="0.05" max="5" step="0.05" value="0.80" />
+            <em>%</em>
+          </label>
+          <label class="composer-label" for="agent-input">Agent 任务</label>
+          <div class="prompt-suggestions" id="prompt-suggestions" role="listbox" aria-label="Codex 输入联想" hidden></div>
+          <div class="prompt-box">
+            <textarea id="agent-input" rows="2" maxlength="4000" aria-controls="prompt-suggestions" aria-autocomplete="list" aria-expanded="false" placeholder="输入 /、$skill 或 @MCP；⌘/Ctrl + Enter 发送"></textarea>
+            <button class="agent-cancel" id="agent-cancel" type="button" hidden>取消</button>
+            <button id="agent-submit" type="submit">运行 Agent <span>↗</span></button>
+          </div>
+          <p class="composer-note">单一 Codex harness · Skills / MCP / Apps / Web / 文件工具 · 长桥只读证据</p>
+        </form>
+      </aside>
+    </main>
+
+    <script src="./markdown.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
