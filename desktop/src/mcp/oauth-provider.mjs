@@ -60,7 +60,7 @@ export class DesktopOAuthProvider {
   async redirectToAuthorization(url) {
     const host = url.hostname;
     const scopes = new Set((url.searchParams.get("scope") ?? "").split(/\s+/).filter(Boolean));
-    const allowedHost = host === "openapi.longbridge.com" || host === "openapi.longbridge.cn";
+    const allowedHost = host === "openapi.longbridge.com";
     if (url.protocol !== "https:" || !allowedHost) {
       throw new Error("Rejected an unexpected Longbridge authorization URL.");
     }

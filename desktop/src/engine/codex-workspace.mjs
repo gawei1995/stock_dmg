@@ -2470,7 +2470,7 @@ export function buildCodexEvidence({ portfolio, run, task }) {
 
 export function buildWorkspacePrompt(evidence) {
   const scopeInstruction = evidence.analysisScope === "candidate"
-    ? "本轮是候选买入分析：目标可能完全未持有。使用适用的叙事/技术 Skills 与只读 MCP 核验主题、结构和市场证据，再结合 portfolioConstraints 给出 setup、触发、失效、建议初始新增、最大总/新增仓位与杠杆判断；不得把候选标的写成现有仓位，也不得突破本地确定性引擎给出的零仓位、现金或集中度上限。结构化 candidateSizing 中的 candidateGroupKey 必须是 portfolioConstraints.groupExposure 里已有的精确 key，无法可靠映射则填 null；仓位数字只能维持或收紧本地上限，绝不能放大。analysisMarkdown 保持适合深色界面的清晰 Markdown。"
+    ? "本轮是候选买入分析：目标可能完全未持有，不得把候选标的写成现有仓位。你负责结合叙事/技术 Skills、priceBars 与可用只读 MCP，独立判断 Stage、Fib 是否采用及其 A/B/C 锚点、失效依据、初始新增仓位和最大总仓位；本地自动 Fib 只是 AUTO/ADVISORY 候选，可以采用、覆盖或忽略，不能因它存在就机械使用。candidateSizing 必须返回结构化判断：Fib 覆盖锚点只能引用 priceBars 中真实存在的 barId 与 high/low 字段，不能自行填写价格；失效依据也只能引用已有 bar、EMA、20 日区间或经你选择的 Fib。仓位数字由你提出，宿主只会按最新快照、现金、集中度、总暴露、风险预算、保证金和数据完整性做硬性验证/裁剪。candidateGroupKey 可使用已有主题的精确 key，也可在高/中置信度下给出明确的新主题；无法可靠分类时填 null，且不得给出可执行仓位。analysisMarkdown 保持适合深色界面的清晰 Markdown；其中的仓位数字必须称为“LLM 建议”，不得预先声称已被宿主接受，最终有效值以后续 HOST ACCEPTED 卡片为准。"
     : evidence.analysisScope === "portfolio"
       ? "本轮是全组合分析：必须评价集中度、主题/币种重复暴露、现金、保证金、估值缺口和最大的组合级失败模式；不要逐只虚构技术结论。"
       : "本轮是已持仓分析：围绕选中真实仓位、技术结构以及它对组合的边际风险给出条件计划。";
@@ -2478,7 +2478,7 @@ export function buildWorkspacePrompt(evidence) {
     "你是交易驾驶舱中的 Codex Agent。当前窗口对应一个独立的持久 Codex thread；只延续该 thread 的对话上下文，不要自动混入其他会话。",
     "你可以自由使用本机 Codex 已配置的 Skills、MCP、Apps、网页、文件、Shell 和其他工具来补充或核验分析；不要把自己限制为下方 JSON 的摘要器。",
     `分析范围：${evidence.analysisScope}。${scopeInstruction}`,
-    "本轮 additionalContext 中的 trading-cockpit-evidence 是驾驶舱本地引擎刚刚生成的范围化证据包。稳定规则来自项目与 Skills；当前数量、成本、权重、价格、汇率、EMA/Fib 与风险数值只以这份最新快照为准。若工具得到更新数据，请明确标注来源和时间差异。",
+    "本轮 additionalContext 中的 trading-cockpit-evidence 是驾驶舱本地引擎刚刚生成的范围化证据包。稳定规则来自项目与 Skills；当前数量、成本、权重、价格、汇率、OHLCV、EMA 与风险数值只以这份最新快照为准。自动 Fib 标记为 advisory，不是最终锚点。若工具得到更新数据，请明确标注来源和时间差异。",
     "输出应直接回答用户任务，说明证据冲突、不确定性、风险影响与可执行的条件计划。不要伪造实时数据，也不要承诺收益。驾驶舱的长桥连接本身只读；如讨论订单，只能给出供用户手动确认的计划。",
     "如果 Longbridge 或其他 MCP 返回 463、超时、断线或单个工具失败，把它记录为证据降级；同一失败工具不要循环重试，不得因此延迟最终回答。使用已有持仓快照、其他只读来源或明确的不确定性继续完成本轮。",
     "如用户询问过去的讨论、上次判断或历史复盘，必须调用 query_recent_history；该工具只返回最近 30 天，禁止自行读取归档目录。",
@@ -2490,6 +2490,39 @@ function candidateWorkspaceOutputSchema() {
   const nullableNumber = {
     anyOf: [
       { type: "number", minimum: 0, maximum: 100 },
+      { type: "null" },
+    ],
+  };
+  const confidence = {
+    type: "string",
+    enum: ["high", "medium", "low", "unknown"],
+  };
+  const nullableAnchor = {
+    anyOf: [
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["barId", "field"],
+        properties: {
+          barId: { type: "string", minLength: 1 },
+          field: { type: "string", enum: ["high", "low"] },
+        },
+      },
+      { type: "null" },
+    ],
+  };
+  const nullableString = {
+    anyOf: [{ type: "string" }, { type: "null" }],
+  };
+  const nullableEmaPeriod = {
+    anyOf: [
+      { type: "integer", enum: [3, 5, 8, 13, 21, 144, 169] },
+      { type: "null" },
+    ],
+  };
+  const nullableFibRatio = {
+    anyOf: [
+      { type: "number", enum: [0.382, 0.618, 1, 1.618] },
       { type: "null" },
     ],
   };
@@ -2505,19 +2538,101 @@ function candidateWorkspaceOutputSchema() {
         required: [
           "candidateGroupKey",
           "classificationConfidence",
+          "narrativeStage",
+          "fibReview",
+          "invalidation",
           "recommendedInitialAdditionalWeightPercent",
           "recommendedMaxTotalWeightPercent",
+          "sizingConfidence",
           "leverageDecision",
           "rationale",
         ],
         properties: {
           candidateGroupKey: { type: ["string", "null"] },
-          classificationConfidence: {
+          classificationConfidence: confidence,
+          narrativeStage: {
             type: "string",
-            enum: ["high", "medium", "low", "unknown"],
+            enum: ["stage_1", "stage_2", "stage_3", "stage_4p", "stage_4e", "stage_4f", "unknown"],
+          },
+          fibReview: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "decision",
+              "direction",
+              "anchors",
+              "emphasizedRatios",
+              "confidence",
+              "rationale",
+            ],
+            properties: {
+              decision: {
+                type: "string",
+                enum: ["use_auto", "override", "ignore", "insufficient_evidence"],
+              },
+              direction: {
+                type: "string",
+                enum: ["up", "down", "none"],
+              },
+              anchors: {
+                type: "object",
+                additionalProperties: false,
+                required: ["a", "b", "c"],
+                properties: {
+                  a: nullableAnchor,
+                  b: nullableAnchor,
+                  c: nullableAnchor,
+                },
+              },
+              emphasizedRatios: {
+                type: "array",
+                items: { type: "number", enum: [0.382, 0.618, 1, 1.618] },
+                maxItems: 4,
+              },
+              confidence,
+              rationale: { type: "string" },
+            },
+          },
+          invalidation: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "kind",
+              "barId",
+              "field",
+              "emaPeriod",
+              "rangeKey",
+              "fibRatio",
+              "confirmation",
+              "rationale",
+            ],
+            properties: {
+              kind: {
+                type: "string",
+                enum: ["bar", "ema", "range20", "fib", "none"],
+              },
+              barId: nullableString,
+              field: {
+                anyOf: [
+                  { type: "string", enum: ["high", "low", "close"] },
+                  { type: "null" },
+                ],
+              },
+              emaPeriod: nullableEmaPeriod,
+              rangeKey: {
+                anyOf: [
+                  { type: "string", enum: ["priorLow", "priorHigh"] },
+                  { type: "null" },
+                ],
+              },
+              fibRatio: nullableFibRatio,
+              confirmation: { type: "string" },
+              rationale: { type: "string" },
+            },
           },
           recommendedInitialAdditionalWeightPercent: nullableNumber,
           recommendedMaxTotalWeightPercent: nullableNumber,
+          sizingConfidence: confidence,
           leverageDecision: {
             type: "string",
             enum: ["cash_only", "disabled"],
@@ -2559,13 +2674,88 @@ function normalizeCandidateModelSizing(value) {
       ? null
       : String(value.candidateGroupKey).trim().slice(0, 120) || null,
     classificationConfidence: confidence,
+    narrativeStage: [
+      "stage_1",
+      "stage_2",
+      "stage_3",
+      "stage_4p",
+      "stage_4e",
+      "stage_4f",
+      "unknown",
+    ].includes(value.narrativeStage)
+      ? value.narrativeStage
+      : "unknown",
+    fibReview: normalizeFibModelReview(value.fibReview),
+    invalidation: normalizeInvalidationReview(value.invalidation),
     recommendedInitialAdditionalWeightPercent: boundedPercentOrNull(
       value.recommendedInitialAdditionalWeightPercent,
     ),
     recommendedMaxTotalWeightPercent: boundedPercentOrNull(
       value.recommendedMaxTotalWeightPercent,
     ),
+    sizingConfidence: ["high", "medium", "low", "unknown"].includes(value.sizingConfidence)
+      ? value.sizingConfidence
+      : "unknown",
     leverageDecision,
+    rationale: String(value.rationale ?? "").trim().slice(0, 1_000),
+  };
+}
+
+function normalizeFibModelReview(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const decisions = ["use_auto", "override", "ignore", "insufficient_evidence"];
+  const directions = ["up", "down", "none"];
+  const confidence = ["high", "medium", "low", "unknown"].includes(value.confidence)
+    ? value.confidence
+    : "unknown";
+  const normalizeAnchor = (anchor) => {
+    if (!anchor || typeof anchor !== "object" || Array.isArray(anchor)) return null;
+    const field = ["high", "low"].includes(anchor.field) ? anchor.field : null;
+    const barId = String(anchor.barId ?? "").trim();
+    return field && barId ? { barId, field } : null;
+  };
+  return {
+    decision: decisions.includes(value.decision) ? value.decision : "insufficient_evidence",
+    direction: directions.includes(value.direction) ? value.direction : "none",
+    anchors: {
+      a: normalizeAnchor(value.anchors?.a),
+      b: normalizeAnchor(value.anchors?.b),
+      c: normalizeAnchor(value.anchors?.c),
+    },
+    emphasizedRatios: [...new Set(
+      (Array.isArray(value.emphasizedRatios) ? value.emphasizedRatios : [])
+        .filter((ratio) => typeof ratio === "number"
+          && Number.isFinite(ratio)
+          && [0.382, 0.618, 1, 1.618].includes(ratio)),
+    )],
+    confidence,
+    rationale: String(value.rationale ?? "").trim().slice(0, 1_000),
+  };
+}
+
+function normalizeInvalidationReview(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const kind = ["bar", "ema", "range20", "fib", "none"].includes(value.kind)
+    ? value.kind
+    : "none";
+  const field = ["high", "low", "close"].includes(value.field) ? value.field : null;
+  const emaPeriod = [3, 5, 8, 13, 21, 144, 169].includes(Number(value.emaPeriod))
+    ? Number(value.emaPeriod)
+    : null;
+  const rangeKey = ["priorLow", "priorHigh"].includes(value.rangeKey)
+    ? value.rangeKey
+    : null;
+  const fibRatio = [0.382, 0.618, 1, 1.618].includes(Number(value.fibRatio))
+    ? Number(value.fibRatio)
+    : null;
+  return {
+    kind,
+    barId: String(value.barId ?? "").trim() || null,
+    field,
+    emaPeriod,
+    rangeKey,
+    fibRatio,
+    confirmation: String(value.confirmation ?? "").trim().slice(0, 500),
     rationale: String(value.rationale ?? "").trim().slice(0, 1_000),
   };
 }
@@ -2648,23 +2838,6 @@ export function applyCodexWorkspaceAnalysis(run, analysis) {
 function applyCandidateSizingReview(run, review) {
   if (run?.context?.scope !== "candidate" || !review || !run?.risk) return run;
   const risk = run.risk;
-  if (!risk.supported) {
-    return {
-      ...run,
-      risk: {
-        ...risk,
-        sizingReview: {
-          status: "unavailable",
-          source: "Codex Skills/MCP",
-          candidateGroupKey: null,
-          requestedGroupKey: review.candidateGroupKey ?? null,
-          classificationConfidence: review.classificationConfidence,
-          rationale: risk.limitation || review.rationale,
-          deterministicCeilingPreserved: true,
-        },
-      },
-    };
-  }
   const groupRows = Array.isArray(risk.portfolioConstraints?.groupExposure)
     ? risk.portfolioConstraints.groupExposure
     : [];
@@ -2672,55 +2845,142 @@ function applyCandidateSizingReview(run, review) {
   const matchedGroup = requestedGroup
     ? groupRows.find((item) => String(item?.key ?? "").trim() === requestedGroup)
     : null;
-  const confidenceAccepted = ["high", "medium"].includes(review.classificationConfidence);
-  const localMaxTotal = finiteOrNull(risk.recommendedMaxWeightPercent);
   const existingWeight = Math.max(0, finiteOrNull(risk.existingPositionWeight) ?? 0);
-  const modelMaxTotal = finiteOrNull(review.recommendedMaxTotalWeightPercent);
-  const modelInitialAdditional = finiteOrNull(review.recommendedInitialAdditionalWeightPercent);
-  const groupWeight = finiteOrNull(matchedGroup?.weight);
+  const hardMaxTotal = finiteOrNull(risk.hardMaxTotalWeightPercent);
+  const modelMaxTotal = boundedPercentOrNull(review.recommendedMaxTotalWeightPercent);
+  const modelInitialAdditional = boundedPercentOrNull(
+    review.recommendedInitialAdditionalWeightPercent,
+  );
+  const matchedGroupWeight = finiteOrNull(matchedGroup?.weight);
+  const worstExistingGroupWeight = groupRows
+    .map((item) => finiteOrNull(item?.weight))
+    .filter((value) => value != null)
+    .reduce((worst, value) => Math.max(worst, value), 0);
+  const groupMappingStatus = !requestedGroup
+    ? "missing"
+    : matchedGroup && matchedGroupWeight != null
+      ? "matched"
+      : groupRows.length
+        ? "unmatched_worst_case"
+        : "unmatched_no_existing_exposure";
+  const guardrailGroupWeight = groupMappingStatus === "matched"
+    ? matchedGroupWeight
+    : requestedGroup
+      ? worstExistingGroupWeight
+      : null;
   const groupThreshold = finiteOrNull(risk.portfolioConstraints?.policyThresholds?.groupWarningPercent);
-  const groupMaxTotal = groupWeight != null && groupThreshold != null
-    ? existingWeight + Math.max(0, groupThreshold - groupWeight)
+  const groupMaxTotal = guardrailGroupWeight != null && groupThreshold != null
+    ? existingWeight + Math.max(0, groupThreshold - guardrailGroupWeight)
     : null;
-  const ceilings = [localMaxTotal, modelMaxTotal, groupMaxTotal]
-    .filter((value) => Number.isFinite(value));
-  const reviewCanSize = risk.supported
-    && risk.entryAllowed
-    && review.leverageDecision !== "disabled"
-    && ceilings.length > 0;
-  const maxTotal = reviewCanSize
+  const sizingValidUntilMs = Date.parse(String(risk.sizingValidUntil ?? ""));
+  const snapshotFreshAtDecision = risk.snapshotFresh === true
+    && Number.isFinite(sizingValidUntilMs)
+    && Date.now() <= sizingValidUntilMs;
+  const reviewedFib = resolveModelFibReview(run, review.fibReview);
+  const invalidation = resolveModelInvalidation(run, review.invalidation, reviewedFib);
+  const riskDistancePercent = invalidation.valid
+    ? rounded(((Number(run.technical?.lastPrice) - invalidation.level)
+      / Number(run.technical?.lastPrice)) * 100, 4)
+    : null;
+  const riskBudgetTotal = riskDistancePercent > 0
+    ? rounded((Number(risk.riskBudgetPercent) / riskDistancePercent) * 100, 4)
+    : null;
+  const hardLimits = {
+    accountAndConcentrationTotalWeightPercent: hardMaxTotal,
+    groupTotalWeightPercent: groupMaxTotal == null ? null : rounded(groupMaxTotal),
+    riskBudgetTotalWeightPercent: riskBudgetTotal,
+  };
+  const confidenceAccepted = ["high", "medium"].includes(review.classificationConfidence);
+  const sizingConfidenceAccepted = ["high", "medium"].includes(review.sizingConfidence);
+  const narrativeStageAccepted = [
+    "stage_1",
+    "stage_2",
+    "stage_3",
+    "stage_4p",
+    "stage_4e",
+    "stage_4f",
+  ].includes(review.narrativeStage);
+  const modelProposalComplete = modelMaxTotal != null
+    && modelInitialAdditional != null
+    && modelMaxTotal >= existingWeight
+    && modelInitialAdditional >= 0;
+  const prerequisiteReasons = [
+    ...(!risk.supported || !risk.awaitingModelReview
+      ? [risk.limitation || risk.entryBlockReasons?.[0] || "本地安全边界不允许生成可执行仓位"]
+      : []),
+    ...(!snapshotFreshAtDecision ? ["持仓快照在 LLM 返回前已超过 2 分钟；文字结论保留，仓位数值必须刷新后重算"] : []),
+    ...(!requestedGroup ? ["LLM 未给出可靠的候选主题分类"] : []),
+    ...(!confidenceAccepted ? ["候选主题分类置信度不足"] : []),
+    ...(!sizingConfidenceAccepted ? ["仓位建议置信度不足"] : []),
+    ...(!narrativeStageAccepted ? ["LLM 未给出可用的叙事 Stage"] : []),
+    ...(!modelProposalComplete ? ["LLM 未给出完整有效的初始/最大仓位建议"] : []),
+    ...(review.leverageDecision !== "cash_only" ? ["LLM 未批准现金覆盖的新增仓位"] : []),
+    ...(["use_auto", "override"].includes(review.fibReview?.decision)
+      && reviewedFib.status !== "selected"
+      ? [reviewedFib.rationale || "LLM 选择的 Fib 未通过宿主锚点校验"]
+      : []),
+    ...(!invalidation.valid ? [invalidation.reason] : []),
+  ].filter(Boolean);
+  const reviewCanSize = prerequisiteReasons.length === 0;
+  const ceilings = [
+    hardMaxTotal,
+    groupMaxTotal,
+    riskBudgetTotal,
+    modelMaxTotal,
+  ].filter((value) => Number.isFinite(value));
+  const maxTotal = reviewCanSize && ceilings.length
     ? Math.max(existingWeight, Math.min(...ceilings))
     : existingWeight;
   const maxAdditional = Math.max(0, maxTotal - existingWeight);
-  const initialCeilings = [
-    finiteOrNull(risk.recommendedInitialAdditionalWeightPercent),
-    modelInitialAdditional,
-    maxAdditional,
-  ].filter((value) => Number.isFinite(value));
-  const initialAdditional = reviewCanSize && initialCeilings.length
-    ? Math.max(0, Math.min(...initialCeilings))
+  const initialAdditional = reviewCanSize && modelInitialAdditional != null
+    ? Math.max(0, Math.min(modelInitialAdditional, maxAdditional))
     : 0;
   const entryAllowed = reviewCanSize && maxAdditional > 0 && initialAdditional > 0;
   const netAssets = finiteOrNull(run.analysisContext?.portfolioSummary?.netAssets);
-  const moveToReference = finiteOrNull(risk.moveToReferencePercent);
-  const reviewed = Boolean(matchedGroup && confidenceAccepted
-    && modelMaxTotal != null && modelInitialAdditional != null);
-  const reviewStatus = reviewed ? "skill_mcp_reviewed" : "provisional";
-  const reviewReason = review.rationale
-    || (!matchedGroup && requestedGroup
-      ? `Skill/MCP 返回的主题「${requestedGroup}」不在当前组合主题 key 中，未把它当成可验证分类。`
-      : "Skill/MCP 尚未给出可验证的候选主题与仓位数字。");
-  const entryBlockReasons = [...(risk.entryBlockReasons ?? [])];
-  if (!entryAllowed && review.leverageDecision === "disabled" && reviewReason) {
-    entryBlockReasons.push(reviewReason);
+  const limitBindings = [];
+  if (reviewCanSize) {
+    if (groupMappingStatus === "unmatched_worst_case") {
+      limitBindings.push("group_mapping_worst_case");
+    }
+    if (hardMaxTotal != null && modelMaxTotal > hardMaxTotal) {
+      limitBindings.push("account_and_concentration");
+    }
+    if (groupMaxTotal != null && modelMaxTotal > groupMaxTotal) {
+      limitBindings.push("group_exposure");
+    }
+    if (riskBudgetTotal != null && modelMaxTotal > riskBudgetTotal) {
+      limitBindings.push("risk_budget");
+    }
+    if (modelInitialAdditional > maxAdditional) {
+      limitBindings.push("initial_additional");
+    }
   }
+  const reviewStatus = !entryAllowed
+    ? "blocked"
+    : limitBindings.length
+      ? "bounded"
+      : "llm_reviewed";
+  const reviewReason = prerequisiteReasons.join("；")
+    || review.rationale
+    || "LLM 方案已通过本地硬安全边界校验。";
+  const entryBlockReasons = [...(risk.entryBlockReasons ?? [])];
+  if (!entryAllowed && reviewReason) entryBlockReasons.push(reviewReason);
   const nextRisk = {
     ...risk,
     entryAllowed,
+    awaitingModelReview: false,
     entryBlockReasons: [...new Set(entryBlockReasons)],
-    group: matchedGroup?.key ?? risk.group,
-    candidateGroupKnown: Boolean(matchedGroup),
-    groupWeight: groupWeight == null ? risk.groupWeight : rounded(groupWeight),
+    group: requestedGroup || risk.group,
+    candidateGroupKnown: groupMappingStatus === "matched",
+    groupWeight: groupMappingStatus === "matched"
+      ? rounded(matchedGroupWeight)
+      : risk.groupWeight,
+    stageAssumption: review.narrativeStage,
+    referenceLevel: invalidation.valid ? rounded(invalidation.level) : null,
+    referenceLabel: invalidation.valid ? invalidation.label : "LLM 失效依据未通过校验",
+    moveToReferencePercent: riskDistancePercent == null ? null : -riskDistancePercent,
+    riskDistancePercent,
+    riskLimitedWeightPercent: riskBudgetTotal,
     recommendedInitialAdditionalWeightPercent: rounded(initialAdditional),
     recommendedInitialTotalWeightPercent: rounded(existingWeight + initialAdditional),
     recommendedInitialNotionalBase: netAssets == null
@@ -2731,9 +2991,10 @@ function applyCandidateSizingReview(run, review) {
     recommendedMaxAdditionalNotionalBase: netAssets == null
       ? null
       : rounded(netAssets * maxAdditional / 100),
-    portfolioImpactAtReferencePercent: moveToReference == null
-      ? risk.portfolioImpactAtReferencePercent
-      : rounded(maxAdditional * moveToReference / 100),
+    portfolioImpactAtReferencePercent: riskDistancePercent == null
+      ? null
+      : rounded(-maxAdditional * riskDistancePercent / 100),
+    fibonacciReview: reviewedFib,
     leverage: {
       ...risk.leverage,
       decision: entryAllowed ? "cash_only" : "disabled",
@@ -2747,10 +3008,35 @@ function applyCandidateSizingReview(run, review) {
     },
     sizingReview: {
       status: reviewStatus,
-      source: "Codex Skills/MCP",
-      candidateGroupKey: matchedGroup?.key ?? null,
+      source: "Codex LLM",
+      candidateGroupKey: requestedGroup || null,
       requestedGroupKey: requestedGroup || null,
+      matchedGroupKey: groupMappingStatus === "matched"
+        ? String(matchedGroup?.key ?? "").trim() || null
+        : null,
+      groupMappingStatus,
+      groupGuardrailWeightPercent: guardrailGroupWeight == null
+        ? null
+        : rounded(guardrailGroupWeight),
       classificationConfidence: review.classificationConfidence,
+      sizingConfidence: review.sizingConfidence,
+      narrativeStage: review.narrativeStage,
+      modelProposal: {
+        initialAdditionalWeightPercent: modelInitialAdditional,
+        maxTotalWeightPercent: modelMaxTotal,
+        leverageDecision: review.leverageDecision,
+      },
+      accepted: {
+        initialAdditionalWeightPercent: rounded(initialAdditional),
+        maxAdditionalWeightPercent: rounded(maxAdditional),
+        maxTotalWeightPercent: rounded(maxTotal),
+      },
+      hardLimits,
+      limitBindings: [...new Set(limitBindings)],
+      snapshotFreshAtDecision,
+      decisionAt: new Date().toISOString(),
+      invalidation,
+      fibonacciReview: reviewedFib,
       rationale: reviewReason,
       deterministicCeilingPreserved: true,
     },
@@ -2762,14 +3048,14 @@ function applyCandidateSizingReview(run, review) {
     evidence: [
       ...(run.evidence ?? []),
       {
-        source: "Codex Skills/MCP 候选复核",
+        source: "Codex LLM 策略复核",
         tool: "codex:candidate-sizing-review",
         asOf: new Date().toISOString(),
         records: 1,
-        status: reviewed ? "succeeded" : "degraded",
-        summary: reviewed
-          ? `主题 ${matchedGroup.key} 已映射；初始新增 ${rounded(initialAdditional)}%，最大总仓位 ${rounded(maxTotal)}%，且未突破本地上限`
-          : `结构化仓位仍为 provisional；${reviewReason}`,
+        status: entryAllowed ? "succeeded" : "degraded",
+        summary: entryAllowed
+          ? `模型建议初始新增 ${rounded(modelInitialAdditional)}% / 最大总仓位 ${rounded(modelMaxTotal)}%；宿主接受 ${rounded(initialAdditional)}% / ${rounded(maxTotal)}%${limitBindings.length ? `，约束：${[...new Set(limitBindings)].join("、")}` : ""}`
+          : `模型文字分析保留，但结构化仓位被阻止：${reviewReason}`,
       },
     ],
   };
@@ -2799,8 +3085,8 @@ function applyReviewedCandidateSizingToPlan(plan, risk) {
         {
           name: "暂停新增风险",
           tone: "bear",
-          if: risk.sizingReview?.rationale || "Skill/MCP 与组合约束未共同确认可用仓位",
-          then: "建议初始新增仓位 0%；保留观察，待新快照与主题分类复核",
+          if: risk.sizingReview?.rationale || "LLM 方案未通过本地硬安全边界",
+          then: "有效新增仓位为 0%；保留模型研究结论，待证据或账户边界更新后重算",
           invalidation: "风险禁用条件解除，并重新运行候选分析",
           impact: "新增组合影响保持 0",
           status: "snapshot_only",
@@ -2812,7 +3098,8 @@ function applyReviewedCandidateSizingToPlan(plan, risk) {
   const scenarios = (plan.scenarios ?? []).map((item) => item.name === "允许试探"
     ? {
         ...item,
-        then: `Skill/MCP 复核后：初始新增 ${rounded(risk.recommendedInitialAdditionalWeightPercent)}%，最大总仓位 ${rounded(risk.recommendedMaxWeightPercent)}%；仅允许现金覆盖，成交前用最新快照重算`,
+        then: `LLM 建议经硬边界校验后：有效初始新增 ${rounded(risk.recommendedInitialAdditionalWeightPercent)}%，有效最大总仓位 ${rounded(risk.recommendedMaxWeightPercent)}%；仅允许现金覆盖，成交前用最新快照重算`,
+        invalidation: `日线按「${risk.referenceLabel} ${rounded(risk.referenceLevel)}」确认失效`,
         impact: `触及参考失效位时，静态组合影响不高于约 ${rounded(risk.portfolioImpactAtReferencePercent)}%`,
       }
     : item);
@@ -2823,6 +3110,242 @@ function applyReviewedCandidateSizingToPlan(plan, risk) {
     leverage: risk.leverage,
     scenarios,
   };
+}
+
+function resolveModelFibReview(run, review) {
+  const decision = review?.decision ?? "insufficient_evidence";
+  if (decision === "ignore" || decision === "insufficient_evidence") {
+    return {
+      decision,
+      status: decision === "ignore" ? "ignored" : "insufficient_evidence",
+      selected: null,
+      confidence: review?.confidence ?? "unknown",
+      emphasizedRatios: review?.emphasizedRatios ?? [],
+      rationale: review?.rationale ?? "",
+    };
+  }
+  if (decision === "use_auto") {
+    const auto = run?.technical?.fib;
+    if (!auto?.anchors || !auto?.levels) {
+      return {
+        decision,
+        status: "invalid",
+        selected: null,
+        confidence: review?.confidence ?? "unknown",
+        emphasizedRatios: review?.emphasizedRatios ?? [],
+        rationale: "LLM 选择了自动 Fib，但本轮没有可用的自动锚点。",
+      };
+    }
+    return {
+      decision,
+      status: "selected",
+      selected: {
+        ...auto,
+        method: "llm_selected_auto",
+        role: "selected",
+        advisory: false,
+        decisionAuthority: "LLM",
+      },
+      confidence: review?.confidence ?? "unknown",
+      emphasizedRatios: review?.emphasizedRatios ?? [],
+      rationale: review?.rationale ?? "",
+    };
+  }
+  if (decision !== "override") {
+    return {
+      decision: "insufficient_evidence",
+      status: "invalid",
+      selected: null,
+      confidence: "unknown",
+      emphasizedRatios: [],
+      rationale: "Fib 决策无效。",
+    };
+  }
+
+  const bars = officialContextBars(run);
+  const barIndex = new Map(bars.map((bar, index) => [String(bar.barId), { bar, index }]));
+  const direction = review?.direction;
+  const expectedFields = direction === "up"
+    ? { a: "low", b: "high", c: "low" }
+    : direction === "down"
+      ? { a: "high", b: "low", c: "high" }
+      : null;
+  const resolved = {};
+  for (const key of ["a", "b", "c"]) {
+    const requested = review?.anchors?.[key];
+    const found = requested ? barIndex.get(String(requested.barId)) : null;
+    if (!found || !expectedFields || requested.field !== expectedFields[key]) {
+      return {
+        decision,
+        status: "invalid",
+        selected: null,
+        confidence: review?.confidence ?? "unknown",
+        emphasizedRatios: review?.emphasizedRatios ?? [],
+        rationale: `Fib ${key.toUpperCase()} 锚点不存在、尚未收盘或字段方向不符合 ${direction || "unknown"} 结构。`,
+      };
+    }
+    resolved[key] = {
+      barId: String(requested.barId),
+      date: found.bar.tradeDate ?? found.bar.time,
+      field: requested.field,
+      price: finiteOrNull(found.bar[requested.field]),
+      index: found.index,
+    };
+  }
+  const chronological = resolved.a.index < resolved.b.index && resolved.b.index < resolved.c.index;
+  const directional = direction === "up"
+    ? resolved.a.price < resolved.c.price && resolved.c.price < resolved.b.price
+    : resolved.a.price > resolved.c.price && resolved.c.price > resolved.b.price;
+  if (!chronological || !directional) {
+    return {
+      decision,
+      status: "invalid",
+      selected: null,
+      confidence: review?.confidence ?? "unknown",
+      emphasizedRatios: review?.emphasizedRatios ?? [],
+      rationale: "LLM 选择的 Fib A/B/C 时序或价格关系不成立。",
+    };
+  }
+  const levels = {};
+  for (const ratio of [0.382, 0.618, 1, 1.618]) {
+    levels[String(ratio)] = rounded(
+      resolved.c.price + (resolved.b.price - resolved.a.price) * ratio,
+      4,
+    );
+  }
+  const publicAnchors = Object.fromEntries(
+    Object.entries(resolved).map(([key, anchor]) => [
+      key,
+      {
+        barId: anchor.barId,
+        date: anchor.date,
+        field: anchor.field,
+        price: anchor.price,
+      },
+    ]),
+  );
+  return {
+    decision,
+    status: "selected",
+    selected: {
+      direction,
+      anchors: publicAnchors,
+      levels,
+      formula: "C + (B - A) × ratio",
+      method: "llm_override",
+      role: "selected",
+      automated: false,
+      advisory: false,
+      decisionAuthority: "LLM",
+    },
+    confidence: review?.confidence ?? "unknown",
+    emphasizedRatios: review?.emphasizedRatios ?? [],
+    rationale: review?.rationale ?? "",
+  };
+}
+
+function resolveModelInvalidation(run, review, fibReview) {
+  if (!review || review.kind === "none") {
+    return {
+      valid: false,
+      kind: "none",
+      level: null,
+      label: null,
+      reason: "LLM 未给出可校验的失效依据",
+    };
+  }
+  let level = null;
+  let label = null;
+  if (review.kind === "bar") {
+    const bar = officialContextBars(run)
+      .find((item) => String(item.barId) === String(review.barId));
+    level = finiteOrNull(bar?.[review.field]);
+    label = bar && level != null
+      ? `${review.barId} ${String(review.field).toUpperCase()}`
+      : null;
+  } else if (review.kind === "ema") {
+    if ([144, 169].includes(review.emaPeriod)
+      && run?.technical?.emaMaturity?.[review.emaPeriod]?.mature !== true) {
+      return {
+        valid: false,
+        kind: review.kind,
+        level: null,
+        label: `EMA${review.emaPeriod}`,
+        reason: `EMA${review.emaPeriod} 尚未达到成熟样本要求，不能作为结构化仓位的失效依据`,
+      };
+    }
+    level = finiteOrNull(run?.technical?.ema?.[review.emaPeriod]);
+    label = level == null ? null : `EMA${review.emaPeriod}`;
+  } else if (review.kind === "range20") {
+    level = finiteOrNull(run?.technical?.range20?.[review.rangeKey]);
+    label = level == null
+      ? null
+      : review.rangeKey === "priorLow"
+        ? "前20日低点"
+        : "前20日高点";
+  } else if (review.kind === "fib") {
+    if (fibReview?.status !== "selected") {
+      return {
+        valid: false,
+        kind: review.kind,
+        level: null,
+        label: null,
+        reason: "Fib 失效依据要求 LLM 先选择并通过宿主校验的 Fib",
+      };
+    }
+    if (!["high", "medium"].includes(fibReview?.confidence)) {
+      return {
+        valid: false,
+        kind: review.kind,
+        level: null,
+        label: `LLM Fib ${review.fibRatio}`,
+        reason: "Fib 失效依据的 LLM 置信度不足，必须为 high 或 medium",
+      };
+    }
+    level = finiteOrNull(fibReview?.selected?.levels?.[String(review.fibRatio)]);
+    label = level == null ? null : `LLM Fib ${review.fibRatio}`;
+  }
+  const lastPrice = finiteOrNull(run?.technical?.lastPrice);
+  if (!(level > 0) || !(lastPrice > 0)) {
+    return {
+      valid: false,
+      kind: review.kind,
+      level: null,
+      label,
+      reason: "LLM 失效依据引用了不存在或无效的数据点",
+    };
+  }
+  if (level >= lastPrice) {
+    return {
+      valid: false,
+      kind: review.kind,
+      level: rounded(level),
+      label,
+      reason: "候选多头计划的失效位必须低于当前正式收盘价",
+    };
+  }
+  return {
+    valid: true,
+    kind: review.kind,
+    level: rounded(level),
+    label,
+    confirmation: review.confirmation,
+    rationale: review.rationale,
+    reason: null,
+  };
+}
+
+function officialContextBars(run) {
+  const asOfMs = Date.parse(String(run?.technical?.asOf ?? ""));
+  const bars = Array.isArray(run?.analysisContext?.technical?.priceBars)
+    ? run.analysisContext.technical.priceBars
+    : [];
+  return bars.filter((bar) => {
+    const timeMs = Date.parse(String(bar?.time ?? bar?.barId ?? ""));
+    return Number.isFinite(timeMs)
+      && Number.isFinite(asOfMs)
+      && timeMs <= asOfMs;
+  });
 }
 
 function rounded(value, digits = 2) {
@@ -3656,7 +4179,7 @@ function analysisHeadline(value) {
 
 async function ensureWorkspaceGuide(workspaceDirectory) {
   const target = path.join(workspaceDirectory, "AGENTS.md");
-  const content = `# Trading Agent Workspace\n\n- This is the persistent Codex project for the Trading Cockpit desktop app.\n- Codex App Server is the only conversational and tool harness; Longbridge, FX, EMA/Fib, and portfolio risk are read-only evidence capabilities.\n- Use configured Skills, MCP servers, Apps, web access, files, and tools whenever they improve the analysis.\n- Treat each <cockpit-evidence> block as a timestamped portfolio snapshot; identify stale or conflicting external data explicitly.\n- For prior cockpit discussion, call query_recent_history. It returns at most the most recent 30 days; do not surface archived older cockpit conversations.\n- Never invent holdings, prices, FX rates, EMA/Fib levels, or portfolio weights.\n- The current <cockpit-evidence> already contains the authoritative Longbridge portfolio snapshot and local EMA/Fib/risk calculations. Do not query Longbridge again for data already present there.\n- Treat a Longbridge/MCP timeout as missing evidence and continue to a final answer. Do not retry the same failed query or batch multiple Longbridge calls into one aggregate wrapper.\n- The desktop Longbridge bridge is read-only. Discuss trade plans, but do not submit, modify, or cancel brokerage orders.\n- The desktop host disables recognized Longbridge brokerage-write tools in the App Server thread config. Do not seek alternative order-writing tools or attempt to bypass that boundary.\n- Prefer concise Chinese unless the user requests another language.\n`;
+  const content = `# Trading Agent Workspace\n\n- This is the persistent Codex project for the Trading Cockpit desktop app.\n- Codex App Server is the only conversational and tool harness; Longbridge, FX, OHLCV/EMA/Fib, and portfolio risk are read-only evidence capabilities.\n- Use configured Skills, MCP servers, Apps, web access, files, and tools whenever they improve the analysis.\n- Treat each <cockpit-evidence> block as a timestamped portfolio snapshot; identify stale or conflicting external data explicitly.\n- For a candidate, Codex decides Stage, Fib use/override/ignore, invalidation, and proposed sizing. The host has no fixed 2%/4% recommendation and enforces only validated data and hard account/risk limits.\n- Fib overrides must reference supplied closed-bar barId and high/low fields. Local AUTO Fib is advisory unless Codex explicitly selects it.\n- If the portfolio snapshot is cached, stale, or older than two minutes at final sizing, keep the narrative but do not return an executable size.\n- For prior cockpit discussion, call query_recent_history. It returns at most the most recent 30 days; do not surface archived older cockpit conversations.\n- Never invent holdings, prices, FX rates, OHLCV bars, EMA/Fib levels, or portfolio weights.\n- The current <cockpit-evidence> already contains the authoritative Longbridge portfolio snapshot and local OHLCV/EMA/risk calculations. Do not query Longbridge again for data already present there.\n- Treat a Longbridge/MCP timeout as missing evidence and continue to a final answer. Do not retry the same failed query or batch multiple Longbridge calls into one aggregate wrapper.\n- The desktop Longbridge bridge is read-only. Discuss trade plans, but do not submit, modify, or cancel brokerage orders.\n- The desktop host disables recognized Longbridge brokerage-write tools in the App Server thread config. Do not seek alternative order-writing tools or attempt to bypass that boundary.\n- Prefer concise Chinese unless the user requests another language.\n`;
   try {
     await writeFile(target, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
   } catch (error) {
@@ -3681,8 +4204,12 @@ function finiteOrNull(value) {
 }
 
 function boundedPercentOrNull(value) {
-  const numeric = finiteOrNull(value);
-  return numeric == null ? null : Math.min(100, Math.max(0, numeric));
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= 100
+    ? value
+    : null;
 }
 
 function throwIfAborted(signal) {

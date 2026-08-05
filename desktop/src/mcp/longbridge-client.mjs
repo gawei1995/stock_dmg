@@ -33,19 +33,34 @@ const DEFAULT_TOOL_TIMEOUT_MS = Object.freeze({
 
 export class LongbridgeClient {
   constructor({
-    endpoint = process.env.LONGBRIDGE_MCP_URL || "https://mcp.longbridge.com/v2",
+    endpoint = "https://mcp.longbridge.com/v2",
     store,
     openExternal,
     onStatus = () => {},
     clientVersion = "0.5.0",
     toolTimeouts = {},
+    fetchFn = globalThis.fetch,
+    networkStack = "node-fetch",
+    authFn = auth,
+    clientFactory = (info, options) => new Client(info, options),
+    transportFactory = (url, options) => new StreamableHTTPClientTransport(url, options),
+    callbackFactory = () => new OAuthLoopbackServer({ port: 0 }),
   }) {
     this.endpoint = validateEndpoint(endpoint);
+    if (typeof fetchFn !== "function") {
+      throw new TypeError("Longbridge fetchFn must be a function.");
+    }
     this.credentialPrefix = `longbridge:${new URL(this.endpoint).hostname}`;
     this.store = store;
     this.openExternal = openExternal;
     this.onStatus = onStatus;
     this.clientVersion = clientVersion;
+    this.fetchFn = fetchFn;
+    this.networkStack = String(networkStack || "custom-fetch");
+    this.authFn = authFn;
+    this.clientFactory = clientFactory;
+    this.transportFactory = transportFactory;
+    this.callbackFactory = callbackFactory;
     this.toolTimeouts = Object.fromEntries(
       [...READ_ONLY_TOOLS].map((name) => [
         name,
@@ -76,7 +91,7 @@ export class LongbridgeClient {
   }
 
   async #connect({ interactive }) {
-    const callback = new OAuthLoopbackServer({ port: 0 });
+    const callback = this.callbackFactory();
     await callback.start();
     const provider = new DesktopOAuthProvider({
       redirectUrl: callback.redirectUrl,
@@ -94,9 +109,10 @@ export class LongbridgeClient {
 
     try {
       this.onStatus({ state: "connecting", message: "正在连接长桥只读 MCP" });
-      const authResult = await auth(provider, {
+      const authResult = await this.authFn(provider, {
         serverUrl: new URL(this.endpoint),
         scope: "6",
+        fetchFn: this.fetchFn,
       });
       if (authResult === "REDIRECT") {
         if (!interactive) throw new Error("Longbridge authorization is required.");
@@ -104,10 +120,11 @@ export class LongbridgeClient {
         if (!provider.validateState(state)) {
           throw new Error("Longbridge OAuth state validation failed.");
         }
-        await auth(provider, {
+        await this.authFn(provider, {
           serverUrl: new URL(this.endpoint),
           authorizationCode: code,
           scope: "6",
+          fetchFn: this.fetchFn,
         });
       }
       await this.#attempt(provider);
@@ -131,6 +148,7 @@ export class LongbridgeClient {
         blockedToolCount: listed.tools.length
           - [...READ_ONLY_TOOLS].filter((name) => this.tools.has(name)).length,
         exposedOrderToolCount: exposedOrderTools.length,
+        networkStack: this.networkStack,
       });
       return this.status();
     } catch (error) {
@@ -143,12 +161,13 @@ export class LongbridgeClient {
   }
 
   async #attempt(provider) {
-    this.client = new Client(
+    this.client = this.clientFactory(
       { name: "trading-cockpit-desktop", version: this.clientVersion },
       { capabilities: {} },
     );
-    this.transport = new StreamableHTTPClientTransport(new URL(this.endpoint), {
+    this.transport = this.transportFactory(new URL(this.endpoint), {
       authProvider: provider,
+      fetch: this.fetchFn,
     });
     await this.client.connect(this.transport);
   }
@@ -160,6 +179,7 @@ export class LongbridgeClient {
       tools: [...this.tools.keys()].filter((name) => READ_ONLY_TOOLS.has(name)),
       orderWrite: false,
       persistentAuth: this.store.persistent,
+      networkStack: this.networkStack,
     };
   }
 
@@ -241,7 +261,7 @@ export function classifyLongbridgeError(error) {
   const normalized = message.toLowerCase();
   if (
     error?.name === "StreamableHTTPError"
-    || /streamable http error|failed to fetch|fetch failed|econnreset|socket|network|session (?:closed|expired)|transport/.test(normalized)
+    || /streamable http error|failed to fetch|fetch failed|econnreset|socket|network|session (?:closed|expired)|transport|net::err_[a-z0-9_]+|err_(?:connection|proxy|tunnel|name_not_resolved|internet_disconnected)/.test(normalized)
   ) {
     return { kind: "transport", code: null, retryable: true, reauth: false };
   }
@@ -276,9 +296,8 @@ function normalizeTimeoutMs(value, fallback) {
 
 function validateEndpoint(value) {
   const url = new URL(value);
-  const allowedHosts = new Set(["mcp.longbridge.com", "mcp.longbridge.cn"]);
-  if (url.protocol !== "https:" || !allowedHosts.has(url.hostname) || url.pathname !== "/v2") {
-    throw new Error("Longbridge MCP endpoint must be an official HTTPS /v2 read-only endpoint.");
+  if (url.protocol !== "https:" || url.hostname !== "mcp.longbridge.com" || url.pathname !== "/v2") {
+    throw new Error("Longbridge MCP endpoint must be the global HTTPS /v2 read-only endpoint.");
   }
   url.search = "";
   url.hash = "";

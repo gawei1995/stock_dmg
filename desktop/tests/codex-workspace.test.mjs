@@ -471,15 +471,35 @@ test("workspace analysis replaces local narration but preserves deterministic nu
   assert.equal(enriched.safeguards.modelTools, true);
 });
 
-test("candidate Skill/MCP sizing can only tighten deterministic and theme ceilings", () => {
+test("candidate LLM sizing is accepted subject only to validated risk envelopes", () => {
   const run = candidateRunFixture();
   const enriched = applyCodexWorkspaceAnalysis(run, {
     text: "# 候选复核\n\n半导体主题接近上限，初始只允许 1%。",
     candidateSizing: {
       candidateGroupKey: "半导体",
       classificationConfidence: "high",
+      narrativeStage: "stage_2",
+      fibReview: {
+        decision: "ignore",
+        direction: "none",
+        anchors: { a: null, b: null, c: null },
+        emphasizedRatios: [],
+        confidence: "medium",
+        rationale: "本轮失效依据使用 EMA21，不采用自动 Fib。",
+      },
+      invalidation: {
+        kind: "ema",
+        barId: null,
+        field: null,
+        emaPeriod: 21,
+        rangeKey: null,
+        fibRatio: null,
+        confirmation: "日线收盘",
+        rationale: "EMA21 为结构失效位。",
+      },
       recommendedInitialAdditionalWeightPercent: 2,
       recommendedMaxTotalWeightPercent: 9,
+      sizingConfidence: "high",
       leverageDecision: "cash_only",
       rationale: "半导体主题现有 29%，主题预警线为 30%。",
     },
@@ -497,15 +517,338 @@ test("candidate Skill/MCP sizing can only tighten deterministic and theme ceilin
     tokenUsage: null,
   });
 
-  assert.equal(enriched.risk.sizingReview.status, "skill_mcp_reviewed");
+  assert.equal(enriched.risk.sizingReview.status, "bounded");
   assert.equal(enriched.risk.group, "半导体");
   assert.equal(enriched.risk.recommendedInitialAdditionalWeightPercent, 1);
   assert.equal(enriched.risk.recommendedMaxWeightPercent, 1);
   assert.equal(enriched.risk.recommendedInitialNotionalBase, 1_000);
   assert.equal(enriched.risk.recommendedMaxAdditionalNotionalBase, 1_000);
   assert.equal(enriched.risk.leverage.decision, "cash_only");
+  assert.equal(enriched.risk.referenceLabel, "EMA21");
+  assert.deepEqual(enriched.risk.sizingReview.limitBindings, [
+    "group_exposure",
+    "initial_additional",
+  ]);
+  assert.equal(enriched.risk.sizingReview.modelProposal.maxTotalWeightPercent, 9);
+  assert.equal(enriched.risk.sizingReview.accepted.maxTotalWeightPercent, 1);
   assert.equal(enriched.plan.sizing.maxTotalWeightPercent, 1);
   assert.match(enriched.plan.scenarios[0].then, /初始新增 1%/);
+});
+
+test("unmatched candidate themes use the worst existing theme exposure instead of zero", () => {
+  const enriched = applyCodexWorkspaceAnalysis(
+    candidateRunFixture(),
+    candidateWorkspaceAnalysis({
+      candidateGroupKey: "AI 芯片",
+      recommendedInitialAdditionalWeightPercent: 2,
+      recommendedMaxTotalWeightPercent: 9,
+    }),
+  );
+
+  assert.equal(enriched.risk.candidateGroupKnown, false);
+  assert.equal(enriched.risk.groupWeight, null);
+  assert.equal(enriched.risk.sizingReview.groupMappingStatus, "unmatched_worst_case");
+  assert.equal(enriched.risk.sizingReview.groupGuardrailWeightPercent, 29);
+  assert.equal(enriched.risk.sizingReview.hardLimits.groupTotalWeightPercent, 1);
+  assert.equal(enriched.risk.recommendedInitialAdditionalWeightPercent, 1);
+  assert.equal(enriched.risk.recommendedMaxWeightPercent, 1);
+  assert.equal(
+    enriched.risk.sizingReview.limitBindings.includes("group_mapping_worst_case"),
+    true,
+  );
+  assert.equal(
+    enriched.risk.sizingReview.limitBindings.includes("group_exposure"),
+    true,
+  );
+});
+
+test("candidate sizing percentages reject coercion and out-of-range model values", () => {
+  const invalidProposals = [
+    { recommendedInitialAdditionalWeightPercent: "1" },
+    { recommendedInitialAdditionalWeightPercent: true },
+    { recommendedInitialAdditionalWeightPercent: [1] },
+    { recommendedMaxTotalWeightPercent: 101 },
+    { recommendedMaxTotalWeightPercent: -1 },
+    { recommendedMaxTotalWeightPercent: Number.POSITIVE_INFINITY },
+  ];
+
+  for (const proposal of invalidProposals) {
+    const enriched = applyCodexWorkspaceAnalysis(
+      candidateRunFixture(),
+      candidateWorkspaceAnalysis(proposal),
+    );
+    assert.equal(enriched.risk.sizingReview.status, "blocked");
+    assert.equal(enriched.risk.sizingReview.accepted.initialAdditionalWeightPercent, 0);
+    assert.match(enriched.risk.sizingReview.rationale, /完整有效/);
+    for (const [key, value] of Object.entries(proposal)) {
+      assert.equal(
+        enriched.risk.sizingReview.modelProposal[
+          key === "recommendedInitialAdditionalWeightPercent"
+            ? "initialAdditionalWeightPercent"
+            : "maxTotalWeightPercent"
+        ],
+        null,
+        `${key}=${String(value)} must not be coerced or clamped`,
+      );
+    }
+  }
+});
+
+test("unknown narrative Stage blocks structured candidate sizing", () => {
+  const enriched = applyCodexWorkspaceAnalysis(
+    candidateRunFixture(),
+    candidateWorkspaceAnalysis({ narrativeStage: "unknown" }),
+  );
+
+  assert.equal(enriched.risk.sizingReview.status, "blocked");
+  assert.equal(enriched.risk.recommendedInitialAdditionalWeightPercent, 0);
+  assert.match(enriched.risk.sizingReview.rationale, /叙事 Stage/);
+});
+
+test("Fib invalidation requires a selected Fib with medium or high confidence", () => {
+  const unselected = applyCodexWorkspaceAnalysis(
+    candidateRunFixture(),
+    candidateWorkspaceAnalysis({
+      invalidation: {
+        kind: "fib",
+        barId: null,
+        field: null,
+        emaPeriod: null,
+        rangeKey: null,
+        fibRatio: 0.618,
+        confirmation: "日线收盘",
+        rationale: "使用 Fib。",
+      },
+    }),
+  );
+  assert.equal(unselected.risk.sizingReview.status, "blocked");
+  assert.match(unselected.risk.sizingReview.rationale, /先选择并通过宿主校验/);
+
+  const lowConfidenceRun = candidateRunFixture();
+  lowConfidenceRun.technical.fib = {
+    direction: "up",
+    anchors: {
+      a: { date: "2026-06-01", price: 80 },
+      b: { date: "2026-06-15", price: 110 },
+      c: { date: "2026-07-01", price: 85 },
+    },
+    levels: { "0.382": 96.46, "0.618": 103.54, 1: 115, "1.618": 133.54 },
+  };
+  const lowConfidence = applyCodexWorkspaceAnalysis(
+    lowConfidenceRun,
+    candidateWorkspaceAnalysis({
+      fibReview: {
+        decision: "use_auto",
+        direction: "up",
+        anchors: { a: null, b: null, c: null },
+        emphasizedRatios: [0.382],
+        confidence: "low",
+        rationale: "自动锚点只有低置信度。",
+      },
+      invalidation: {
+        kind: "fib",
+        barId: null,
+        field: null,
+        emaPeriod: null,
+        rangeKey: null,
+        fibRatio: 0.382,
+        confirmation: "日线收盘",
+        rationale: "使用 Fib。",
+      },
+    }),
+  );
+  assert.equal(lowConfidence.risk.sizingReview.status, "blocked");
+  assert.match(lowConfidence.risk.sizingReview.rationale, /置信度不足/);
+});
+
+test("EMA144 and EMA169 invalidation require mature samples", () => {
+  for (const period of [144, 169]) {
+    const warmingRun = candidateRunFixture();
+    warmingRun.technical.ema[period] = 90;
+    warmingRun.technical.emaMaturity = {
+      [period]: { mature: false, status: "warming" },
+    };
+    const warming = applyCodexWorkspaceAnalysis(
+      warmingRun,
+      candidateWorkspaceAnalysis({
+        invalidation: {
+          kind: "ema",
+          barId: null,
+          field: null,
+          emaPeriod: period,
+          rangeKey: null,
+          fibRatio: null,
+          confirmation: "日线收盘",
+          rationale: `使用 EMA${period}。`,
+        },
+      }),
+    );
+    assert.equal(warming.risk.sizingReview.status, "blocked");
+    assert.match(warming.risk.sizingReview.rationale, /尚未达到成熟样本要求/);
+
+    const matureRun = candidateRunFixture();
+    matureRun.technical.ema[period] = 90;
+    matureRun.technical.emaMaturity = {
+      [period]: { mature: true, status: "mature" },
+    };
+    const mature = applyCodexWorkspaceAnalysis(
+      matureRun,
+      candidateWorkspaceAnalysis({
+        invalidation: {
+          kind: "ema",
+          barId: null,
+          field: null,
+          emaPeriod: period,
+          rangeKey: null,
+          fibRatio: null,
+          confirmation: "日线收盘",
+          rationale: `使用 EMA${period}。`,
+        },
+      }),
+    );
+    assert.notEqual(mature.risk.sizingReview.status, "blocked");
+    assert.equal(mature.risk.referenceLabel, `EMA${period}`);
+  }
+});
+
+test("candidate LLM can choose Fib anchors and sizing without a local 2/4 preset", () => {
+  const run = candidateRunFixture();
+  run.risk.portfolioConstraints.groupExposure.push({ key: "新主题", weight: 0 });
+  run.analysisContext.technical.priceBars = [
+    {
+      barId: "2026-07-16T00:00:00.000Z",
+      time: "2026-07-16T00:00:00.000Z",
+      open: 83,
+      high: 85,
+      low: 80,
+      close: 84,
+      volume: 1_000,
+    },
+    {
+      barId: "2026-07-17T00:00:00.000Z",
+      time: "2026-07-17T00:00:00.000Z",
+      open: 102,
+      high: 120,
+      low: 100,
+      close: 115,
+      volume: 2_000,
+    },
+    {
+      barId: "2026-07-18T00:00:00.000Z",
+      time: "2026-07-18T00:00:00.000Z",
+      open: 98,
+      high: 105,
+      low: 90,
+      close: 100,
+      volume: 1_500,
+    },
+  ];
+  const enriched = applyCodexWorkspaceAnalysis(run, {
+    text: "# LLM 策略\n\n使用人工复核锚点，建议初始 3%、最大 8%。",
+    candidateSizing: {
+      candidateGroupKey: "新主题",
+      classificationConfidence: "high",
+      narrativeStage: "stage_2",
+      fibReview: {
+        decision: "override",
+        direction: "up",
+        anchors: {
+          a: { barId: "2026-07-16T00:00:00.000Z", field: "low" },
+          b: { barId: "2026-07-17T00:00:00.000Z", field: "high" },
+          c: { barId: "2026-07-18T00:00:00.000Z", field: "low" },
+        },
+        emphasizedRatios: [0.382, 0.618, 1, 1.618],
+        confidence: "high",
+        rationale: "A/B/C 顺序与回撤关系成立。",
+      },
+      invalidation: {
+        kind: "ema",
+        barId: null,
+        field: null,
+        emaPeriod: 21,
+        rangeKey: null,
+        fibRatio: null,
+        confirmation: "日线收盘",
+        rationale: "EMA21 作为风险失效位。",
+      },
+      recommendedInitialAdditionalWeightPercent: 3,
+      recommendedMaxTotalWeightPercent: 8,
+      sizingConfidence: "high",
+      leverageDecision: "cash_only",
+      rationale: "由模型结合 Stage 与结构提出，不采用本地预设。",
+    },
+    provider: "Codex App Server",
+    elapsedMs: 100,
+    threadId: "thr-persistent-1",
+    workspaceDirectory: "/tmp/stock-agent-workspace",
+    requestedSkills: ["analyze-technical-structure"],
+    requestedApps: [],
+    toolEvents: [],
+    toolsUsed: false,
+    skillCount: 2,
+    mcpServerCount: 1,
+    appCount: 0,
+    tokenUsage: null,
+  });
+
+  assert.equal(enriched.risk.sizingReview.status, "llm_reviewed");
+  assert.equal(enriched.risk.recommendedInitialAdditionalWeightPercent, 3);
+  assert.equal(enriched.risk.recommendedMaxWeightPercent, 8);
+  assert.equal(enriched.risk.fibonacciReview.selected.method, "llm_override");
+  assert.equal(enriched.risk.fibonacciReview.selected.levels["0.382"], 105.28);
+});
+
+test("candidate sizing expires while a long LLM turn is still allowed to return prose", () => {
+  const run = candidateRunFixture();
+  run.risk.sizingValidUntil = "2020-01-01T00:00:00.000Z";
+  const enriched = applyCodexWorkspaceAnalysis(run, {
+    text: "# 研究结论仍保留\n\n快照已过期，因此不输出可执行仓位。",
+    candidateSizing: {
+      candidateGroupKey: "半导体",
+      classificationConfidence: "high",
+      narrativeStage: "stage_2",
+      fibReview: {
+        decision: "ignore",
+        direction: "none",
+        anchors: { a: null, b: null, c: null },
+        emphasizedRatios: [],
+        confidence: "medium",
+        rationale: "本轮不使用 Fib。",
+      },
+      invalidation: {
+        kind: "ema",
+        barId: null,
+        field: null,
+        emaPeriod: 21,
+        rangeKey: null,
+        fibRatio: null,
+        confirmation: "日线收盘",
+        rationale: "EMA21。",
+      },
+      recommendedInitialAdditionalWeightPercent: 3,
+      recommendedMaxTotalWeightPercent: 8,
+      sizingConfidence: "high",
+      leverageDecision: "cash_only",
+      rationale: "模型建议。",
+    },
+    provider: "Codex App Server",
+    elapsedMs: 180_000,
+    threadId: "thr-persistent-1",
+    workspaceDirectory: "/tmp/stock-agent-workspace",
+    requestedSkills: [],
+    requestedApps: [],
+    toolEvents: [],
+    toolsUsed: false,
+    skillCount: 2,
+    mcpServerCount: 1,
+    appCount: 0,
+    tokenUsage: null,
+  });
+
+  assert.equal(enriched.risk.sizingReview.status, "blocked");
+  assert.equal(enriched.risk.sizingReview.accepted.initialAdditionalWeightPercent, 0);
+  assert.match(enriched.risk.sizingReview.rationale, /超过 2 分钟/);
+  assert.match(enriched.conclusion.body, /研究结论仍保留/);
 });
 
 test("candidate turns request structured Markdown plus a bounded sizing review", async () => {
@@ -523,6 +866,11 @@ test("candidate turns request structured Markdown plus a bounded sizing review",
   assert.deepEqual(
     turn.params.outputSchema.properties.candidateSizing.properties.leverageDecision.enum,
     ["cash_only", "disabled"],
+  );
+  assert.deepEqual(
+    turn.params.outputSchema.properties.candidateSizing.properties.fibReview
+      .properties.decision.enum,
+    ["use_auto", "override", "ignore", "insufficient_evidence"],
   );
   assert.equal(turn.params.input.some((item) => item.type === "skill"
     && item.name === "analyze-market-narratives"), true);
@@ -2111,6 +2459,7 @@ function runFixture() {
 }
 
 function candidateRunFixture() {
+  const snapshotAt = new Date().toISOString();
   return {
     id: "candidate-run-1",
     elapsedMs: 200,
@@ -2120,33 +2469,48 @@ function candidateRunFixture() {
       scope: "candidate",
       symbol: "NVDA.US",
       ticker: "NVDA",
-      snapshotAt: "2026-07-19T00:00:00.000Z",
+      snapshotAt,
       marketDataAsOf: "2026-07-18T00:00:00.000Z",
     },
     analysisContext: {
       scope: "candidate",
       portfolioSummary: { netAssets: 100_000, cashRatioPercent: 20 },
       target: { symbol: "NVDA.US", ticker: "NVDA", isHeld: false },
+      technical: { priceBars: [] },
     },
-    technical: { ema: { 21: 98 }, shortStructure: "交错", longStructure: "长周期多头" },
+    technical: {
+      asOf: "2026-07-18T00:00:00.000Z",
+      lastPrice: 100,
+      ema: { 21: 98 },
+      range20: { priorLow: 90, priorHigh: 105 },
+      shortStructure: "交错",
+      longStructure: "长周期多头",
+    },
     risk: {
       scope: "candidate",
       supported: true,
-      entryAllowed: true,
+      entryAllowed: false,
+      awaitingModelReview: true,
+      snapshotFresh: true,
+      snapshotAt,
+      sizingValidUntil: new Date(Date.parse(snapshotAt) + 2 * 60 * 1000).toISOString(),
       entryBlockReasons: [],
       existingPositionWeight: 0,
       group: "候选标的",
       groupWeight: null,
       candidateGroupKnown: false,
       baseCurrency: "USD",
-      recommendedInitialAdditionalWeightPercent: 2,
-      recommendedInitialTotalWeightPercent: 2,
-      recommendedInitialNotionalBase: 2_000,
-      recommendedMaxAdditionalWeightPercent: 4,
-      recommendedMaxWeightPercent: 4,
-      recommendedMaxAdditionalNotionalBase: 4_000,
-      moveToReferencePercent: -8,
-      portfolioImpactAtReferencePercent: -0.32,
+      riskBudgetPercent: 0.8,
+      hardMaxAdditionalWeightPercent: 10,
+      hardMaxTotalWeightPercent: 10,
+      recommendedInitialAdditionalWeightPercent: null,
+      recommendedInitialTotalWeightPercent: null,
+      recommendedInitialNotionalBase: null,
+      recommendedMaxAdditionalWeightPercent: null,
+      recommendedMaxWeightPercent: null,
+      recommendedMaxAdditionalNotionalBase: null,
+      moveToReferencePercent: null,
+      portfolioImpactAtReferencePercent: null,
       leverage: {
         decision: "cash_only",
         additionalLeverageAllowed: false,
@@ -2160,8 +2524,8 @@ function candidateRunFixture() {
     },
     plan: {
       available: true,
-      state: "candidate_snapshot",
-      riskSizingAvailable: true,
+      state: "awaiting_codex_strategy",
+      riskSizingAvailable: false,
       sizing: {},
       scenarios: [
         { name: "允许试探", tone: "bull", if: "站回 EMA21", then: "初始 2%", invalidation: "破位", impact: "-0.32%" },
@@ -2172,5 +2536,52 @@ function candidateRunFixture() {
     evidence: [],
     safeguards: { orderWrite: false, modelNarration: false },
     capabilities: {},
+  };
+}
+
+function candidateWorkspaceAnalysis(candidateSizing = {}) {
+  return {
+    text: "# 候选可信度复核\n\n模型结论仅在通过宿主硬边界后生效。",
+    candidateSizing: {
+      candidateGroupKey: "半导体",
+      classificationConfidence: "high",
+      narrativeStage: "stage_2",
+      fibReview: {
+        decision: "ignore",
+        direction: "none",
+        anchors: { a: null, b: null, c: null },
+        emphasizedRatios: [],
+        confidence: "medium",
+        rationale: "本轮不使用 Fib。",
+      },
+      invalidation: {
+        kind: "ema",
+        barId: null,
+        field: null,
+        emaPeriod: 21,
+        rangeKey: null,
+        fibRatio: null,
+        confirmation: "日线收盘",
+        rationale: "EMA21 为失效依据。",
+      },
+      recommendedInitialAdditionalWeightPercent: 1,
+      recommendedMaxTotalWeightPercent: 1,
+      sizingConfidence: "high",
+      leverageDecision: "cash_only",
+      rationale: "等待宿主校验。",
+      ...candidateSizing,
+    },
+    provider: "Codex App Server",
+    elapsedMs: 100,
+    threadId: "thr-persistent-1",
+    workspaceDirectory: "/tmp/stock-agent-workspace",
+    requestedSkills: [],
+    requestedApps: [],
+    toolEvents: [],
+    toolsUsed: false,
+    skillCount: 2,
+    mcpServerCount: 1,
+    appCount: 0,
+    tokenUsage: null,
   };
 }

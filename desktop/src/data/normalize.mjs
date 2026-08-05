@@ -306,8 +306,12 @@ export function selectQuoteMark(quote) {
   if (!quote || typeof quote !== "object") return null;
   const candidates = [
     quoteCandidate(quote, "regular"),
+    quoteCandidate(quote.pre_market, "pre_market"),
     quoteCandidate(quote.pre_market_quote, "pre_market"),
+    quoteCandidate(quote.post_market, "post_market"),
     quoteCandidate(quote.post_market_quote, "post_market"),
+    quoteCandidate(quote.overnight, "overnight"),
+    quoteCandidate(quote.overnight_quote, "overnight"),
     quoteCandidate(quote.over_night_quote, "overnight"),
   ].filter(Boolean);
   if (!candidates.length) return null;
@@ -446,25 +450,121 @@ function nullableRate(value) {
   return Number.isFinite(value) ? value : null;
 }
 
-export function normalizeCandles(payload) {
+const DAILY_CANDLE_TIME_ZONES = {
+  US: "America/New_York",
+  HK: "Asia/Hong_Kong",
+  CN: "Asia/Shanghai",
+  SH: "Asia/Shanghai",
+  SZ: "Asia/Shanghai",
+  SG: "Asia/Singapore",
+};
+
+export function normalizeCandles(payload, options = {}) {
   const list = Array.isArray(payload) ? payload : payload?.list ?? payload?.candlesticks ?? [];
   if (!Array.isArray(list)) return [];
+  const payloadSymbol = String(
+    options.symbol
+      ?? (!Array.isArray(payload) ? payload?.symbol : "")
+      ?? "",
+  ).trim().toUpperCase();
+  const payloadMarket = normalizeCandleMarket(
+    options.market
+      ?? (!Array.isArray(payload) ? payload?.market : "")
+      ?? "",
+    payloadSymbol,
+  );
   return list
-    .map((bar) => ({
-      timestamp: normalizeTimestamp(bar.timestamp),
-      open: number(bar.open, NaN),
-      high: number(bar.high, NaN),
-      low: number(bar.low, NaN),
-      close: number(bar.close, NaN),
-      volume: number(bar.volume),
-      tradeSession: bar.trade_session ?? "Intraday",
-    }))
+    .map((bar) => {
+      const timestamp = normalizeTimestamp(bar.timestamp);
+      const symbol = String(bar.symbol ?? payloadSymbol ?? "").trim().toUpperCase();
+      const market = normalizeCandleMarket(bar.market ?? payloadMarket, symbol);
+      const dateMetadata = inferDailyCandleTradeDate({
+        timestamp,
+        tradeDate: bar.tradeDate ?? bar.trade_date,
+        timestampBasis: bar.timestampBasis ?? bar.timestamp_basis,
+        market,
+        symbol,
+      });
+      const explicitClosed = firstBoolean(
+        bar.isClosed,
+        bar.is_closed,
+        bar.closed,
+        bar.complete,
+        bar.confirmed,
+        bar.final,
+      );
+      const explicitStatus = firstText(
+        bar.barStatus,
+        bar.bar_status,
+        bar.status,
+        bar.state,
+      );
+      return {
+        timestamp,
+        tradeDate: dateMetadata.tradeDate,
+        timestampBasis: dateMetadata.timestampBasis,
+        symbol: symbol || null,
+        market: market || null,
+        open: number(bar.open, NaN),
+        high: number(bar.high, NaN),
+        low: number(bar.low, NaN),
+        close: number(bar.close, NaN),
+        volume: number(bar.volume),
+        tradeSession: bar.trade_session ?? bar.tradeSession ?? "Intraday",
+        ...(explicitClosed == null ? {} : { isClosed: explicitClosed }),
+        ...(explicitStatus == null ? {} : { barStatus: explicitStatus }),
+      };
+    })
     .filter(
       (bar) =>
         Boolean(bar.timestamp)
         && [bar.open, bar.high, bar.low, bar.close].every((value) => Number.isFinite(value)),
     )
     .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+}
+
+/**
+ * Longbridge daily candles use the exchange-local date at midnight. The
+ * official 700.HK sequence starts at 1650384000 (2022-04-20 00:00 HKT),
+ * followed by Apr 21, Apr 22, Apr 25 and Apr 26. Keep the provider timestamp
+ * intact for ordering and expose that exchange-local date separately.
+ */
+export function inferDailyCandleTradeDate({
+  timestamp,
+  tradeDate,
+  timestampBasis,
+  market,
+  symbol,
+} = {}) {
+  const explicitTradeDate = normalizeTradeDate(tradeDate);
+  if (explicitTradeDate) {
+    return {
+      tradeDate: explicitTradeDate,
+      timestampBasis: String(timestampBasis || "explicit_trade_date"),
+    };
+  }
+
+  const normalizedTimestamp = normalizeTimestamp(timestamp);
+  const date = normalizedTimestamp ? new Date(normalizedTimestamp) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return { tradeDate: null, timestampBasis: "missing_or_invalid_timestamp" };
+  }
+  const normalizedMarket = normalizeCandleMarket(market, symbol);
+  const timeZone = DAILY_CANDLE_TIME_ZONES[normalizedMarket] ?? null;
+  if (!timeZone) {
+    return {
+      tradeDate: date.toISOString().slice(0, 10),
+      timestampBasis: String(timestampBasis || "utc_timestamp"),
+    };
+  }
+
+  const local = candleZonedParts(date, timeZone);
+  return {
+    tradeDate: candleDateKey(local),
+    timestampBasis: String(
+      timestampBasis || "provider_exchange_date",
+    ),
+  };
 }
 
 export function normalizeTimestamp(value) {
@@ -474,4 +574,62 @@ export function normalizeTimestamp(value) {
     ? new Date(Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric)
     : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeCandleMarket(market, symbol) {
+  const explicit = String(market ?? "").trim().toUpperCase();
+  if (explicit) return explicit === "CN" ? "CN" : explicit;
+  const normalizedSymbol = String(symbol ?? "").trim().toUpperCase();
+  const suffix = normalizedSymbol.includes(".")
+    ? normalizedSymbol.split(".").at(-1)
+    : "";
+  return suffix === "CN" ? "CN" : suffix;
+}
+
+function normalizeTradeDate(value) {
+  const candidate = String(value ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(candidate)) return null;
+  const parsed = new Date(`${candidate}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === candidate
+    ? candidate
+    : null;
+}
+
+function candleZonedParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const value = (type) => Number(parts.find((part) => part.type === type)?.value);
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+    second: value("second"),
+  };
+}
+
+function candleDateKey(parts) {
+  return [
+    String(parts.year).padStart(4, "0"),
+    String(parts.month).padStart(2, "0"),
+    String(parts.day).padStart(2, "0"),
+  ].join("-");
+}
+
+function firstBoolean(...values) {
+  return values.find((value) => typeof value === "boolean") ?? null;
+}
+
+function firstText(...values) {
+  const value = values.find((candidate) => String(candidate ?? "").trim());
+  return value == null ? null : String(value);
 }

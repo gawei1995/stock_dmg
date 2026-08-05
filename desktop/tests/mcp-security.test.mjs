@@ -5,6 +5,7 @@ import {
   LongbridgeToolError,
   classifyLongbridgeError,
 } from "../src/mcp/longbridge-client.mjs";
+import { DesktopOAuthProvider } from "../src/mcp/oauth-provider.mjs";
 import { OAuthLoopbackServer } from "../src/mcp/loopback-callback.mjs";
 
 const memoryStore = {
@@ -14,14 +15,19 @@ const memoryStore = {
   async delete() {},
 };
 
-test("Longbridge MCP only accepts official HTTPS /v2 endpoints", () => {
+test("Longbridge MCP accepts only the global HTTPS /v2 endpoint", () => {
   assert.throws(() => new LongbridgeClient({
     endpoint: "https://evil.example/v2",
     store: memoryStore,
     openExternal: async () => {},
-  }), /official HTTPS \/v2/);
-  assert.doesNotThrow(() => new LongbridgeClient({
+  }), /global HTTPS \/v2/);
+  assert.throws(() => new LongbridgeClient({
     endpoint: "https://mcp.longbridge.cn/v2",
+    store: memoryStore,
+    openExternal: async () => {},
+  }), /global HTTPS \/v2/);
+  assert.doesNotThrow(() => new LongbridgeClient({
+    endpoint: "https://mcp.longbridge.com/v2",
     store: memoryStore,
     openExternal: async () => {},
   }));
@@ -35,6 +41,83 @@ test("Longbridge client rejects every tool outside the query allowlist before co
   });
   await assert.rejects(client.call("submit_order", {}), /not in the desktop read-only allowlist/);
   await assert.rejects(client.call("watchlist_create", {}), /not in the desktop read-only allowlist/);
+});
+
+test("OAuth discovery and MCP transport share the injected system-proxy fetch", async () => {
+  const fetchFn = async () => new Response(null, { status: 401 });
+  const authOptions = [];
+  let expectedState = null;
+  let transportOptions = null;
+  let transportUrl = null;
+  let createdTransport = null;
+  let connectedTransport = null;
+  let callbackClosed = false;
+  const requiredTools = [
+    "account_balance",
+    "candlesticks",
+    "exchange_rate",
+    "quote",
+    "stock_positions",
+  ].map((name) => ({ name }));
+  const client = new LongbridgeClient({
+    store: memoryStore,
+    openExternal: async () => {},
+    fetchFn,
+    networkStack: "electron-system-proxy",
+    authFn: async (_provider, options) => {
+      authOptions.push(options);
+      return authOptions.length === 1 ? "REDIRECT" : "AUTHORIZED";
+    },
+    callbackFactory: () => ({
+      redirectUrl: "http://127.0.0.1:54321/callback",
+      async start() {},
+      setExpectedState(value) { expectedState = value; },
+      async waitForCallback() { return { code: "oauth-code", state: expectedState }; },
+      async close() { callbackClosed = true; },
+    }),
+    clientFactory: () => ({
+      async connect(transport) { connectedTransport = transport; },
+      async listTools() { return { tools: requiredTools }; },
+    }),
+    transportFactory: (url, options) => {
+      transportUrl = url;
+      transportOptions = options;
+      createdTransport = { async close() {} };
+      return createdTransport;
+    },
+  });
+
+  const status = await client.connect({ interactive: true });
+
+  assert.equal(authOptions.length, 2);
+  assert.equal(authOptions[0].fetchFn, fetchFn);
+  assert.equal(authOptions[1].fetchFn, fetchFn);
+  assert.equal(authOptions[0].serverUrl.toString(), "https://mcp.longbridge.com/v2");
+  assert.equal(authOptions[1].serverUrl.toString(), "https://mcp.longbridge.com/v2");
+  assert.equal(authOptions[1].authorizationCode, "oauth-code");
+  assert.equal(transportOptions.fetch, fetchFn);
+  assert.equal(transportUrl.toString(), "https://mcp.longbridge.com/v2");
+  assert.equal(connectedTransport, createdTransport);
+  assert.equal(callbackClosed, true);
+  assert.equal(status.endpoint, "https://mcp.longbridge.com/v2");
+  assert.equal(status.networkStack, "electron-system-proxy");
+});
+
+test("global OAuth policy rejects mainland authorization hosts", async () => {
+  const opened = [];
+  const oauth = new DesktopOAuthProvider({
+    redirectUrl: "http://127.0.0.1:54321/callback",
+    store: memoryStore,
+    onRedirect: async (url) => opened.push(url.toString()),
+  });
+  await assert.rejects(
+    oauth.redirectToAuthorization(new URL("https://openapi.longbridge.cn/oauth2/authorize?scope=6")),
+    /unexpected Longbridge authorization URL/,
+  );
+  await oauth.redirectToAuthorization(
+    new URL("https://openapi.longbridge.com/oauth2/authorize?scope=6"),
+  );
+  assert.deepEqual(opened, ["https://openapi.longbridge.com/oauth2/authorize?scope=6"]);
 });
 
 test("OAuth loopback callback ignores the wrong state and accepts the expected state", async () => {
@@ -62,6 +145,12 @@ test("Longbridge error classification never treats gateway 463 as expired author
     ["403 insufficient_scope", "permission", false],
     ["429002 api request is limited", "rate_limit", false],
     ["Streamable HTTP error: Error POSTing to endpoint: 463", "transport", false],
+    ["fetch failed: unauthorized proxy", "transport", false],
+    ["connect ECONNRESET 54.239.163.79:443", "transport", false],
+    ["net::ERR_CONNECTION_RESET", "transport", false],
+    ["ERR_PROXY_CONNECTION_FAILED", "transport", false],
+    ["ERR_TUNNEL_CONNECTION_FAILED", "transport", false],
+    ["ERR_NAME_NOT_RESOLVED", "transport", false],
   ];
   for (const [message, kind, reauth] of cases) {
     const classification = classifyLongbridgeError(new Error(message));
@@ -70,9 +159,55 @@ test("Longbridge error classification never treats gateway 463 as expired author
   }
 });
 
+test("transport fetch failures close only the live session and preserve global OAuth state", async () => {
+  for (const transportFailure of [
+    new TypeError("fetch failed"),
+    new Error("connect ECONNRESET 54.239.163.79:443"),
+  ]) {
+    const values = new Map();
+    const tokenKey = "longbridge:mcp.longbridge.com:tokens";
+    const tokens = { access_token: "encrypted-at-rest-access", refresh_token: "encrypted-at-rest-refresh" };
+    values.set(tokenKey, structuredClone(tokens));
+    const deleted = [];
+    const store = {
+      persistent: true,
+      async get(key) { return structuredClone(values.get(key)); },
+      async set(key, value) { values.set(key, structuredClone(value)); },
+      async delete(key) { deleted.push(key); values.delete(key); },
+    };
+    let closeCount = 0;
+    let browserOpenCount = 0;
+    const client = new LongbridgeClient({
+      store,
+      openExternal: async () => { browserOpenCount += 1; },
+    });
+    client.client = {
+      async callTool() {
+        throw transportFailure;
+      },
+    };
+    client.transport = { async close() { closeCount += 1; } };
+    client.tools.set("quote", {});
+
+    await assert.rejects(
+      client.call("quote", { symbols: ["AAPL.US"] }),
+      (error) => error instanceof LongbridgeToolError
+        && error.kind === "transport"
+        && error.retryable === true
+        && error.reauth === false,
+    );
+    assert.equal(client.connected, false);
+    assert.equal(closeCount, 1);
+    assert.equal(browserOpenCount, 0);
+    assert.deepEqual(await store.get(tokenKey), tokens);
+    assert.deepEqual(deleted, []);
+    assert.equal(client.endpoint, "https://mcp.longbridge.com/v2");
+  }
+});
+
 test("tool-level 463 preserves the live MCP session and encrypted OAuth state", async () => {
   const values = new Map();
-  const tokenKey = "longbridge:mcp.longbridge.cn:tokens";
+  const tokenKey = "longbridge:mcp.longbridge.com:tokens";
   const tokens = { access_token: "encrypted-at-rest-access", refresh_token: "encrypted-at-rest-refresh" };
   values.set(tokenKey, structuredClone(tokens));
   const deleted = [];
@@ -85,7 +220,7 @@ test("tool-level 463 preserves the live MCP session and encrypted OAuth state", 
   let closeCount = 0;
   let browserOpenCount = 0;
   const client = new LongbridgeClient({
-    endpoint: "https://mcp.longbridge.cn/v2",
+    endpoint: "https://mcp.longbridge.com/v2",
     store,
     openExternal: async () => { browserOpenCount += 1; },
   });
@@ -134,7 +269,7 @@ test("tool calls use injected SDK timeouts and preserve the session after timeou
   let requestOptions;
   let closeCount = 0;
   const client = new LongbridgeClient({
-    endpoint: "https://mcp.longbridge.cn/v2",
+    endpoint: "https://mcp.longbridge.com/v2",
     store: memoryStore,
     openExternal: async () => {},
     toolTimeouts: { candlesticks: 15 },

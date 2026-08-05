@@ -30,8 +30,13 @@ async function buildPositionEvidence({
   const position = portfolio?.positions?.find((item) => item.symbol === symbol);
   if (!position) throw new Error("选中的标的不在当前长桥持仓中。");
   const intent = classifyIntent(task);
-  const portfolioEvidenceStatus = portfolio.status === "live" ? "succeeded" : "degraded";
-  const selectedQuoteStatus = position.lastPrice != null && position.quoteTimestamp
+  const snapshotFresh = portfolio.freshness?.freshForSizing === true;
+  const portfolioEvidenceStatus = portfolio.status === "live" && snapshotFresh
+    ? "succeeded"
+    : "degraded";
+  const selectedQuoteStatus = position.lastPrice != null
+    && position.quoteTimestamp
+    && snapshotFresh
     ? "succeeded"
     : "degraded";
   const fxError = portfolio.dataQuality?.sourceErrors?.find(
@@ -52,11 +57,21 @@ async function buildPositionEvidence({
     : fxStatus === "reference" || fxStatus === "reference_cached"
       ? `${portfolio.fx?.providerCode ?? "ECB"} ${portfolio.fx?.asOf ?? "最新"} 参考汇率${fxStatus === "reference_cached" ? "（缓存）" : ""}${fxWarning?.code ? ` · 长桥 ${fxWarning.code} 已降级` : ""}`
       : `跨币种估值暂停${fxError?.code ? ` · ${fxError.code}` : ""}`;
-  const accountEvidenceStatus = portfolio.account?.netAssets != null ? "succeeded" : "degraded";
+  const accountEvidenceStatus = portfolio.account?.netAssets != null && snapshotFresh
+    ? "succeeded"
+    : "degraded";
+  const snapshotSummary = portfolioSnapshotEvidenceSummary(portfolio);
 
   const evidence = [
-    evidenceItem("长桥账户", "account_balance", portfolio.syncedAt, 1, accountEvidenceStatus, "账户数据实时；跨币种聚合可能受汇率状态限制"),
-    evidenceItem("长桥真实持仓", "stock_positions", portfolio.syncedAt, portfolio.positions.length, "succeeded", `${position.symbol} 数量 ${formatNumber(position.quantity)} · 权重 ${formatPercent(position.weight)}`),
+    evidenceItem("长桥账户", "account_balance", portfolio.syncedAt, 1, accountEvidenceStatus, `${snapshotSummary}；跨币种聚合可能受汇率状态限制`),
+    evidenceItem(
+      "长桥真实持仓",
+      "stock_positions",
+      portfolio.syncedAt,
+      portfolio.positions.length,
+      snapshotFresh ? "succeeded" : "degraded",
+      `${position.symbol} 数量 ${formatNumber(position.quantity)} · 权重 ${formatPercent(position.weight)} · ${snapshotSummary}`,
+    ),
     evidenceItem(
       fxSource,
       fxStatus === "live" ? "exchange_rate" : "ecb_reference_rates",
@@ -72,7 +87,7 @@ async function buildPositionEvidence({
       position.lastPrice != null ? 1 : 0,
       selectedQuoteStatus,
       position.lastPrice != null
-        ? `现价 ${formatNumber(position.lastPrice)} · ${position.quoteSession ?? "unknown session"}`
+        ? `现价 ${formatNumber(position.lastPrice)} · ${position.quoteSession ?? "unknown session"} · ${snapshotFresh ? "账户快照新鲜" : "快照仅供回看，不作为可执行仓位依据"}`
         : position.valuationLimitation,
     ),
   ];
@@ -90,17 +105,17 @@ async function buildPositionEvidence({
     notifyStage(onStage, "candles", `正在读取 ${symbol} 日线（超时会自动降级，不会阻塞 Agent）`);
     candles = await loadCandles(symbol);
     throwIfCancelled(signal);
+    technical = calculateTechnical(candles, { symbol: position.symbol });
     evidence.push(
       evidenceItem(
         "长桥日线",
         "candlesticks",
-        candles.at(-1)?.timestamp ?? null,
-        candles.length,
-        candles.length >= 21 ? "succeeded" : "degraded",
-        "1D · 前复权 · 仅常规交易时段",
+        technical.asOf ?? null,
+        technical.calculationBarCount,
+        technical.capabilities?.fastEma ? "succeeded" : "degraded",
+        `1D · OHLCV · 前复权 · 常规交易时段 · 最新输入 ${technical.lastBar?.status ?? "UNKNOWN"}${technical.provisional?.available ? "（未计入正式指标）" : ""}`,
       ),
     );
-    technical = calculateTechnical(candles);
   } catch (error) {
     throwIfCancelled(signal);
     technical = calculateTechnical([]);
@@ -173,6 +188,7 @@ async function buildPositionEvidence({
       snapshotAt: portfolio.syncedAt,
       valuationSchemaVersion: portfolio.valuationSchemaVersion ?? null,
       marketDataAsOf: technical.asOf ?? position.quoteTimestamp,
+      marketDataTradingDate: technical.asOfTradingDate ?? null,
     },
     analysisContext: buildScopedAnalysisContext({
       scope: "position",
@@ -180,6 +196,7 @@ async function buildPositionEvidence({
       target: position,
       technical,
       risk,
+      candles,
     }),
     conclusion,
     technical,
@@ -246,15 +263,15 @@ async function buildCandidateEvidence({
     notifyStage(onStage, "candles", `正在读取 ${targetSymbol} 日线（候选分析不要求已持仓）`);
     candles = await loadCandles(targetSymbol);
     throwIfCancelled(signal);
-    technical = calculateTechnical(candles);
+    technical = calculateTechnical(candles, { symbol: targetSymbol });
     evidence.push(
       evidenceItem(
         "长桥日线",
         "candlesticks",
-        candles.at(-1)?.timestamp ?? null,
-        candles.length,
-        candles.length >= 21 ? "succeeded" : "degraded",
-        "1D · 前复权 · 仅常规交易时段；最新收盘用于候选价格参考",
+        technical.asOf ?? null,
+        technical.calculationBarCount,
+        technical.capabilities?.fastEma ? "succeeded" : "degraded",
+        `1D · OHLCV · 前复权 · 常规交易时段 · 最新输入 ${technical.lastBar?.status ?? "UNKNOWN"}${technical.provisional?.available ? "（未计入正式指标）" : ""}`,
       ),
     );
   } catch (error) {
@@ -265,7 +282,7 @@ async function buildCandidateEvidence({
     );
   }
 
-  notifyStage(onStage, "risk_plan", "正在计算候选 EMA、Fib、风险预算与买入条件");
+  notifyStage(onStage, "risk_plan", "正在计算候选 EMA、组合安全边界，并准备交给 Codex 评估 Fib 与仓位");
   throwIfCancelled(signal);
   appendTechnicalEvidence(evidence, technical);
 
@@ -290,15 +307,13 @@ async function buildCandidateEvidence({
   const conclusion = buildCandidateConclusion(target, technical, risk, task);
   evidence.push(
     evidenceItem(
-      "候选风险预算",
-      "local:candidate-risk",
+      "候选安全边界",
+      "local:candidate-safety-envelope",
       portfolio.syncedAt,
       1,
-      risk.supported && risk.entryAllowed ? "succeeded" : "degraded",
-      risk.supported && risk.entryAllowed
-        ? `初始新增 ${formatPercent(risk.recommendedInitialAdditionalWeightPercent)} · 最大总仓位 ${formatPercent(risk.recommendedMaxWeightPercent)} · 仅现金建仓，不新增杠杆`
-        : risk.supported
-          ? `新增风险暂缓：${risk.entryBlockReasons.join("；")}`
+      risk.supported ? "succeeded" : "degraded",
+      risk.supported
+        ? `本地仅给出硬安全上限 ${formatPercent(risk.hardMaxTotalWeightPercent)}；Fib、失效位与建议仓位由 Codex 评估`
         : risk.limitation,
     ),
   );
@@ -327,6 +342,7 @@ async function buildCandidateEvidence({
       snapshotAt: portfolio.syncedAt,
       valuationSchemaVersion: portfolio.valuationSchemaVersion ?? null,
       marketDataAsOf: technical.asOf ?? null,
+      marketDataTradingDate: technical.asOfTradingDate ?? null,
     },
     analysisContext: buildScopedAnalysisContext({
       scope: "candidate",
@@ -334,6 +350,7 @@ async function buildCandidateEvidence({
       target,
       technical,
       risk,
+      candles,
     }),
     conclusion,
     technical,
@@ -347,7 +364,8 @@ async function buildCandidateEvidence({
       portfolioRisk: risk.supported,
       portfolioRiskComplete: risk.portfolioValuationComplete,
       candidatePortfolioConstraints: true,
-      candidateSizing: risk.supported,
+      candidateSizing: false,
+      candidateLlmSizing: risk.supported,
       leverageAssessment: true,
       candidateEntryPlan: plan.available,
       conditionalPlan: plan.available,
@@ -423,6 +441,7 @@ async function buildPortfolioEvidence({
       snapshotAt: portfolio.syncedAt,
       valuationSchemaVersion: portfolio.valuationSchemaVersion ?? null,
       marketDataAsOf: portfolio.quoteAsOf ?? portfolio.quoteLatestAsOf ?? null,
+      marketDataTradingDate: null,
     },
     analysisContext: buildScopedAnalysisContext({
       scope: "portfolio",
@@ -466,19 +485,15 @@ export function calculateCandidateRisk(
   const portfolioRisk = calculatePortfolioRisk(portfolio, riskBudgetPercent);
   const netAssets = finiteOrNull(portfolio.account?.netAssets);
   const lastPrice = finiteOrNull(technical.lastPrice ?? target.lastPrice);
-  const downsideReference = selectDownsideReference(lastPrice, technical);
-  const reference = finiteOrNull(downsideReference?.level);
-  const moveToReference = reference != null && lastPrice > 0
-    ? ((reference - lastPrice) / lastPrice) * 100
-    : null;
-  const riskDistancePercent = moveToReference == null ? null : Math.abs(moveToReference);
   const normalizedBudget = round(Number(riskBudgetPercent), 2);
-  const riskLimitedWeight = riskDistancePercent > 0
-    ? (normalizedBudget / riskDistancePercent) * 100
-    : null;
   const cashRatio = finiteOrNull(portfolio.totals?.cashRatio);
   const cashRatioValid = cashRatio != null && cashRatio >= 0;
   const technicalPlanReady = candidateTechnicalPlanReady(technical);
+  const snapshotFresh = portfolio.freshness?.freshForSizing === true;
+  const snapshotAtMs = Date.parse(String(portfolio.syncedAt ?? ""));
+  const sizingValidUntil = snapshotFresh && Number.isFinite(snapshotAtMs)
+    ? new Date(snapshotAtMs + 2 * 60 * 1000).toISOString()
+    : null;
   const cashBufferFloorPercent = 5;
   const conservativeCashWeight = !cashRatioValid
     ? null
@@ -511,16 +526,16 @@ export function calculateCandidateRisk(
     target.instrumentType !== "option"
     && technicalPlanReady
     && lastPrice > 0
-    && reference > 0
     && netAssets > 0
     && portfolioValuationComplete
     && cashRatioValid
-    && portfolioRisk.derivativeExposureComplete;
-  const hardPortfolioBlockers = candidatePortfolioBlockers(portfolioRisk, cashRatio);
-  const stageOneCeilingPercent = 4;
-  const sizingCeilings = [
-    riskLimitedWeight,
-    stageOneCeilingPercent,
+    && portfolioRisk.derivativeExposureComplete
+    && snapshotFresh;
+  const hardPortfolioBlockers = [
+    ...candidatePortfolioBlockers(portfolioRisk, cashRatio),
+    ...(!snapshotFresh ? ["持仓快照已过期或来自缓存；可继续分析，但禁止输出可执行仓位"] : []),
+  ];
+  const safetyCeilings = [
     concentrationHeadroom.singlePositionPercent == null
       ? null
       : existingWeight + concentrationHeadroom.singlePositionPercent,
@@ -537,46 +552,38 @@ export function calculateCandidateRisk(
       ? null
       : existingWeight + concentrationHeadroom.groupPercent,
   ].filter((value) => Number.isFinite(value));
-  const unconstrainedMaxWeight = inputSupported && sizingCeilings.length
-    ? Math.max(0, Math.min(...sizingCeilings))
+  const unconstrainedMaxWeight = inputSupported && safetyCeilings.length
+    ? Math.max(0, Math.min(...safetyCeilings))
     : null;
-  const provisionalMaxWeight = hardPortfolioBlockers.length
+  const hardMaxTotalWeight = hardPortfolioBlockers.length
     ? existingWeight
     : unconstrainedMaxWeight == null
       ? null
       : Math.max(existingWeight, unconstrainedMaxWeight);
-  const maxAdditionalWeight = provisionalMaxWeight == null
+  const hardMaxAdditionalWeight = hardMaxTotalWeight == null
     ? null
-    : Math.max(0, provisionalMaxWeight - existingWeight);
-  const entryAllowed = inputSupported
+    : Math.max(0, hardMaxTotalWeight - existingWeight);
+  const awaitingModelReview = inputSupported
     && hardPortfolioBlockers.length === 0
-    && maxAdditionalWeight > 0;
-  const recommendedInitialAdditionalWeight = entryAllowed
-    ? Math.min(2, maxAdditionalWeight)
-    : 0;
-  const recommendedInitialTotalWeight = existingWeight + recommendedInitialAdditionalWeight;
+    && hardMaxAdditionalWeight > 0;
+  const entryAllowed = false;
   const supported = inputSupported;
   const riskBudgetValue = netAssets > 0
     ? netAssets * (normalizedBudget / 100)
     : null;
-  const provisionalNotional = supported && provisionalMaxWeight != null
-    ? netAssets * (provisionalMaxWeight / 100)
+  const hardMaxNotional = supported && hardMaxTotalWeight != null
+    ? netAssets * (hardMaxTotalWeight / 100)
     : null;
-  const initialAdditionalNotional = supported
-    ? netAssets * (recommendedInitialAdditionalWeight / 100)
-    : null;
-  const maxAdditionalNotional = supported && maxAdditionalWeight != null
-    ? netAssets * (maxAdditionalWeight / 100)
-    : null;
-  const impactAtReference = supported && maxAdditionalWeight != null
-    ? (maxAdditionalWeight * moveToReference) / 100
+  const hardMaxAdditionalNotional = supported && hardMaxAdditionalWeight != null
+    ? netAssets * (hardMaxAdditionalWeight / 100)
     : null;
   const leverage = buildCandidateLeverageAssessment({
     portfolioRisk,
     cashRatio,
-    initialAdditionalWeight: recommendedInitialAdditionalWeight,
-    maxAdditionalWeight,
-    entryAllowed,
+    initialAdditionalWeight: 0,
+    maxAdditionalWeight: hardMaxAdditionalWeight,
+    entryAllowed: false,
+    awaitingModelReview,
     inputSupported,
     hardPortfolioBlockers,
     candidateGroupKnown,
@@ -588,13 +595,13 @@ export function calculateCandidateRisk(
       portfolioValuationComplete,
       netAssets,
       lastPrice,
-      reference,
       technicalPlanReady,
       cashRatio,
+      snapshotFresh,
       derivativeExposureComplete: portfolioRisk.derivativeExposureComplete,
     })] : []),
-    ...(inputSupported && maxAdditionalWeight === 0 && hardPortfolioBlockers.length === 0
-      ? ["风险预算、Stage 1 上限或组合集中度约束已没有新增仓位空间"]
+    ...(inputSupported && hardMaxAdditionalWeight === 0 && hardPortfolioBlockers.length === 0
+      ? ["现金、集中度或组合总暴露安全边界已没有新增仓位空间"]
       : []),
   ].filter(Boolean);
 
@@ -603,11 +610,15 @@ export function calculateCandidateRisk(
     supported,
     portfolioValuationComplete,
     technicalPlanReady,
+    snapshotFresh,
+    snapshotAt: portfolio.syncedAt ?? null,
+    sizingValidUntil,
     cashRatioValid,
     derivativeExposureComplete: portfolioRisk.derivativeExposureComplete,
     instrumentType: target.instrumentType ?? "equity",
     limitation: supported ? null : entryBlockReasons[0] ?? "候选仓位评估证据不足。",
     entryAllowed,
+    awaitingModelReview,
     entryBlockReasons,
     isHeld: Boolean(target.isHeld),
     existingPositionWeight: round(existingWeight, 2),
@@ -618,44 +629,36 @@ export function calculateCandidateRisk(
     baseCurrency: portfolio.account?.baseCurrency ?? "USD",
     riskBudgetPercent: normalizedBudget,
     riskBudgetValueBase: riskBudgetValue == null ? null : round(riskBudgetValue, 2),
-    referenceLevel: reference,
-    referenceLabel: downsideReference?.label ?? "无可靠下行参考",
-    moveToReferencePercent: moveToReference == null ? null : round(moveToReference, 2),
-    riskDistancePercent: riskDistancePercent == null ? null : round(riskDistancePercent, 2),
-    riskLimitedWeightPercent: riskLimitedWeight == null ? null : round(riskLimitedWeight, 2),
-    stageAssumption: "stage_1_unvalidated",
-    stagePolicyCeilingPercent: stageOneCeilingPercent,
-    recommendedInitialAdditionalWeightPercent: supported
-      ? round(recommendedInitialAdditionalWeight, 2)
-      : null,
-    recommendedInitialTotalWeightPercent: supported
-      ? round(recommendedInitialTotalWeight, 2)
-      : null,
-    recommendedInitialNotionalBase: initialAdditionalNotional == null
-      ? null
-      : round(initialAdditionalNotional, 2),
-    recommendedMaxAdditionalWeightPercent: supported && maxAdditionalWeight != null
-      ? round(maxAdditionalWeight, 2)
-      : null,
-    recommendedMaxWeightPercent: supported && provisionalMaxWeight != null
-      ? round(provisionalMaxWeight, 2)
-      : null,
-    recommendedMaxAdditionalNotionalBase: maxAdditionalNotional == null
-      ? null
-      : round(maxAdditionalNotional, 2),
+    referenceLevel: null,
+    referenceLabel: "等待 Codex 选择失效依据",
+    moveToReferencePercent: null,
+    riskDistancePercent: null,
+    riskLimitedWeightPercent: null,
+    stageAssumption: "llm_determined",
+    stagePolicyCeilingPercent: null,
+    recommendedInitialAdditionalWeightPercent: null,
+    recommendedInitialTotalWeightPercent: null,
+    recommendedInitialNotionalBase: null,
+    recommendedMaxAdditionalWeightPercent: null,
+    recommendedMaxWeightPercent: null,
+    recommendedMaxAdditionalNotionalBase: null,
     cashConstrainedWeightPercent: conservativeCashWeight == null
       ? null
       : round(conservativeCashWeight, 2),
     cashBufferFloorPercent,
-    provisionalMaxWeightPercent: supported && provisionalMaxWeight != null
-      ? round(provisionalMaxWeight, 2)
+    hardMaxAdditionalWeightPercent: supported && hardMaxAdditionalWeight != null
+      ? round(hardMaxAdditionalWeight, 2)
       : null,
-    provisionalMaxNotionalBase: provisionalNotional == null
+    hardMaxTotalWeightPercent: supported && hardMaxTotalWeight != null
+      ? round(hardMaxTotalWeight, 2)
+      : null,
+    hardMaxTotalNotionalBase: hardMaxNotional == null
       ? null
-      : round(provisionalNotional, 2),
-    portfolioImpactAtReferencePercent: impactAtReference == null
+      : round(hardMaxNotional, 2),
+    hardMaxAdditionalNotionalBase: hardMaxAdditionalNotional == null
       ? null
-      : round(impactAtReference, 2),
+      : round(hardMaxAdditionalNotional, 2),
+    portfolioImpactAtReferencePercent: null,
     top1Weight: finiteRound(portfolio.totals?.top1Weight, 2),
     top5Weight: finiteRound(portfolio.totals?.top5Weight, 2),
     cashRatio: finiteRound(portfolio.totals?.cashRatio, 2),
@@ -663,7 +666,7 @@ export function calculateCandidateRisk(
     concentrationHeadroom: roundedObject(concentrationHeadroom),
     portfolioConstraints: candidatePortfolioConstraints(portfolioRisk),
     leverage,
-    sizingNote: "候选默认按未验证 Stage 1：约 2% 初始探测、总仓位不高于 4%，再受风险预算、现金、集中度、主题、毛暴露与保证金约束；这是条件计划证据，不是自动买入建议。未计滑点、跳空、税费与汇率漂移。",
+    sizingNote: "本地引擎不再写死 2%/4% 或自动采用 Fib。Codex 依据叙事、技术 Skill 与可用 MCP 选择失效依据和建议仓位；本地只验证新鲜度、估值、现金、集中度、总暴露、风险预算与保证金硬边界。",
   };
 }
 
@@ -672,9 +675,9 @@ function candidateInputLimitation({
   portfolioValuationComplete,
   netAssets,
   lastPrice,
-  reference,
   technicalPlanReady,
   cashRatio,
+  snapshotFresh,
   derivativeExposureComplete,
 }) {
   if (target.instrumentType === "option") {
@@ -683,6 +686,7 @@ function candidateInputLimitation({
   if (!portfolioValuationComplete) {
     return "组合估值不完整；可观察技术条件，但不能给出风险预算仓位上限。";
   }
+  if (!snapshotFresh) return "持仓快照已过期或来自缓存；可以继续研究，但不能给出可执行仓位。";
   if (!(netAssets > 0)) return "缺少可靠净资产，不能把风险预算换算为候选仓位上限。";
   if (cashRatio == null) return "缺少可靠现金比例；候选仓位与杠杆计算已关闭。";
   if (cashRatio < 0) return "现金比例为负；候选仓位与杠杆计算已关闭。";
@@ -693,7 +697,6 @@ function candidateInputLimitation({
     return "候选日线证据未达到计划标准（至少需要有效 EMA21、最新收盘与时间戳）；不能给出仓位上限。";
   }
   if (!(lastPrice > 0)) return "候选 K 线缺少可靠最新收盘价。";
-  if (!(reference > 0)) return "没有低于当前价格的可靠 EMA/Fib/前低失效参考。";
   return null;
 }
 
@@ -726,6 +729,7 @@ function buildCandidateLeverageAssessment({
   initialAdditionalWeight,
   maxAdditionalWeight,
   entryAllowed,
+  awaitingModelReview = false,
   inputSupported,
   hardPortfolioBlockers,
   candidateGroupKnown,
@@ -739,7 +743,7 @@ function buildCandidateLeverageAssessment({
     : currentGross + maxAdditionalWeight;
   const reasons = [
     ...hardPortfolioBlockers,
-    "候选默认处于未验证 Stage 1，初始建仓只允许现金覆盖，不新增融资暴露",
+    "新增融资仍需 Codex 明确评估；本地安全层不会凭购买力自动放大仓位",
   ];
   if (!candidateGroupKnown) reasons.push("候选主题尚未映射，不能验证与现有主题暴露的重叠程度");
   if (!inputSupported) reasons.push("仓位风险输入不完整，无法支持融资风险估算");
@@ -751,7 +755,7 @@ function buildCandidateLeverageAssessment({
 
   return {
     additionalLeverageAllowed: false,
-    decision: entryAllowed ? "cash_only" : "disabled",
+    decision: entryAllowed ? "cash_only" : awaitingModelReview ? "model_review_required" : "disabled",
     maxAdditionalBorrowedWeightPercent: 0,
     maxLeverageMultiple: 1,
     recommendedGrossExposureCeilingPercent: 100,
@@ -794,12 +798,14 @@ function candidatePortfolioConstraints(portfolioRisk) {
 }
 
 function candidateTechnicalPlanReady(technical) {
-  const candleCount = finiteOrNull(technical?.candleCount);
+  const candleCount = finiteOrNull(technical?.calculationBarCount);
   const lastPrice = finiteOrNull(technical?.lastPrice);
   const ema21 = finiteOrNull(technical?.ema?.[21]);
   const asOfMs = Date.parse(String(technical?.asOf ?? ""));
   return technical?.status !== "degraded"
     && technical?.capabilities?.fastEma === true
+    && technical?.capabilities?.officialBar === true
+    && technical?.lastBar?.status === "CLOSED"
     && technical?.timeframe === "1D"
     && candleCount >= 21
     && lastPrice > 0
@@ -1013,10 +1019,23 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
   };
 }
 
-export function buildScopedAnalysisContext({ scope, portfolio, target, technical, risk }) {
+export function buildScopedAnalysisContext({
+  scope,
+  portfolio,
+  target,
+  technical,
+  risk,
+  candles = [],
+}) {
   const normalizedScope = normalizeAnalysisScope(scope);
   const summary = {
     snapshotAt: portfolio.syncedAt ?? null,
+    snapshotState: portfolio.freshness?.state ?? portfolio.status ?? "unknown",
+    snapshotAgeMs: finiteOrNull(portfolio.freshness?.ageMs),
+    snapshotExpiresAt: portfolio.freshness?.expiresAt ?? null,
+    snapshotFreshForSizing: portfolio.freshness?.freshForSizing === true,
+    quoteMarksOldestAt: portfolio.quoteAsOf ?? null,
+    quoteMarksLatestAt: portfolio.quoteLatestAsOf ?? portfolio.quoteAsOf ?? null,
     valuationSchemaVersion: portfolio.valuationSchemaVersion ?? null,
     sourceStatus: portfolio.status ?? "unknown",
     baseCurrency: portfolio.account?.baseCurrency ?? "USD",
@@ -1041,12 +1060,22 @@ export function buildScopedAnalysisContext({ scope, portfolio, target, technical
       ? null
       : {
           asOf: technical.asOf ?? null,
+          asOfTradingDate: technical.asOfTradingDate ?? null,
           lastPrice: finiteOrNull(technical.lastPrice),
+          timeframe: technical.timeframe ?? "1D",
+          adjustType: technical.adjustType ?? null,
+          tradeSession: technical.tradeSession ?? null,
+          calculationBarCount: finiteOrNull(technical.calculationBarCount),
+          lastBar: technical.lastBar ?? null,
+          provisional: technical.provisional ?? null,
+          emaMethod: technical.emaMethod ?? null,
+          emaMaturity: technical.emaMaturity ?? null,
           shortStructure: technical.shortStructure ?? null,
           longStructure: technical.longStructure ?? null,
           ema: technical.ema ?? {},
           emaSlope5d: technical.emaSlope5d ?? {},
           fib: technical.fib ?? null,
+          priceBars: compactPriceBars(candles),
         },
     risk,
   };
@@ -1183,16 +1212,6 @@ export function buildConditionalPlan(position, technical, risk) {
   const bearInvalidation = risk.referenceLevel != null
     ? `日线重新收复 ${risk.referenceLabel} ${formatNumber(risk.referenceLevel)}`
     : "日线收回破位前的 20 日低点";
-  const fibLevels = Object.entries(technical.fib?.levels ?? {})
-    .map(([ratio, level]) => ({ ratio, level }))
-    .filter((item) => Number.isFinite(item.level));
-  const upsideFib = fibLevels
-    .filter((item) => item.level > lastPrice)
-    .sort((a, b) => a.level - b.level)[0];
-  const downsideFib = fibLevels
-    .filter((item) => item.level < lastPrice)
-    .sort((a, b) => b.level - a.level)[0];
-
   return {
     state: "static_snapshot",
     available: true,
@@ -1203,7 +1222,7 @@ export function buildConditionalPlan(position, technical, risk) {
         name: "牛",
         tone: "bull",
         if: bullCondition,
-        then: `仅生成“允许评估”信号；新增风险不得超过组合 ${risk.riskBudgetPercent}%${upsideFib ? `；下一 Fib ${upsideFib.ratio} 观察位 ${formatNumber(upsideFib.level)}` : ""}`,
+        then: `仅生成“允许评估”信号；新增风险不得超过组合 ${risk.riskBudgetPercent}%；Fib 是否采用由 Codex 结合共振证据判断`,
         invalidation: bullInvalidation,
         impact: "执行前用最新长桥快照重新计算，不自动下单",
         status: "snapshot_only",
@@ -1225,7 +1244,7 @@ export function buildConditionalPlan(position, technical, risk) {
         name: "熊",
         tone: "bear",
         if: bearCondition,
-        then: `只生成减仓/保护评估提醒，由用户在长桥端确认${downsideFib ? `；下一 Fib ${downsideFib.ratio} 观察位 ${formatNumber(downsideFib.level)}` : ""}`,
+        then: "只生成减仓/保护评估提醒，由用户在长桥端确认；本地自动 Fib 不会单独触发动作",
         invalidation: bearInvalidation,
         impact:
           risk.portfolioImpactAtReferencePercent == null
@@ -1290,10 +1309,7 @@ export function buildCandidatePlan(target, technical, risk) {
     : `回踩 ${support?.label ?? "EMA8"} ${formatNumber(support?.level ?? ema[8])} 附近止跌，EMA3/5 保持正斜率`;
   const invalidation = risk.referenceLevel != null
     ? `日线有效跌破 ${risk.referenceLabel} ${formatNumber(risk.referenceLevel)}`
-    : `日线跌破前 20 日低点 ${formatNumber(technical.range20?.priorLow)}`;
-  const sizingText = risk.supported
-    ? `初始新增 ${formatPercent(risk.recommendedInitialAdditionalWeightPercent)}（约 ${risk.baseCurrency} ${formatNumber(risk.recommendedInitialNotionalBase)}），最大总仓位 ${formatPercent(risk.recommendedMaxWeightPercent)}，最大新增 ${formatPercent(risk.recommendedMaxAdditionalWeightPercent)}`
-    : `仅记录技术触发；${risk.limitation}`;
+    : "等待 Codex 基于技术/叙事证据选择失效依据；本地自动 Fib 不会单独充当止损位";
 
   const sizing = {
     stageAssumption: risk.stageAssumption,
@@ -1306,7 +1322,49 @@ export function buildCandidatePlan(target, technical, risk) {
     riskBudgetPercent: risk.riskBudgetPercent,
     leverageDecision: risk.leverage.decision,
     maxAdditionalBorrowedWeightPercent: risk.leverage.maxAdditionalBorrowedWeightPercent,
+    hardMaxAdditionalWeightPercent: risk.hardMaxAdditionalWeightPercent,
+    hardMaxTotalWeightPercent: risk.hardMaxTotalWeightPercent,
   };
+  if (risk.awaitingModelReview) {
+    return {
+      state: "awaiting_codex_strategy",
+      available: true,
+      watcherEnabled: false,
+      evaluatedAt: technical.asOf,
+      riskSizingAvailable: false,
+      sizing,
+      leverage: risk.leverage,
+      scenarios: [
+        {
+          name: "允许试探",
+          tone: "bull",
+          if: entryTrigger,
+          then: `等待 Codex 结合叙事、技术 Skill 与可用 MCP 给出建议仓位；本地硬安全总上限为 ${formatPercent(risk.hardMaxTotalWeightPercent)}`,
+          invalidation,
+          impact: "LLM 尚未选择失效位，暂不计算风险预算仓位",
+          status: "awaiting_model",
+        },
+        {
+          name: "等待",
+          tone: "base",
+          if: `价格在 EMA13–EMA21 区域 ${formatNumber(baseLow)}–${formatNumber(baseHigh)} 内交错`,
+          then: "保持观察名单状态，不在区间中部追价",
+          invalidation: "快线重新有序，或日线收盘脱离区间",
+          impact: "未持有时组合影响为 0；已有仓位则冻结新增风险",
+          status: "snapshot_only",
+        },
+        {
+          name: "取消计划",
+          tone: "bear",
+          if: invalidation,
+          then: "取消本次买入计划；等待 Codex 在新证据下重新选择结构与失效条件",
+          invalidation: "新的结构化计划取代本计划",
+          impact: "不新增风险",
+          status: "snapshot_only",
+        },
+      ],
+    };
+  }
   if (!risk.entryAllowed) {
     return {
       state: "candidate_blocked",
@@ -1340,46 +1398,14 @@ export function buildCandidatePlan(target, technical, risk) {
   }
 
   return {
-    state: risk.supported ? "candidate_snapshot" : "technical_only",
+    state: "candidate_blocked",
     available: true,
     watcherEnabled: false,
     evaluatedAt: technical.asOf,
-    riskSizingAvailable: risk.supported,
+    riskSizingAvailable: false,
     sizing,
     leverage: risk.leverage,
-    scenarios: [
-      {
-        name: "允许试探",
-        tone: "bull",
-        if: entryTrigger,
-        then: `${sizingText}；仅允许现金覆盖，不新增融资杠杆，并在成交前用最新快照重算`,
-        invalidation,
-        impact: risk.supported
-          ? `触及参考失效位时，静态组合影响不高于约 ${formatSignedPercent(risk.portfolioImpactAtReferencePercent)}`
-          : "仓位影响暂不可计算",
-        status: "snapshot_only",
-      },
-      {
-        name: "等待",
-        tone: "base",
-        if: `价格在 EMA13–EMA21 区域 ${formatNumber(baseLow)}–${formatNumber(baseHigh)} 内交错`,
-        then: "保持观察名单状态，不在区间中部追价",
-        invalidation: "快线重新有序，或日线收盘脱离区间",
-        impact: "未持有时组合影响为 0；已有仓位则仅冻结新增风险",
-        status: "snapshot_only",
-      },
-      {
-        name: "取消计划",
-        tone: "bear",
-        if: invalidation,
-        then: "取消本次买入计划；等待新的 A-B-C 波段或均线重新定序",
-        invalidation: risk.referenceLevel != null
-          ? `日线重新收复 ${risk.referenceLabel} ${formatNumber(risk.referenceLevel)}`
-          : "日线重新收复破位前低点",
-        impact: "不建立新仓位，不自动下单",
-        status: "snapshot_only",
-      },
-    ],
+    scenarios: [],
   };
 }
 
@@ -1441,10 +1467,6 @@ export function selectDownsideReference(lastPrice, technical) {
     { label: "EMA144", level: technical.ema?.[144] },
     { label: "EMA169", level: technical.ema?.[169] },
     { label: "前20日低点", level: technical.range20?.priorLow },
-    ...[0.382, 0.618, 1, 1.618].map((ratio) => ({
-      label: `Fib ${ratio}`,
-      level: technical.fib?.levels?.[String(ratio)],
-    })),
   ];
   return candidates
     .filter(({ level }) => Number.isFinite(level) && level > 0 && level < lastPrice)
@@ -1518,21 +1540,17 @@ function buildCandidateConclusion(target, technical, risk, task) {
   const holdingNote = target.isHeld
     ? `当前已有 ${formatPercent(risk.existingPositionWeight)} 持仓，本计划只针对新增风险。`
     : "当前未持有，触发前组合暴露为 0。";
-  const sizingNote = risk.supported && risk.entryAllowed
-    ? `建议初始新增 ${formatPercent(risk.recommendedInitialAdditionalWeightPercent)}，最大总仓位 ${formatPercent(risk.recommendedMaxWeightPercent)}；失效参考为 ${risk.referenceLabel} ${formatNumber(risk.referenceLevel)}。新增杠杆为 0。`
+  const sizingNote = risk.awaitingModelReview
+    ? `本地已验证账户与组合硬安全边界，最大总仓位不得超过 ${formatPercent(risk.hardMaxTotalWeightPercent)}；具体 Fib、失效位与建议仓位等待 Codex 判断。`
     : risk.supported
-      ? `当前建议新增仓位 0%；${risk.entryBlockReasons.join("；")}。`
-    : risk.limitation;
+      ? `当前新增风险被安全边界阻止：${risk.entryBlockReasons.join("；")}。`
+      : risk.limitation;
   return {
     headline: `${target.ticker}：候选买入计划 · ${technical.shortStructure}`,
     body: `${task}。${holdingNote}${sizingNote} 长线结构为“${technical.longStructure}”。`,
-    posture: !risk.entryAllowed
-      ? "保留观察，先解除组合风险约束"
-      : technical.shortStructure === "完整多头"
-      ? "等回踩确认，避免直接追价"
-      : technical.shortStructure === "完整空头"
-        ? "不接下跌趋势，等待重新定序"
-        : "保持观察，等快线给出方向",
+    posture: risk.awaitingModelReview
+      ? "等待 Codex 策略复核"
+      : "保留观察，先解除组合风险约束",
   };
 }
 
@@ -1579,6 +1597,8 @@ function sectionsForIntent(intent) {
 }
 
 function buildPortfolioSourceEvidence(portfolio, { holdingsSummary }) {
+  const snapshotFresh = portfolio.freshness?.freshForSizing === true;
+  const snapshotSummary = portfolioSnapshotEvidenceSummary(portfolio);
   const fxError = portfolio.dataQuality?.sourceErrors?.find(
     (item) => item.tool === "exchange_rate",
   );
@@ -1603,18 +1623,18 @@ function buildPortfolioSourceEvidence(portfolio, { holdingsSummary }) {
       "account_balance",
       portfolio.syncedAt,
       1,
-      portfolio.account?.netAssets != null ? "succeeded" : "degraded",
-      "账户数据实时；跨币种聚合可能受汇率状态限制",
+      portfolio.account?.netAssets != null && snapshotFresh ? "succeeded" : "degraded",
+      `${snapshotSummary}；跨币种聚合可能受汇率状态限制`,
     ),
     evidenceItem(
       "长桥真实持仓",
       "stock_positions",
       portfolio.syncedAt,
       portfolio.positions.length,
-      portfolio.holdingsStatus === "live" || portfolio.status === "live"
+      snapshotFresh && (portfolio.holdingsStatus === "live" || portfolio.status === "live")
         ? "succeeded"
         : "degraded",
-      holdingsSummary,
+      `${holdingsSummary} · ${snapshotSummary}`,
     ),
     evidenceItem(
       fxSource,
@@ -1625,6 +1645,25 @@ function buildPortfolioSourceEvidence(portfolio, { holdingsSummary }) {
       fxSummary,
     ),
   ];
+}
+
+function portfolioSnapshotEvidenceSummary(portfolio) {
+  const state = String(
+    portfolio?.freshness?.state
+      ?? portfolio?.status
+      ?? "unknown",
+  ).toUpperCase();
+  const markStart = portfolio?.quoteAsOf ?? null;
+  const markEnd = portfolio?.quoteLatestAsOf ?? markStart;
+  const markRange = markStart && markEnd
+    ? markStart === markEnd
+      ? `行情标记 ${markStart}`
+      : `行情标记 ${markStart} → ${markEnd}`
+    : "行情标记时间未知";
+  if (portfolio?.freshness?.freshForSizing === true) {
+    return `账户快照已同步（${state}）· ${markRange}`;
+  }
+  return `账户快照 ${state}，只供回看 · ${markRange}`;
 }
 
 function appendTechnicalEvidence(evidence, technical) {
@@ -1705,6 +1744,28 @@ function contextTarget(target) {
     weightPercent: finiteOrNull(target.weight ?? target.existingWeight),
     pnlPercent: finiteOrNull(target.pnlPercent),
   };
+}
+
+function compactPriceBars(candles, limit = 260) {
+  return (Array.isArray(candles) ? candles : [])
+    .slice(-limit)
+    .map((bar) => ({
+      barId: String(bar?.timestamp ?? ""),
+      time: bar?.timestamp ?? null,
+      tradeDate: bar?.tradeDate ?? null,
+      timestampBasis: bar?.timestampBasis ?? null,
+      open: finiteOrNull(bar?.open),
+      high: finiteOrNull(bar?.high),
+      low: finiteOrNull(bar?.low),
+      close: finiteOrNull(bar?.close),
+      volume: finiteOrNull(bar?.volume),
+    }))
+    .filter((bar) =>
+      bar.barId
+      && bar.high != null
+      && bar.low != null
+      && bar.close != null
+    );
 }
 
 function contextPosition(position) {

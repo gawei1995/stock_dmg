@@ -5,11 +5,13 @@ import {
   normalizePortfolio,
   normalizeCandles,
 } from "./normalize.mjs";
+import { withPortfolioFreshness } from "./freshness.mjs";
 import { EcbReferenceFxProvider } from "./reference-fx.mjs";
 
 const QUOTE_BATCH_SIZE = 500;
-const DEFAULT_CANDLE_COUNT = 260;
+const DEFAULT_CANDLE_COUNT = 1000;
 const CANDLE_CACHE_TTL_MS = 2 * 60 * 1000;
+const MAX_CANDLE_CACHE_ENTRIES = 100;
 export const PORTFOLIO_SNAPSHOT_SCHEMA_VERSION = 2;
 
 export class PortfolioService {
@@ -33,7 +35,10 @@ export class PortfolioService {
     const cached = await this.store.get("portfolioSnapshot");
     return cached?.endpoint === this.longbridge.endpoint
       && cached?.valuationSchemaVersion === PORTFOLIO_SNAPSHOT_SCHEMA_VERSION
-      ? { ...cached, status: "cached" }
+      ? withPortfolioFreshness(
+          { ...cached, status: "cached", holdingsStatus: "cached" },
+          { forceState: "cached", reason: "本机加密缓存；尚未完成本轮长桥同步" },
+        )
       : null;
   }
 
@@ -80,7 +85,7 @@ export class PortfolioService {
     ]);
     const balances = selectRequestedCurrencyBalances(balancePayload, this.baseCurrency);
 
-    const portfolio = normalizePortfolio({
+    const normalizedPortfolio = normalizePortfolio({
       positions,
       balances,
       quotes: [...equityQuotes.quotes, ...optionQuotes.quotes],
@@ -91,6 +96,10 @@ export class PortfolioService {
       sourceWarnings: fxResult.warnings,
       fxStatus: fxResult.status,
       fxMetadata: fxResult.metadata,
+    });
+    const portfolio = withPortfolioFreshness(normalizedPortfolio, {
+      forceState: "fresh",
+      reason: "本轮长桥持仓、账户与行情同步已完成",
     });
     portfolio.valuationSchemaVersion = PORTFOLIO_SNAPSHOT_SCHEMA_VERSION;
     portfolio.endpoint = this.longbridge.endpoint;
@@ -119,8 +128,10 @@ export class PortfolioService {
       1000,
     );
     const cacheKey = `${String(symbol).toUpperCase()}:${normalizedCount}`;
+    const now = Date.now();
+    this.#pruneCandleCache(now);
     const cached = this.candleCache.get(cacheKey);
-    if (cached && Date.now() - cached.fetchedAt < CANDLE_CACHE_TTL_MS) {
+    if (cached && now - cached.fetchedAt < CANDLE_CACHE_TTL_MS) {
       return structuredClone(cached.candles);
     }
     const raw = await this.longbridge.call("candlesticks", {
@@ -130,9 +141,22 @@ export class PortfolioService {
       forward_adjust: true,
       trade_sessions: "intraday",
     }, { signal });
-    const candles = normalizeCandles(raw);
+    const candles = normalizeCandles(raw, { symbol });
+    this.candleCache.delete(cacheKey);
     this.candleCache.set(cacheKey, { fetchedAt: Date.now(), candles });
+    while (this.candleCache.size > MAX_CANDLE_CACHE_ENTRIES) {
+      const oldestKey = this.candleCache.keys().next().value;
+      this.candleCache.delete(oldestKey);
+    }
     return structuredClone(candles);
+  }
+
+  #pruneCandleCache(now) {
+    for (const [key, entry] of this.candleCache) {
+      if (!entry || now - entry.fetchedAt >= CANDLE_CACHE_TTL_MS) {
+        this.candleCache.delete(key);
+      }
+    }
   }
 }
 
