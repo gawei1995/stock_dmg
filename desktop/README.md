@@ -27,7 +27,7 @@
 - OAuth 使用 PKCE、`127.0.0.1` 临时端口回调、随机 state 和 public-client 模式。
 - Token、持仓缓存与观察计划使用 `safeStorage` 加密保存；没有明文回退。
 - Renderer 只能调用窄化的“连接、刷新、运行 Agent”IPC，不暴露通用 `callTool`。
-- 服务端 `/v2` 与六项查询工具白名单共同阻止订单写入；`option_quote` 只用于期权报价与真实合约乘数。Bearer Token 只允许发往官方 `.cn/.com` 的 HTTPS `/v2` 端点。
+- 全球服务端 `/v2` 与六项查询工具白名单共同阻止订单写入；`option_quote` 只用于期权报价与真实合约乘数。Bearer Token 只允许发往官方 `.com` 的 HTTPS `/v2` 端点。
 
 ### Agent
 
@@ -37,8 +37,8 @@
 - 单个 App Server/RPC 连接按 `threadId` 管理多轮运行；不同会话可以并发，同一会话仍保持一轮一轮执行。每条会话拥有独立 spinner、流式文本、工具事件、取消和终态回收，不维护第二套 harness。
 - 分析范围分为三类：`position` 读取选中真实持仓，`candidate` 可分析未持有代码并形成候选买入条件，`portfolio` 一次检查全部持仓与组合健康。
 - 上下文按范围分层：单标的只注入目标和组合聚合摘要；只有全组合分析才注入完整持仓。稳定规则来自项目/Skills，实时数量、成本、价格、汇率、EMA/Fib 和权重来自本轮最新证据。
-- 候选 scope 会把 Top1/Top5、主题暴露、现金、毛净暴露、保证金与组合告警聚合进 `portfolioConstraints`。只有 EMA21/日线证据、现金比例与组合估值完整，且组合没有尚未量化 Delta/标的名义风险的期权时，才生成仓位上限。Codex 使用 Skills/MCP 核验主题后返回结构化 sizing 复核；应用会把候选映射到当前主题 key，并只允许收紧初始新增、最大总/新增仓位，绝不放大本地上限。新增融资权重始终为 0。
-- 数值由本地确定性引擎计算；EMA、Fib、权重与风险预算不交给语言模型猜测。
+- 候选 scope 会把 Top1/Top5、主题暴露、现金、毛净暴露、保证金、组合告警与最多 260 根紧凑 OHLCV 注入 Codex。Codex 使用叙事/技术 Skills 与可用只读 MCP 独立提出 Stage、Fib 锚点/取舍、失效依据和仓位；不再有本地 Stage 1 或 2%/4% 建议。应用复算模型引用的真实 bar/EMA/Fib，并只执行两分钟新鲜度、估值、现金、集中度、风险预算、保证金与衍生品覆盖的硬边界；界面区分模型原始建议与宿主接受值。新增融资权重仍为 0。
+- EMA、OHLCV、自动 Fib 与账户权重由本地确定性引擎计算；自动 Fib 仅为 `AUTO / ADVISORY`。最终 Fib 选择和建议仓位由 LLM 判断，宿主不从 Markdown 猜数字，只接受结构化且通过校验的结果。
 - 叙事结论使用本机已登录的 Codex App Server；线程为持久会话，应用重启后通过 `thread/resume` 延续。
 - Codex 项目目录默认是 `~/Documents/stock_agent/trading-agent-workspace`，可用 `TRADING_COCKPIT_CODEX_WORKSPACE` 覆盖为其他绝对路径。
 - 不再使用 `--ephemeral`、`--ignore-user-config`、广泛工具黑名单或 45 秒分析截止；正常继承本机 Codex 配置、项目规则、Skills、MCP 与可访问 Apps。普通分析保持自然 Markdown；候选 scope 仅用窄化输出 Schema 同时取得 Markdown 与可验证仓位复核。工具级例外仅包括：已识别 Longbridge 执行端的精确交易写 deny-list，以及 Apps SDK 的破坏性动作开关；读取和研究能力不受影响。
@@ -75,10 +75,12 @@
 
 ## 数据状态
 
-- `LIVE`：本次启动内刚从 Longbridge MCP 同步。
+- `SYNCED`：最近两分钟内从 Longbridge MCP 完成同步，可参与仓位评估。
+- `STALE`：真实快照已超过两分钟或本轮刷新失败；可继续研究，不可输出有效新增仓位。
 - `CACHED`：上一次真实 Longbridge 快照的本机加密缓存。
 - `DEGRADED`：真实账户与数量仍可用，但存在未定价持仓、缺失报价时间、技术行情不足或请求失败。
 - `REAUTH_REQUIRED`：OAuth 已过期，需要用户重新授权。
+- 账户快照时间与持仓报价时间分别展示；快照新鲜不等于每个市场的报价正在交易，界面会显示最早到最新的 mark 时间范围。
 
 应用不会使用生产演示持仓。未连接时显示空状态；测试目录中的合成数据只用于验证计算函数。
 
@@ -92,11 +94,7 @@ npm run pack
 npm run dist:mac
 ```
 
-系统地区为中国时会自动使用 `.cn/v2`。也可以显式覆盖：
-
-```bash
-LONGBRIDGE_MCP_URL=https://mcp.longbridge.cn/v2 npm run dev
-```
+固定使用全球 `.com/v2`，不根据系统地区猜测，也不自动切换到香港或中国大陆节点。OAuth、MCP 与 ECB 参考汇率请求统一使用 Electron/Chromium 网络栈，自动继承 macOS 系统代理、PAC 与 HTTPS 隧道设置。
 
 ## 当前限制
 
@@ -105,7 +103,7 @@ LONGBRIDGE_MCP_URL=https://mcp.longbridge.cn/v2 npm run dev
 - TradingView 工具栏只保留重载和返回已保存布局；无可靠语义的浏览历史前进/后退按钮已移除。
 - 全组合 scope 为避免持仓越多越慢，不会自动逐只拉取日线；EMA/Fib 请切换到对应已持仓或候选标的分析。
 - “同步标的到 TV”通过 TradingView URL 的 `symbol` 参数显式导航；不会自动读取当前图表选中的代码。
-- Fib A/B/C 当前由最近 180 根日线主波段自动选择，C 需要右侧确认；后续可增加用户手工修正锚点。
+- Fib A/B/C 的本地 180 日主波段只作自动候选；Codex 可采用、覆盖或忽略，覆盖锚点必须引用已收盘真实 K 线并由宿主复算。
 - Codex 分析依赖本机 ChatGPT/Codex 已安装并登录；模型服务连接波动时线程仍会保留，用户可手动取消或稍后继续。
 - 应用不嵌入 Codex CLI/PTY；桌面 UI 直接连接官方 App Server 协议，因此不会出现第二套 CLI 解析、工具监控和历史同步流程。
 - App Server 可以继承当前 Codex 主机中已配置和已授权的 MCP/Apps；网页聊天临时注入、但未写入本机 Codex 配置的工具不会自动出现。

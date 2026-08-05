@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  net,
   safeStorage,
   session,
   shell,
@@ -21,10 +22,13 @@ import {
   LongbridgeClient,
   classifyLongbridgeError,
 } from "./src/mcp/longbridge-client.mjs";
+import { createProxyAwareFetch } from "./src/mcp/proxy-aware-fetch.mjs";
+import { PortfolioService } from "./src/data/portfolio-service.mjs";
+import { EcbReferenceFxProvider } from "./src/data/reference-fx.mjs";
 import {
-  PortfolioService,
-  PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
-} from "./src/data/portfolio-service.mjs";
+  portfolioFreshness,
+  withPortfolioFreshness,
+} from "./src/data/freshness.mjs";
 import { AgentResultStore, normalizeAgentResult } from "./src/data/agent-result-store.mjs";
 import { buildAnalysisEvidence } from "./src/engine/agent.mjs";
 import {
@@ -54,7 +58,6 @@ let pendingTvUrl = null;
 let tvUrlSaveTimer = null;
 const hardenedSessions = new WeakSet();
 const tvPopups = new Set();
-const PORTFOLIO_MAX_AGE_MS = 2 * 60 * 1000;
 const AGENT_PORTFOLIO_REFRESH_WAIT_MS = 1_500;
 const LAST_AGENT_RESULT_KEY = "lastAgentResult";
 
@@ -69,6 +72,9 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(async () => {
+  const longbridgeFetch = createProxyAwareFetch(
+    (input, init) => net.fetch(input, init),
+  );
   secureStore = new EncryptedStore({
     directory: app.getPath("userData"),
     safeStorage,
@@ -76,21 +82,23 @@ app.whenReady().then(async () => {
   agentResults = new AgentResultStore({ store: secureStore });
   longbridge = new LongbridgeClient({
     endpoint: preferredLongbridgeEndpoint(),
+    fetchFn: longbridgeFetch,
+    networkStack: "electron-system-proxy",
     store: secureStore,
     openExternal: (url) => shell.openExternal(url),
     onStatus: sendStatus,
     clientVersion: app.getVersion(),
   });
-  const savedPortfolio = await secureStore.get("portfolioSnapshot");
-  portfolio = savedPortfolio?.endpoint === longbridge.endpoint
-    && savedPortfolio?.valuationSchemaVersion === PORTFOLIO_SNAPSHOT_SCHEMA_VERSION
-    ? { ...savedPortfolio, status: "cached" }
-    : null;
   portfolioService = new PortfolioService({
     longbridge,
     store: secureStore,
     onStatus: sendStatus,
+    referenceFxProvider: new EcbReferenceFxProvider({
+      store: secureStore,
+      fetchImpl: longbridgeFetch,
+    }),
   });
+  portfolio = await portfolioService.cachedPortfolio();
   const codexPath = await resolveCodexExecutable();
   const configuredWorkspace = process.env.TRADING_COCKPIT_CODEX_WORKSPACE;
   const workspaceDirectory = configuredWorkspace && path.isAbsolute(configuredWorkspace)
@@ -134,6 +142,7 @@ app.whenReady().then(async () => {
       portfolio = await portfolioService.refresh();
       safeSend("cockpit:portfolio", portfolio);
     } catch (error) {
+      markCurrentPortfolioStale(`恢复长桥连接失败：${safeError(error)}`);
       sendStatus(longbridgeFailureStatus(error, "恢复长桥连接失败"));
     }
   }
@@ -358,7 +367,7 @@ function registerIpc() {
         })
       : null;
     return {
-      portfolio: portfolio ? { ...portfolio, status: "cached" } : null,
+      portfolio,
       longbridge: {
         ...longbridge.status(),
         hasSavedAuthorization: await longbridge.hasSavedAuthorization(),
@@ -468,8 +477,14 @@ function registerIpc() {
       safeSend("cockpit:portfolio", portfolio);
       return { ok: true, portfolio, status: longbridge.status() };
     } catch (error) {
-      sendStatus(longbridgeFailureStatus(error, "长桥连接失败"));
-      return { ok: false, error: safeError(error) };
+      markCurrentPortfolioStale(`长桥连接或同步失败：${safeError(error)}`);
+      const failure = longbridgeFailureStatus(error, "长桥连接失败");
+      sendStatus(failure);
+      return {
+        ok: false,
+        error: failure.detail || failure.message,
+        status: failure,
+      };
     }
   });
 
@@ -483,8 +498,14 @@ function registerIpc() {
       safeSend("cockpit:portfolio", portfolio);
       return { ok: true, portfolio };
     } catch (error) {
-      sendStatus(longbridgeFailureStatus(error, "长桥同步失败"));
-      return { ok: false, error: safeError(error) };
+      markCurrentPortfolioStale(`长桥同步失败：${safeError(error)}`);
+      const failure = longbridgeFailureStatus(error, "长桥同步失败");
+      sendStatus(failure);
+      return {
+        ok: false,
+        error: failure.detail || failure.message,
+        status: failure,
+      };
     }
   });
 
@@ -547,7 +568,10 @@ function registerIpc() {
         operationId,
         text: task,
       });
-      if (!isFreshIsoTime(portfolio.syncedAt, PORTFOLIO_MAX_AGE_MS)) {
+      let analysisPortfolio = withPortfolioFreshness(portfolio);
+      if (!analysisPortfolio.freshness.freshForSizing) {
+        portfolio = analysisPortfolio;
+        safeSend("cockpit:portfolio", portfolio);
         sendStatus({
           domain: "agent",
           state: "agent_running",
@@ -559,6 +583,7 @@ function registerIpc() {
             : "长桥当前离线；本轮沿用上次真实持仓快照并降低置信度",
         });
         if (longbridge.connected) {
+          const fallbackPortfolio = analysisPortfolio;
           const refreshStartedAt = Date.now();
           const refreshPromise = portfolioService.refresh()
             .then((nextPortfolio) => {
@@ -574,6 +599,12 @@ function registerIpc() {
           ]);
           portfolioRefreshMs = Date.now() - refreshStartedAt;
           if (refreshOutcome.error) {
+            analysisPortfolio = withPortfolioFreshness(fallbackPortfolio, {
+              forceState: "stale",
+              reason: `Agent 运行前刷新失败：${safeError(refreshOutcome.error)}`,
+            });
+            portfolio = analysisPortfolio;
+            safeSend("cockpit:portfolio", portfolio);
             sendStatus({
               domain: "agent",
               state: "agent_running",
@@ -583,6 +614,12 @@ function registerIpc() {
               message: `长桥刷新失败；沿用现有快照继续分析：${safeError(refreshOutcome.error)}`,
             });
           } else if (refreshOutcome.timedOut) {
+            analysisPortfolio = withPortfolioFreshness(fallbackPortfolio, {
+              forceState: "stale",
+              reason: "Agent 运行前刷新超过等待窗口；后台同步仍在继续",
+            });
+            portfolio = analysisPortfolio;
+            safeSend("cockpit:portfolio", portfolio);
             sendStatus({
               domain: "agent",
               state: "agent_running",
@@ -591,10 +628,18 @@ function registerIpc() {
               operationId,
               message: "长桥刷新转入后台；Agent 已用现有快照继续，不再等待",
             });
+          } else if (refreshOutcome.portfolio) {
+            analysisPortfolio = refreshOutcome.portfolio;
           }
+        } else {
+          analysisPortfolio = withPortfolioFreshness(analysisPortfolio, {
+            forceState: "stale",
+            reason: "长桥离线；本轮仅使用上次同步快照",
+          });
+          portfolio = analysisPortfolio;
+          safeSend("cockpit:portfolio", portfolio);
         }
       }
-      const analysisPortfolio = portfolio;
       if (controller.signal.aborted) throw new Error("Codex 分析已取消。");
       const evidenceStartedAt = Date.now();
       const localRun = await buildAnalysisEvidence({
@@ -603,7 +648,7 @@ function registerIpc() {
         symbol,
         task,
         riskBudgetPercent,
-        loadCandles: (value) => portfolioService.candles(value, 260, {
+        loadCandles: (value) => portfolioService.candles(value, 1000, {
           signal: controller.signal,
         }),
         signal: controller.signal,
@@ -741,6 +786,9 @@ function registerIpc() {
       || run.context.valuationSchemaVersion !== portfolio.valuationSchemaVersion) {
       throw new Error("计划对应的持仓快照已失效，请重新运行 Agent。");
     }
+    if (!portfolioFreshness(portfolio).freshForSizing) {
+      throw new Error("持仓快照已超过 2 分钟或来自缓存；请先同步长桥再保存计划。");
+    }
     if (scope === "position" && !portfolio.positions.some((item) => item.symbol === run.context.symbol)) {
       throw new Error("计划标的不在当前真实持仓中。");
     }
@@ -871,16 +919,18 @@ function isTradingViewResourceUrl(value) {
   }
 }
 
-function isFreshIsoTime(value, maxAgeMs) {
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) && Date.now() - timestamp <= maxAgeMs;
+function markCurrentPortfolioStale(reason) {
+  if (!portfolio) return null;
+  portfolio = withPortfolioFreshness(portfolio, {
+    forceState: "stale",
+    reason,
+  });
+  safeSend("cockpit:portfolio", portfolio);
+  return portfolio;
 }
 
-function preferredLongbridgeEndpoint() {
-  if (process.env.LONGBRIDGE_MCP_URL) return process.env.LONGBRIDGE_MCP_URL;
-  return app.getLocaleCountryCode() === "CN"
-    ? "https://mcp.longbridge.cn/v2"
-    : "https://mcp.longbridge.com/v2";
+export function preferredLongbridgeEndpoint() {
+  return "https://mcp.longbridge.com/v2";
 }
 
 function validateAnalysisScope(value) {
@@ -1003,6 +1053,13 @@ function safeError(error) {
 
 function longbridgeFailureStatus(error, fallbackMessage) {
   const classification = classifyLongbridgeError(error);
+  if (classification.kind === "transport") {
+    return {
+      state: "network_error",
+      message: "长桥全球节点网络连接失败",
+      detail: `GLOBAL · macOS 系统代理 · ${safeError(error)}`,
+    };
+  }
   if (classification.kind === "auth") {
     return {
       state: "reauth_required",

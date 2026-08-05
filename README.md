@@ -26,7 +26,7 @@ npm run desktop:dev
 
 ## 只读边界
 
-- Longbridge 根据系统地区在官方 `.cn/v2` 与 `.com/v2` 之间选择；也可用 `LONGBRIDGE_MCP_URL` 显式指定其中一个官方只读端点。
+- Longbridge 固定使用官方全球 `.com/v2`，不根据 macOS 地区猜测账户区域，也不自动回退到香港或中国大陆节点。OAuth、MCP 与 ECB 参考汇率请求统一使用 Electron/Chromium 网络栈，自动继承 macOS 系统代理。
 - OAuth 只请求 `scope=6`（账户读取）。
 - 主进程仅允许 `account_balance`、`stock_positions`、`quote`、`option_quote`、`candlesticks` 和 `exchange_rate`；其中 `option_quote` 仅用于真实合约乘数与期权报价。
 - 客户端拒绝调用白名单之外的所有工具；若缺少任一必需查询工具或出现真实订单工具，则拒绝建立连接。
@@ -39,11 +39,12 @@ npm run desktop:dev
 
 - 短周期：EMA 3 / 5 / 8 / 13 / 21。
 - 长周期：EMA 144 / 169。
-- Fib 三点扩展：0.382 / 0.618 / 1 / 1.618，公式为 `C + (B - A) × ratio`；A→B→C 必须严格按时间排序，C 至少经过 3 根右侧 K 线确认。
-- 行情计算：Longbridge 日线、前复权、仅常规交易时段，默认 260 根，足以覆盖 EMA169，并使用两分钟内存缓存避免每次分析重复等待。
+- Fib 三点扩展：0.382 / 0.618 / 1 / 1.618，公式为 `C + (B - A) × ratio`。本地自动 A/B/C 只作 `AUTO / ADVISORY` 证据；LLM 可采用、覆盖或忽略。覆盖时只能引用真实已收盘 K 线的 `barId + high/low`，价格和扩展位由宿主复算。
+- 行情计算：Longbridge 1D OHLCV、前复权、仅常规交易时段，默认请求 1000 根。正式 EMA 只使用已确认收盘日 K；当日形成中 K 线单列为 `PROVISIONAL`。EMA 使用 Close、SMA seed 和标准指数递推，EMA169 至少有 507 根已完成日 K 才标记成熟。
+- 日线同时保留提供方时间戳与交易所本地交易日；长桥日线午夜戳按该本地日期解释，并结合对应市场收盘时间判断 `FORMING / CLOSED`，避免盘中日 K 污染正式 EMA/Fib。
 - 持仓估值优先采用时间戳最新的常规/盘前/盘后/夜盘报价；组合 `quoteAsOf` 取所有已估值持仓中最旧的一项。
 - 账户总额直接采用长桥 USD 口径；多币种持仓通过已规范方向并经 USD/HKD 合理性校验的汇率图换算。集中度使用 gross exposure，另保留 net exposure。
-- 候选买入先以未验证 Stage 1 处理：只有日线 EMA21 证据、现金比例与组合估值完整，且现有期权 Delta/标的名义风险不会被漏算时，本地引擎才给出初始/最大仓位上限。Codex 再用 Skills/MCP 识别主题并返回结构化复核；结果只能收紧本地、现金与主题上限，新增融资始终为 0。
+- 候选买入由 Codex 结合叙事/技术 Skills、已收盘 OHLCV 与可用只读 MCP 独立提出 Stage、Fib、失效位和仓位，不再使用本地 Stage 1 或 2%/4% 预设。宿主只验证锚点与失效位，并把模型建议限制在两分钟新鲜快照、现金、单仓/Top5/主题、毛暴露、风险预算、保证金和衍生品覆盖等硬边界内；界面同时显示 `LLM PROPOSED` 与 `HOST ACCEPTED`。
 - 输出：技术结构、组合权重、主题暴露、参考位静态组合影响、牛/基准/熊静态条件计划与证据链。计划不在后台监控。
 
 ## Codex 持久项目

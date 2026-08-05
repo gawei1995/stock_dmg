@@ -64,7 +64,110 @@ test("renderer supports independent sessions and all three analysis scopes", asy
   assert.match(html, /id="candidate-symbol"/);
   assert.match(script, /runAgent\(\{[\s\S]*scope,[\s\S]*symbol: targetSymbol/);
   assert.match(script, /leverage\.decision === "disabled" \? "禁止新增 \/ 不可评估"/);
-  assert.match(script, /SKILL\/MCP REVIEWED · CASH/);
+  assert.match(script, /LLM REVIEWED · HOST ACCEPTED/);
+});
+
+test("renderer exposes snapshot, calculation, Fib, and LLM sizing provenance", async () => {
+  const [script, css] = await Promise.all([
+    rendererSource("renderer.js"),
+    rendererSource("styles.css"),
+  ]);
+
+  assert.doesNotMatch(script, /HOLDINGS LIVE/);
+  for (const label of ["SYNCED", "STALE", "CACHED", "UNKNOWN"]) {
+    assert.match(script, new RegExp(`label: "${label}"`));
+  }
+  assert.match(script, /portfolio\?\.freshness\?\.state/);
+  assert.match(script, /SNAPSHOT \$\{esc\(trust\.timestampLabel\)\}/);
+  assert.match(script, /AGE \$\{esc\(trust\.ageLabel\)\}/);
+  assert.match(script, /MARKS \$\{esc\(marks\.label\)\}/);
+  assert.match(script, /账户快照时间新鲜/);
+  assert.match(script, /持仓快照 \/ 行情标记<\/span><strong>\$\{asOf && trust/);
+  assert.match(script, /function portfolioMarkRange\(/);
+
+  assert.match(script, /CLOSE EMA/);
+  assert.match(script, /SMA SEED/);
+  assert.match(script, /forward: "前复权"/);
+  assert.match(script, /regular_hours: "常规时段"/);
+  assert.match(script, /technical\.asOfTradingDate/);
+  assert.match(script, /OFFICIAL BARS/);
+  assert.match(script, /lastBar\?\.status \?\? "UNKNOWN"/);
+  assert.match(script, /LONG EMA MATURITY/);
+  assert.match(script, /\[144, 169\]\.map\(\(period\)/);
+  assert.match(script, /EMA\$\{period\}[\s\S]{0,100}maturity\.label/);
+  assert.match(script, /PROVISIONAL/);
+  assert.match(script, /已从官方 EMA \/ Fib 计算排除/);
+
+  assert.match(script, /AUTO · ADVISORY/);
+  assert.match(script, /LLM DECIDES/);
+  assert.match(script, /自动 Fib 只作为候选证据/);
+  assert.match(script, /LLM SELECTED · HOST CALCULATED/);
+  assert.match(script, /HOST REJECTED · LLM Fib/);
+  assert.match(script, /modelReview\?\.selected/);
+  assert.match(script, /价格和 0\.382 \/ 0\.618 \/ 1 \/ 1\.618 均由宿主/);
+  assert.match(script, /LLM PROPOSED · 初始新增/);
+  assert.match(script, /\$\{acceptedLabel\} · 最大总仓位/);
+  assert.match(script, /HARD CEILING · 最大总仓位/);
+  assert.match(script, /LIMIT BINDINGS/);
+  assert.match(script, /AWAITING LLM/);
+  assert.match(script, /HOST ACCEPTANCE EXPIRED/);
+  assert.match(script, /HOST ADJUDICATION · 常驻裁决摘要/);
+  assert.match(
+    script,
+    /const finalizedReview = \["llm_reviewed", "bounded", "blocked"\]\.includes\(reviewStatus\)/,
+  );
+  assert.match(script, /function isRunStale\(/);
+  assert.match(script, /function candidateSizingExpired\(/);
+  assert.match(
+    script,
+    /function refreshCurrentRunTrustUi\(\)[\s\S]*querySelectorAll\("\.agent-run\[data-run-id\]"\)/,
+  );
+  assert.match(script, /currentNode\.dataset\.stale === String\(stale\)/);
+  assert.match(script, /currentNode\.dataset\.sizingExpired === String\(sizingExpired\)/);
+  assert.match(css, /\.data-passport\.stale/);
+  assert.match(css, /\.provisional-warning/);
+  assert.match(css, /\.fib-policy/);
+  assert.match(css, /\.fib-llm-review\.rejected/);
+  assert.match(css, /\.risk-bindings/);
+  assert.match(css, /\.candidate-adjudication\.expired/);
+  assert.match(css, /\.candidate-expiry-warning/);
+});
+
+test("renderer keeps text recovery provisional so an authoritative structured run can replace it", async () => {
+  const script = await rendererSource("renderer.js");
+  const fallback = script.match(
+    /function settleAgentFromRecoveredTurn\(operation, value\) \{([\s\S]*?)\n\}/,
+  )?.[1] ?? "";
+  const failure = script.match(
+    /function failAgentOperation\(operation, message,[^{]*\{([\s\S]*?)\n\}/,
+  )?.[1] ?? "";
+
+  assert.match(fallback, /operation\.status = "fallback"/);
+  assert.match(fallback, /provisionalFallback = "true"/);
+  assert.doesNotMatch(fallback, /rememberSettledOperation/);
+  assert.doesNotMatch(fallback, /finishAgentOperation/);
+  assert.match(script, /operation\?\.fallbackRendered && run\.conclusion\?\.body/);
+  assert.match(script, /operation\.status = "error_pending_result"/);
+  assert.doesNotMatch(failure, /rememberSettledOperation/);
+  assert.doesNotMatch(failure, /state\.operations\.delete/);
+  assert.match(script, /Recovery is an auxiliary read path[\s\S]*scheduleAgentResultRecovery/);
+  assert.match(script, /POST_TERMINAL_RECOVERY_WINDOW_MS\s*=\s*60_000/);
+  assert.match(
+    fallback,
+    /operation\.recoveryStopAt \?\?= Date\.now\(\) \+ POST_TERMINAL_RECOVERY_WINDOW_MS/,
+  );
+  assert.match(
+    failure,
+    /operation\.recoveryStopAt \?\?= Date\.now\(\) \+ POST_TERMINAL_RECOVERY_WINDOW_MS/,
+  );
+  assert.match(
+    script,
+    /function scheduleAgentResultRecovery\([\s\S]*Date\.now\(\) >= recoveryStopAt[\s\S]*stopAgentResultRecovery\(operation\)/,
+  );
+  assert.match(
+    script,
+    /function stopAgentResultRecovery\(operation\)[\s\S]*state\.operations\.delete\(operation\.operationId\)/,
+  );
 });
 
 test("desktop routes direct-open transcripts and concurrent operations through one App Server harness", async () => {
@@ -88,6 +191,43 @@ test("desktop routes direct-open transcripts and concurrent operations through o
   assert.match(workspace, /initialTurnsPage:[\s\S]*itemsView:\s*"summary"/);
   assert.match(workspace, /timeoutMs:\s*5_000/);
   assert.match(workspace, /this\.activeTurns\.get\(eventThreadId\)/);
+});
+
+test("desktop fixes Longbridge to the global endpoint and uses Electron's system-proxy fetch", async () => {
+  const [main, script] = await Promise.all([
+    readFile(new URL("../main.mjs", import.meta.url), "utf8"),
+    rendererSource("renderer.js"),
+  ]);
+  const match = main.match(
+    /export function preferredLongbridgeEndpoint\(\) \{([\s\S]*?)\n\}/,
+  );
+  assert.ok(match, "preferredLongbridgeEndpoint must remain an exported pure function");
+  const resolveEndpoint = new Function(match[1]);
+
+  assert.equal(resolveEndpoint(), "https://mcp.longbridge.com/v2");
+  assert.doesNotMatch(main, /app\.getLocaleCountryCode\(\)/);
+  assert.doesNotMatch(main, /LONGBRIDGE_MCP_URL/);
+  assert.match(main, /createProxyAwareFetch\([\s\S]*net\.fetch\(input, init\)/);
+  assert.match(main, /fetchFn:\s*longbridgeFetch/);
+  assert.match(main, /networkStack:\s*"electron-system-proxy"/);
+  assert.match(
+    main,
+    /new EcbReferenceFxProvider\(\{[\s\S]*fetchImpl:\s*longbridgeFetch/,
+  );
+  assert.match(main, /GLOBAL · macOS 系统代理/);
+  assert.match(main, /state:\s*"network_error"/);
+  assert.equal(
+    (main.match(/error:\s*failure\.detail \|\| failure\.message/g) ?? []).length,
+    2,
+  );
+  const connectHandlerStart = main.indexOf('ipcMain.handle("longbridge:connect"');
+  const forgetHandlerStart = main.indexOf('ipcMain.handle("longbridge:forget"', connectHandlerStart);
+  const connectAndRefreshHandlers = main.slice(connectHandlerStart, forgetHandlerStart);
+  assert.doesNotMatch(connectAndRefreshHandlers, /error:\s*safeError\(error\)/);
+  assert.match(
+    script,
+    /result\.status\?\.detail \|\| result\.status\?\.message \|\| result\.error/,
+  );
 });
 
 test("renderer recovers a completed result after final_message and creates summary-ready sessions", async () => {

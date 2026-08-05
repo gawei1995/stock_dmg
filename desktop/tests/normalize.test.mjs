@@ -143,6 +143,44 @@ test("candles are numeric and chronologically sorted", () => {
   assert.equal(bars[1].close, 2.5);
 });
 
+test("Longbridge HK daily midnight timestamp maps to its exchange trading date", () => {
+  const bars = normalizeCandles({
+    symbol: "700.HK",
+    candlesticks: [{
+      // First item in the official Longbridge Apr 20/21/22/25/26 sequence.
+      timestamp: "1650384000",
+      open: "364.600",
+      high: "368.800",
+      low: "361.600",
+      close: "362.000",
+      volume: "10853604",
+      is_closed: true,
+    }],
+  });
+  assert.equal(bars[0].timestamp, "2022-04-19T16:00:00.000Z");
+  assert.equal(bars[0].tradeDate, "2022-04-20");
+  assert.equal(bars[0].timestampBasis, "provider_exchange_date");
+  assert.equal(bars[0].symbol, "700.HK");
+  assert.equal(bars[0].market, "HK");
+  assert.equal(bars[0].isClosed, true);
+});
+
+test("an explicit candle tradeDate takes precedence over timestamp inference", () => {
+  const [bar] = normalizeCandles({
+    symbol: "700.HK",
+    candlesticks: [{
+      timestamp: "1650384000",
+      trade_date: "2022-04-18",
+      open: "348.0",
+      high: "349.8",
+      low: "340.0",
+      close: "344.6",
+    }],
+  });
+  assert.equal(bar.tradeDate, "2022-04-18");
+  assert.equal(bar.timestampBasis, "explicit_trade_date");
+});
+
 test("normalizes Longbridge epoch-second timestamps before EMA ordering", () => {
   assert.equal(normalizeTimestamp("1767225600"), "2026-01-01T00:00:00.000Z");
 });
@@ -157,6 +195,30 @@ test("uses the newest valid extended-hours mark and records its session", () => 
   assert.equal(mark.price, 105);
   assert.equal(mark.session, "post_market");
   assert.equal(mark.timestamp, "2026-01-01T02:00:00.000Z");
+});
+
+test("supports current Longbridge extended-hours field names", () => {
+  const mark = selectQuoteMark({
+    last_done: "100",
+    timestamp: "1767225600",
+    pre_market: { last_done: "99", timestamp: "1767218400" },
+    post_market: { last_done: "105", timestamp: "1767232800" },
+    overnight: { last_done: "107", timestamp: "1767243600" },
+  });
+  assert.equal(mark.price, 107);
+  assert.equal(mark.session, "overnight");
+  assert.equal(mark.timestamp, "2026-01-01T05:00:00.000Z");
+});
+
+test("uses a valid legacy extended-hours mark when a current alias is incomplete", () => {
+  const mark = selectQuoteMark({
+    last_done: "100",
+    timestamp: "1767225600",
+    post_market: { timestamp: "1767236400" },
+    post_market_quote: { last_done: "106", timestamp: "1767232800" },
+  });
+  assert.equal(mark.price, 106);
+  assert.equal(mark.session, "post_market");
 });
 
 test("converts multi-currency holdings through the complete Longbridge FX graph", () => {

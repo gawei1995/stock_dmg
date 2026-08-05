@@ -5,6 +5,9 @@ const MIN_PANE_WIDTHS = Object.freeze({ portfolio: 220, agent: 320 });
 const MAX_PANE_WIDTHS = Object.freeze({ portfolio: 520, agent: 760 });
 const MIN_TV_WIDTH = 440;
 const RESIZER_WIDTH = 6;
+const PORTFOLIO_TRUST_REFRESH_MS = 5_000;
+const LEGACY_PORTFOLIO_MAX_AGE_MS = 2 * 60 * 1000;
+const POST_TERMINAL_RECOVERY_WINDOW_MS = 60_000;
 const AGENT_WELCOME_HTML = `<article class="agent-welcome">
   <span class="agent-orbit" aria-hidden="true">A</span>
   <div><strong>Codex 项目线程已接入交易驾驶舱。</strong><p>每条本机对话都可直接打开并继续；不同对话可通过同一条 Codex 链路并行调用 Skills、MCP、Apps 与项目工具。</p></div>
@@ -91,6 +94,7 @@ const elements = {
 };
 
 initialize();
+window.setInterval(refreshPortfolioTrustUi, PORTFOLIO_TRUST_REFRESH_MS);
 
 async function initialize() {
   restorePaneLayout();
@@ -233,10 +237,9 @@ function bindEvents() {
     if (!button) return;
     const run = state.runsById.get(button.dataset.savePlan);
     if (!run) return;
-    if (run.context.snapshotAt !== state.portfolio?.syncedAt
-      || run.context.valuationSchemaVersion !== state.portfolio?.valuationSchemaVersion) {
+    if (isRunStale(run)) {
       button.disabled = true;
-      button.textContent = "快照已失效 · 请重新运行";
+      button.textContent = "上下文或裁决已失效 · 请刷新后重新运行";
       return;
     }
     button.disabled = true;
@@ -569,7 +572,7 @@ function syncActiveAgents(activeAgents) {
       toolEvents: new Map(),
     };
     state.operations.set(operationId, operation);
-    scheduleAgentResultRecovery(operation, 1_000);
+    scheduleAgentResultRecovery(operation, 5_000);
   }
 }
 
@@ -852,7 +855,12 @@ async function connectLongbridge() {
   setSystemMessage("将在系统浏览器中打开长桥 OAuth；仅请求账户读取权限");
   try {
     const result = await api.connectLongbridge();
-    if (!result.ok) setSystemMessage(result.error || "长桥连接失败", "error");
+    if (!result.ok) {
+      setSystemMessage(
+        result.status?.detail || result.status?.message || result.error || "长桥连接失败",
+        "error",
+      );
+    }
   } catch (error) {
     setSystemMessage(error.message || "长桥连接失败", "error");
   } finally {
@@ -865,7 +873,12 @@ async function refreshPortfolio() {
   setBusy(true);
   try {
     const result = await api.refreshPortfolio();
-    if (!result.ok) setSystemMessage(result.error || "持仓同步失败", "error");
+    if (!result.ok) {
+      setSystemMessage(
+        result.status?.detail || result.status?.message || result.error || "持仓同步失败",
+        "error",
+      );
+    }
   } catch (error) {
     setSystemMessage(error.message || "持仓同步失败", "error");
   } finally {
@@ -907,40 +920,7 @@ function renderPortfolio() {
     return;
   }
 
-  const account = portfolio.account;
-  const snapshotLabel = portfolio.status === "cached"
-    ? "CACHED"
-    : "HOLDINGS LIVE";
-  elements.snapshotState.textContent = snapshotLabel;
-  elements.snapshotState.className = `snapshot-state ${portfolio.status === "cached" ? "cached" : "live"}`;
-  const fxStatus = portfolio.dataQuality?.fxStatus ?? "unavailable";
-  const fxAvailable = ["live", "reference", "reference_cached"].includes(fxStatus);
-  const fxReference = ["reference", "reference_cached"].includes(fxStatus);
-  const fxLabel = fxReference
-    ? `${portfolio.fx?.providerCode ?? "ECB"} ${portfolio.fx?.asOf ?? "最新"} 参考汇率${fxStatus === "reference_cached" ? "（缓存）" : ""}`
-    : fxStatus === "live"
-      ? "长桥账户汇率"
-      : "汇率不可用";
-  const accountSummary = portfolio.status === "cached"
-    ? "本地加密缓存"
-    : !fxAvailable
-      ? "持仓实时 · 汇率降级，跨币种估值暂停"
-      : fxReference
-        ? `真实持仓 · USD 估值 · ${fxLabel}`
-      : portfolio.status === "degraded"
-        ? `持仓实时 · ${number(portfolio.totals.unpricedPositionCount, 0)} 项待估值`
-        : `真实账户与完整估值 · ${fxLabel}`;
-  elements.accountCard.innerHTML = `
-    <div class="account-top">
-      <div><span>净资产 / ${esc(account.baseCurrency)}</span><strong>${money(account.netAssets, account.baseCurrency)}</strong></div>
-      <small>${esc(accountSummary)}</small>
-    </div>
-    <div class="metric-grid">
-      <div><span>现金</span><strong>${money(account.totalCash, account.baseCurrency)}</strong></div>
-      <div><span>购买力</span><strong>${money(account.buyPower, account.baseCurrency)}</strong></div>
-      <div><span>风险等级</span><strong>${esc(account.riskLevel)}</strong></div>
-    </div>`;
-
+  renderPortfolioTrustUi(portfolio);
   elements.positionCount.textContent = String(portfolio.positions.length);
   const groups = Object.entries(portfolio.groupExposure).sort((a, b) => b[1] - a[1]);
   elements.portfolioFoot.innerHTML = `
@@ -950,6 +930,168 @@ function renderPortfolio() {
     <div><span>现金</span><strong>${percent(portfolio.totals.cashRatio)}</strong></div>`;
   renderPositions();
   updateSelectedMapping();
+}
+
+function renderPortfolioTrustUi(portfolio = state.portfolio) {
+  if (!portfolio) return;
+  const account = portfolio.account;
+  const trust = portfolioTrustSnapshot(portfolio);
+  const marks = portfolioMarkRange(portfolio);
+  elements.snapshotState.textContent = trust.label;
+  elements.snapshotState.className = `snapshot-state ${trust.className}`;
+  elements.snapshotState.title = `账户快照 ${trust.timestampLabel} · 年龄 ${trust.ageLabel} · 行情标记 ${marks.label}`;
+  const fxStatus = portfolio.dataQuality?.fxStatus ?? "unavailable";
+  const fxAvailable = ["live", "reference", "reference_cached"].includes(fxStatus);
+  const fxReference = ["reference", "reference_cached"].includes(fxStatus);
+  const fxLabel = fxReference
+    ? `${portfolio.fx?.providerCode ?? "ECB"} ${portfolio.fx?.asOf ?? "最新"} 参考汇率${fxStatus === "reference_cached" ? "（缓存）" : ""}`
+    : fxStatus === "live"
+      ? "长桥账户汇率"
+      : "汇率不可用";
+  const accountSummary = trust.state === "cached"
+    ? "本地加密缓存 · 只供回看"
+    : trust.state === "stale"
+      ? "持仓快照已过期 · 禁止据此新增风险"
+      : trust.state === "unknown"
+        ? "持仓快照状态未知 · 先刷新再评估仓位"
+    : !fxAvailable
+      ? "已同步持仓 · 汇率降级，跨币种估值暂停"
+      : fxReference
+        ? `已同步持仓 · USD 估值 · ${fxLabel}`
+      : portfolio.status === "degraded"
+        ? `已同步持仓 · ${number(portfolio.totals.unpricedPositionCount, 0)} 项待估值`
+        : `已同步账户快照与完整估值 · ${fxLabel}`;
+  elements.accountCard.innerHTML = `
+    <div class="account-top">
+      <div><span>净资产 / ${esc(account.baseCurrency)}</span><strong>${money(account.netAssets, account.baseCurrency)}</strong></div>
+      <small>${esc(accountSummary)}</small>
+    </div>
+    <div class="data-passport ${esc(trust.className)}">
+      <span>SNAPSHOT ${esc(trust.timestampLabel)}</span>
+      <span>AGE ${esc(trust.ageLabel)}</span>
+      <span>MARKS ${esc(marks.label)}</span>
+      <strong>${trust.freshForSizing ? "账户快照时间新鲜" : "不可用于新增仓位"}</strong>
+    </div>
+    <div class="metric-grid">
+      <div><span>现金</span><strong>${money(account.totalCash, account.baseCurrency)}</strong></div>
+      <div><span>购买力</span><strong>${money(account.buyPower, account.baseCurrency)}</strong></div>
+      <div><span>风险等级</span><strong>${esc(account.riskLevel)}</strong></div>
+    </div>`;
+}
+
+function refreshPortfolioTrustUi() {
+  if (!state.portfolio) return;
+  renderPortfolioTrustUi(state.portfolio);
+  renderAgentContext();
+  refreshCurrentRunTrustUi();
+}
+
+function portfolioTrustSnapshot(portfolio, now = Date.now()) {
+  const declaredState = String(portfolio?.freshness?.state ?? "").toLowerCase();
+  const syncedAtMs = Date.parse(String(portfolio?.syncedAt ?? ""));
+  const assessedAtMs = Date.parse(String(portfolio?.freshness?.assessedAt ?? ""));
+  const measuredAge = Number.isFinite(syncedAtMs)
+    ? Math.max(0, now - syncedAtMs)
+    : Number.isFinite(Number(portfolio?.freshness?.ageMs))
+      ? Math.max(
+        0,
+        Number(portfolio.freshness.ageMs)
+          + (Number.isFinite(assessedAtMs) ? Math.max(0, now - assessedAtMs) : 0),
+      )
+      : null;
+  const maxAgeMs = Number.isFinite(Number(portfolio?.freshness?.maxAgeMs))
+    ? Number(portfolio.freshness.maxAgeMs)
+    : LEGACY_PORTFOLIO_MAX_AGE_MS;
+  let trustState = ["fresh", "stale", "cached", "unknown"].includes(declaredState)
+    ? declaredState
+    : portfolio?.status === "cached"
+      ? "cached"
+      : portfolio?.status === "stale"
+        ? "stale"
+        : ["live", "degraded"].includes(portfolio?.status)
+          ? measuredAge == null
+            ? "unknown"
+            : measuredAge <= maxAgeMs ? "fresh" : "stale"
+          : "unknown";
+  if (trustState === "fresh" && measuredAge != null && measuredAge > maxAgeMs) {
+    trustState = "stale";
+  }
+  const display = {
+    fresh: { label: "SYNCED", className: "synced" },
+    stale: { label: "STALE", className: "stale" },
+    cached: { label: "CACHED", className: "cached" },
+    unknown: { label: "UNKNOWN", className: "unknown" },
+  }[trustState];
+  return {
+    state: trustState,
+    ...display,
+    ageMs: measuredAge,
+    ageLabel: formatSnapshotAge(measuredAge),
+    timestampLabel: portfolio?.syncedAt ? shortDateTime(portfolio.syncedAt) : "未知",
+    freshForSizing: trustState === "fresh" && portfolio?.freshness?.freshForSizing !== false,
+  };
+}
+
+function formatSnapshotAge(ageMs) {
+  if (!Number.isFinite(ageMs)) return "未知";
+  if (ageMs < 5_000) return "刚刚";
+  if (ageMs < 60_000) return `${Math.floor(ageMs / 1_000)}秒`;
+  if (ageMs < 60 * 60_000) return `${Math.floor(ageMs / 60_000)}分钟`;
+  if (ageMs < 24 * 60 * 60_000) return `${Math.floor(ageMs / (60 * 60_000))}小时`;
+  return `${Math.floor(ageMs / (24 * 60 * 60_000))}天`;
+}
+
+function portfolioMarkRange(portfolio) {
+  const timestamps = [
+    portfolio?.quoteAsOf,
+    portfolio?.quoteLatestAsOf,
+    ...(portfolio?.positions ?? []).map((position) => position?.quoteTimestamp),
+  ]
+    .map((value) => {
+      const timestamp = Date.parse(String(value ?? ""));
+      return Number.isFinite(timestamp) ? timestamp : null;
+    })
+    .filter((value) => value != null)
+    .sort((left, right) => left - right);
+  if (!timestamps.length) {
+    return { oldestAt: null, latestAt: null, label: "UNKNOWN" };
+  }
+  const oldestAt = new Date(timestamps[0]).toISOString();
+  const latestAt = new Date(timestamps.at(-1)).toISOString();
+  return {
+    oldestAt,
+    latestAt,
+    label: oldestAt === latestAt
+      ? shortDateTime(oldestAt)
+      : `${shortDateTime(oldestAt)} → ${shortDateTime(latestAt)}`,
+  };
+}
+
+function refreshCurrentRunTrustUi() {
+  const runNodes = [...elements.agentThread.querySelectorAll(".agent-run[data-run-id]")];
+  if (!runNodes.length) return;
+  const scrollTop = elements.agentThread.scrollTop;
+  const distanceFromBottom = elements.agentThread.scrollHeight
+    - elements.agentThread.clientHeight
+    - scrollTop;
+  for (const currentNode of runNodes) {
+    const run = state.runsById.get(String(currentNode.dataset.runId));
+    if (!run) continue;
+    const stale = isRunStale(run);
+    const sizingExpired = candidateSizingExpired(run.risk);
+    if (currentNode.dataset.stale === String(stale)
+      && currentNode.dataset.sizingExpired === String(sizingExpired)) continue;
+    const evidenceWasOpen = currentNode.querySelector(".structured-evidence")?.open === true;
+    const replacement = renderAgentRun(run, { stale });
+    const nextEvidence = replacement.querySelector(".structured-evidence");
+    if (nextEvidence) nextEvidence.open = evidenceWasOpen;
+    currentNode.replaceWith(replacement);
+  }
+  if (distanceFromBottom <= 24) {
+    elements.agentThread.scrollTop = elements.agentThread.scrollHeight;
+  } else {
+    elements.agentThread.scrollTop = scrollTop;
+  }
 }
 
 function clearPortfolioUI() {
@@ -1055,6 +1197,8 @@ function renderAgentContext() {
   const position = selectedPosition();
   const scope = state.analysisScope;
   const asOf = state.portfolio?.syncedAt;
+  const trust = state.portfolio ? portfolioTrustSnapshot(state.portfolio) : null;
+  const marks = state.portfolio ? portfolioMarkRange(state.portfolio) : null;
   const fxStatus = state.portfolio?.dataQuality?.fxStatus;
   const quality = !state.portfolio
     ? "—"
@@ -1073,7 +1217,7 @@ function renderAgentContext() {
   elements.agentContext.innerHTML = `
     <div><span>${scope === "portfolio" ? "组合范围" : scope === "candidate" ? "候选标的" : "持仓上下文"}</span><strong>${esc(contextLabel)}</strong></div>
     <div><span>周期</span><strong>1D</strong></div>
-    <div><span>数据</span><strong>${asOf ? `${shortTime(asOf)} · ${esc(quality)}` : "—"}</strong></div>`;
+    <div><span>持仓快照 / 行情标记</span><strong>${asOf && trust ? `${esc(trust.label)} · ${esc(trust.ageLabel)} · MARKS ${esc(marks?.label ?? "UNKNOWN")} · ${esc(quality)}` : "—"}</strong></div>`;
 }
 
 function appendContextDirty() {
@@ -1181,17 +1325,35 @@ function handleAgentResult(envelope) {
   const operationId = String(envelope?.operationId ?? "");
   const operation = state.operations.get(operationId);
   if (!envelope?.error || !operationId) return;
-  rememberSettledOperation(operationId);
   if (operation) failAgentOperation(operation, envelope.error);
 }
 
 function scheduleAgentResultRecovery(operation, delayMs = 900) {
   if (!operation || !api.recoverAgentResult || !state.operations.has(operation.operationId)) return;
+  const recoveryStopAt = Number(operation.recoveryStopAt);
+  if (Number.isFinite(recoveryStopAt) && Date.now() >= recoveryStopAt) {
+    stopAgentResultRecovery(operation);
+    return;
+  }
   if (operation.recoveryTimer) clearTimeout(operation.recoveryTimer);
+  const boundedDelay = Number.isFinite(recoveryStopAt)
+    ? Math.max(0, Math.min(delayMs, recoveryStopAt - Date.now()))
+    : delayMs;
   operation.recoveryTimer = setTimeout(() => {
     operation.recoveryTimer = null;
+    if (Number.isFinite(Number(operation.recoveryStopAt))
+      && Date.now() >= Number(operation.recoveryStopAt)) {
+      stopAgentResultRecovery(operation);
+      return;
+    }
     recoverAgentResult(operation);
-  }, delayMs);
+  }, boundedDelay);
+}
+
+function stopAgentResultRecovery(operation) {
+  if (operation?.recoveryTimer) clearTimeout(operation.recoveryTimer);
+  if (operation?.operationId) state.operations.delete(operation.operationId);
+  renderAgentSessions();
 }
 
 async function recoverAgentResult(operation) {
@@ -1214,6 +1376,7 @@ async function recoverAgentResult(operation) {
       && recovered.historicalTurn.text
       && recovered.active === false) {
       settleAgentFromRecoveredTurn(operation, recovered.historicalTurn.text);
+      scheduleAgentResultRecovery(operation, 10_000);
       return;
     }
     if (recovered?.active !== false) {
@@ -1221,7 +1384,11 @@ async function recoverAgentResult(operation) {
       return;
     }
     if (recovered?.historicalTurn?.terminal) {
-      failAgentOperation(operation, "Codex 上一轮已中断且没有最终答案；可在本对话中重新运行。 ");
+      failAgentOperation(
+        operation,
+        "Codex 上一轮已中断且没有结构化结果；若稍后收到正式结果，界面仍会自动覆盖此状态。",
+        { continueRecovery: false },
+      );
       return;
     }
   } catch {
@@ -1236,6 +1403,7 @@ async function recoverAgentResult(operation) {
   }
   if (operation.finalText?.trim()) {
     settleAgentFromRecoveredTurn(operation, operation.finalText);
+    scheduleAgentResultRecovery(operation, 10_000);
   } else if (state.operations.has(operation.operationId)) {
     scheduleAgentResultRecovery(operation, 10_000);
   }
@@ -1243,25 +1411,43 @@ async function recoverAgentResult(operation) {
 
 function settleAgentFromRecoveredTurn(operation, value) {
   const text = String(value ?? "").trim();
+  if (!text || !state.operations.has(operation.operationId)) return;
   const node = elements.agentThread.querySelector(
     `[data-operation-id="${CSS.escape(operation.operationId)}"]`,
   );
   const article = document.createElement("article");
-  article.className = "agent-card transcript-message";
+  article.className = "agent-card transcript-message provisional-fallback";
   article.dataset.operationId = operation.operationId;
+  article.dataset.provisionalFallback = "true";
+  const notice = document.createElement("div");
+  notice.className = "provisional-fallback-notice";
+  notice.textContent = "已恢复 Codex 文本 · 正在等待结构化裁决回执";
   const body = document.createElement("div");
   body.className = "agent-card-body model-response";
+  article.append(notice);
   article.append(body);
   if (window.CockpitMarkdown?.renderMarkdown) window.CockpitMarkdown.renderMarkdown(body, text);
   else body.textContent = text;
   if (node) node.replaceWith(article);
   else if (operation.threadId === state.activeSessionId) elements.agentThread.append(article);
   const view = ensureSessionView(operation.threadId);
-  if (view.transcript.at(-1)?.role !== "assistant") {
+  if (view.transcript.at(-1)?.role !== "assistant"
+    || !sameConversationText(view.transcript.at(-1)?.text, text)) {
     view.transcript.push({ role: "assistant", text });
   }
-  rememberSettledOperation(operation.operationId);
-  finishAgentOperation(operation, "最终答案已恢复");
+  operation.status = "fallback";
+  operation.fallbackRendered = true;
+  operation.fallbackText = text;
+  operation.recoveryStopAt ??= Date.now() + POST_TERMINAL_RECOVERY_WINDOW_MS;
+  const session = state.agentSessions.find((item) => item.id === operation.threadId);
+  if (session) {
+    session.runState = "idle";
+    session.operationId = null;
+  }
+  if (operation.threadId === state.activeSessionId) {
+    finishActiveAgentUi(operation.operationId, "文本已恢复，结构化裁决仍在对账");
+  }
+  renderAgentSessions();
 }
 
 function acceptAgentResult(envelope, { restored = false } = {}) {
@@ -1285,23 +1471,18 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
     session.runState = "idle";
     session.operationId = null;
   }
-  if (!restored && run.conclusion?.body) {
+  if (operation?.fallbackRendered && run.conclusion?.body) {
+    const latest = view.transcript.at(-1);
+    if (latest?.role === "assistant") latest.text = run.conclusion.body;
+    else view.transcript.push({ role: "assistant", text: run.conclusion.body });
+  } else if (!restored && run.conclusion?.body) {
     const latest = view.transcript.at(-1);
     if (latest?.role !== "assistant" || !sameConversationText(latest.text, run.conclusion.body)) {
       view.transcript.push({ role: "assistant", text: run.conclusion.body });
     }
   }
   const runScope = run.context.scope ?? (run.context.symbol ? "position" : "portfolio");
-  const activeTarget = state.analysisScope === "position"
-    ? state.selectedSymbol
-    : state.analysisScope === "candidate"
-      ? normalizeCandidateSymbol(state.candidateSymbol)
-      : null;
-  const runTarget = run.context.symbol ? normalizeCandidateSymbol(run.context.symbol) : null;
-  const stale = resultThreadId === activeThreadId && (state.analysisScope !== runScope
-    || (runScope !== "portfolio" && activeTarget !== runTarget)
-    || state.portfolio?.syncedAt !== run.context.snapshotAt
-    || state.portfolio?.valuationSchemaVersion !== run.context.valuationSchemaVersion);
+  const stale = resultThreadId === activeThreadId && isRunStale(run);
   state.runsById.set(run.id, run);
   if (state.runsById.size > 50) state.runsById.delete(state.runsById.keys().next().value);
   if (resultThreadId === activeThreadId) {
@@ -1324,7 +1505,7 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
         elements.agentThread.append(rendered);
       }
     }
-    if (!stale) state.currentRun = run;
+    state.currentRun = run;
   }
   if (operationId) {
     rememberSettledOperation(operationId);
@@ -1340,6 +1521,30 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
   return true;
 }
 
+function isRunStale(run, now = Date.now()) {
+  if (!run?.context || !state.portfolio) return true;
+  const runScope = run.context.scope ?? (run.context.symbol ? "position" : "portfolio");
+  const activeTarget = state.analysisScope === "position"
+    ? normalizeCandidateSymbol(state.selectedSymbol)
+    : state.analysisScope === "candidate"
+      ? normalizeCandidateSymbol(state.candidateSymbol)
+      : null;
+  const runTarget = run.context.symbol ? normalizeCandidateSymbol(run.context.symbol) : null;
+  const snapshotMatches = state.portfolio.syncedAt === run.context.snapshotAt
+    && state.portfolio.valuationSchemaVersion === run.context.valuationSchemaVersion;
+  const trust = portfolioTrustSnapshot(state.portfolio, now);
+  return state.analysisScope !== runScope
+    || (runScope !== "portfolio" && activeTarget !== runTarget)
+    || !snapshotMatches
+    || !trust.freshForSizing
+    || (runScope === "candidate" && candidateSizingExpired(run.risk, now));
+}
+
+function candidateSizingExpired(risk, now = Date.now()) {
+  const validUntilMs = Date.parse(String(risk?.sizingValidUntil ?? ""));
+  return Number.isFinite(validUntilMs) && now > validUntilMs;
+}
+
 function finishAgentOperation(operation, message) {
   if (operation.recoveryTimer) clearTimeout(operation.recoveryTimer);
   operation.status = "completed";
@@ -1351,10 +1556,12 @@ function finishAgentOperation(operation, message) {
   if (!elements.historyPanel.hidden) loadAgentHistory();
 }
 
-function failAgentOperation(operation, message) {
+function failAgentOperation(operation, message, { continueRecovery = true } = {}) {
   if (!state.operations.has(operation.operationId)
     && state.settledOperationIds.has(operation.operationId)) return;
-  operation.status = "error";
+  if (!state.operations.has(operation.operationId)) return;
+  operation.status = "error_pending_result";
+  operation.recoveryStopAt ??= Date.now() + POST_TERMINAL_RECOVERY_WINDOW_MS;
   if (operation.recoveryTimer) clearTimeout(operation.recoveryTimer);
   const isActive = operation.threadId === state.activeSessionId;
   const session = state.agentSessions.find((item) => item.id === operation.threadId);
@@ -1371,12 +1578,12 @@ function failAgentOperation(operation, message) {
     }
     elements.agentLiveStatus.textContent = message;
   }
-  state.operations.delete(operation.operationId);
-  rememberSettledOperation(operation.operationId);
   if (isActive) finishActiveAgentUi(operation.operationId, message);
   renderAgentSessions();
   if (!elements.historyPanel.hidden) loadAgentHistory();
   setSystemMessage(message, "error");
+  if (continueRecovery) scheduleAgentResultRecovery(operation, 5_000);
+  else stopAgentResultRecovery(operation);
 }
 
 function finishActiveAgentUi(operationId, message) {
@@ -1435,7 +1642,7 @@ function restoreActiveAgent(activeAgent) {
   elements.agentCancel.hidden = false;
   elements.agentSubmit.disabled = true;
   elements.agentLiveStatus.textContent = "后台 Codex 分析仍在运行";
-  scheduleAgentResultRecovery(operation, 1_000);
+  scheduleAgentResultRecovery(operation, 5_000);
   scrollAgentToEnd();
 }
 
@@ -1475,13 +1682,22 @@ async function cancelAgentTask() {
 }
 
 function renderAgentRun(run, { stale = false } = {}) {
+  const runStale = stale || isRunStale(run);
   const wrapper = document.createElement("section");
-  wrapper.className = `agent-run${stale ? " stale" : ""}`;
+  wrapper.className = `agent-run${runStale ? " stale" : ""}`;
   wrapper.dataset.runId = run.id;
+  wrapper.dataset.stale = String(runStale);
+  wrapper.dataset.sizingExpired = String(candidateSizingExpired(run.risk));
   const renderers = {
     conclusion: () => conclusionCard(run),
     technical: () => technicalCard(run.technical),
-    fib: () => fibCard(run.technical?.fib, run.technical?.lastPrice),
+    fib: () => fibCard(
+      run.technical?.fib,
+      run.technical?.lastPrice,
+      run.risk?.fibonacciReview
+        ?? run.risk?.sizingReview?.fibonacciReview
+        ?? run.risk?.sizingReview?.fibReview,
+    ),
     risk: () => riskCard(run.risk),
     plan: () => planCard(run.plan),
     evidence: () => evidenceCard(run),
@@ -1493,16 +1709,19 @@ function renderAgentRun(run, { stale = false } = {}) {
     .map((name) => renderers[name]());
   const structuredModuleCount = structuredSections.length;
   const notices = [];
-  if (stale) {
-    notices.push(`<div class="run-state"><span class="evidence-dot degraded"></span><span>分析完成时持仓或选择已变化；此结果仅供回看，不能保存为当前计划。</span></div>`);
+  if (runStale) {
+    notices.push(`<div class="run-state"><span class="evidence-dot degraded"></span><span>账户快照、仓位裁决有效期或分析选择已失效；此结果仅供回看，不能保存为当前计划。</span></div>`);
   }
   if (run.plan?.available && requestedSections.includes("plan")) {
-    structuredSections.push(`<button class="save-plan" type="button" data-save-plan="${esc(run.id)}" ${stale ? "disabled" : ""}>${stale ? "上下文已失效 · 请重新运行" : "保存为静态计划快照 · 不监控、不下单"}</button>`);
+    structuredSections.push(`<button class="save-plan" type="button" data-save-plan="${esc(run.id)}" ${runStale ? "disabled" : ""}>${runStale ? "上下文或裁决已失效 · 请刷新后重新运行" : "保存为静态计划快照 · 不监控、不下单"}</button>`);
   }
   const structured = structuredSections.length
     ? `<details class="structured-evidence"><summary><span>展开结构化证据</span><strong>${structuredModuleCount} 个模块 · EMA / FIB / 风险 / 计划</strong></summary><div class="structured-evidence-body">${structuredSections.join("")}</div></details>`
     : "";
-  wrapper.innerHTML = `${notices.join("")}${conclusion}${structured}`;
+  const adjudication = run.context?.scope === "candidate"
+    ? candidateAdjudicationCard(run.risk, { stale: runStale })
+    : "";
+  wrapper.innerHTML = `${notices.join("")}${conclusion}${adjudication}${structured}`;
   const response = wrapper.querySelector(".model-response");
   if (response) {
     if (window.CockpitMarkdown?.renderMarkdown) {
@@ -1542,6 +1761,31 @@ function technicalCard(technical) {
     return `<article class="agent-card"><div class="agent-card-head"><span>EMA STRUCTURE</span><strong class="negative">DEGRADED</strong></div><div class="agent-card-body"><p>${esc(technical?.reason || "无行情数据")}</p></div></article>`;
   }
   const periods = [3, 5, 8, 13, 21, 144, 169];
+  const lastBarStatus = String(technical.lastBar?.status ?? "UNKNOWN").toUpperCase();
+  const officialBarCount = finiteUiNumber(
+    technical.calculationBarCount
+      ?? technical.calculation?.completedBarCount
+      ?? technical.candleCount,
+  );
+  const inputSource = String(technical.emaMethod?.inputSource ?? "unknown").toUpperCase();
+  const seed = String(technical.emaMethod?.seed ?? "unknown").toUpperCase();
+  const timeframe = String(technical.timeframe ?? "1D").toUpperCase();
+  const adjustLabel = {
+    forward: "前复权",
+    backward: "后复权",
+    none: "不复权",
+    unadjusted: "不复权",
+  }[String(technical.adjustType ?? "").toLowerCase()] ?? "复权口径未知";
+  const tradeSessionLabel = {
+    regular_hours: "常规时段",
+    regular: "常规时段",
+    intraday: "含盘中",
+    extended_hours: "含盘前盘后",
+    all: "全时段",
+  }[String(technical.tradeSession ?? "").toLowerCase()] ?? "交易时段未知";
+  const asOfTradingDate = technical.asOfTradingDate
+    ?? technical.lastBar?.tradingDate
+    ?? (technical.asOf ? shortDate(technical.asOf) : "—");
   const values = [
     { label: "价格", value: technical.lastPrice },
     ...periods.slice(0, 5).map((period) => ({ label: `EMA${period}`, value: technical.ema[period] })),
@@ -1554,34 +1798,118 @@ function technicalCard(technical) {
   }).join("");
   const emaCells = periods.map((period) => {
     const value = technical.ema[period];
-    const slope = technical.emaSlope5d[period];
+    const slope = technical.emaSlope5d?.[period];
     const slopeClass = slope > 0 ? "slope-up" : slope < 0 ? "slope-down" : "";
     const arrow = slope > 0 ? "↑" : slope < 0 ? "↓" : "—";
-    return `<div class="ema-cell"><span>EMA${period}<em class="${slopeClass}">${arrow} ${signedPercent(slope)}</em></span><strong>${number(value)}</strong></div>`;
+    const maturity = emaMaturityLabel(technical.emaMaturity?.[period], value);
+    return `<div class="ema-cell"><span>EMA${period}<em class="${slopeClass}">${arrow} ${signedPercent(slope)}</em></span><strong>${number(value)}</strong><small class="ema-maturity ${esc(maturity.className)}">${esc(maturity.label)}</small></div>`;
   }).join("");
+  const longMaturity = [144, 169].map((period) => {
+    const maturity = emaMaturityLabel(technical.emaMaturity?.[period], technical.ema[period]);
+    return `<span class="${esc(maturity.className)}">EMA${period} ${esc(maturity.label)}</span>`;
+  }).join("");
+  const provisional = technical.provisional?.available || lastBarStatus === "FORMING";
+  const closureUnknown = lastBarStatus === "UNKNOWN";
+  const provisionalNotice = provisional
+    ? `<div class="provisional-warning"><strong>PROVISIONAL</strong><span>最新输入日 K 为 ${esc(lastBarStatus)}${technical.provisional?.close != null ? ` · close ${number(technical.provisional.close)}` : ""}，已从官方 EMA / Fib 计算排除。</span></div>`
+    : closureUnknown
+      ? `<div class="provisional-warning unknown"><strong>CLOSURE UNKNOWN</strong><span>结果未提供最后一根日 K 的 CLOSED / FORMING 证明；不要把最新值视为最终收盘值。</span></div>`
+      : "";
   return `<article class="agent-card">
-    <div class="agent-card-head"><span>EMA STRUCTURE</span><strong>${esc(technical.asOf ? shortDate(technical.asOf) : "—")}</strong></div>
+    <div class="agent-card-head"><span>EMA STRUCTURE</span><strong class="bar-status ${esc(lastBarStatus.toLowerCase())}">${esc(lastBarStatus)}</strong></div>
     <div class="agent-card-body">
+      <div class="calculation-passport">
+        <span>${esc(timeframe)}</span>
+        <span>${esc(inputSource === "CLOSE" ? "CLOSE EMA" : `${inputSource} EMA`)}</span>
+        <span>${esc(seed === "SMA" ? "SMA SEED" : `${seed} SEED`)}</span>
+        <span>${esc(adjustLabel)}</span>
+        <span>${esc(tradeSessionLabel)}</span>
+        <span>${officialBarCount == null ? "OFFICIAL BARS UNKNOWN" : `${number(officialBarCount, 0)} OFFICIAL BARS`}</span>
+        <span>AS OF ${esc(asOfTradingDate)}</span>
+      </div>
+      ${provisionalNotice}
       <div class="structure-line">${esc(inequality)}</div>
       <div class="ema-grid">${emaCells}</div>
       <div class="cycle-verdict"><div><span>时点层 · 3/5/8/13/21</span><strong>${esc(technical.shortStructure)}</strong></div><div><span>核心周期 · 144/169</span><strong>${esc(technical.longStructure)}</strong></div></div>
+      <div class="long-ema-maturity"><strong>LONG EMA MATURITY</strong>${longMaturity}</div>
     </div>
   </article>`;
 }
 
-function fibCard(fib, lastPrice) {
-  if (!fib) {
-    return `<article class="agent-card"><div class="agent-card-head"><span>FIBONACCI EXTENSION</span><strong>SKIPPED</strong></div><div class="agent-card-body"><p>没有足够 K 线生成三点扩展。</p></div></article>`;
+function emaMaturityLabel(maturity, value) {
+  if (!maturity || typeof maturity !== "object") {
+    return Number.isFinite(Number(value))
+      ? { label: "MATURITY UNKNOWN", className: "unknown" }
+      : { label: "UNAVAILABLE", className: "unavailable" };
   }
-  const anchor = (key) => `<div><span>${key.toUpperCase()}</span><strong>${number(fib.anchors[key].price)}</strong><small>${esc(fib.anchors[key].date)}</small></div>`;
+  const status = String(maturity.status ?? "").toLowerCase();
+  const barCount = finiteUiNumber(maturity.barCount);
+  const required = finiteUiNumber(maturity.requiredBarCount);
+  const progress = barCount == null || required == null
+    ? ""
+    : ` · ${number(barCount, 0)}/${number(required, 0)}`;
+  if (maturity.mature === true || status === "mature") {
+    return { label: `MATURE${progress}`, className: "mature" };
+  }
+  if (maturity.available === true || status === "warming") {
+    return { label: `WARMING${progress}`, className: "warming" };
+  }
+  return { label: `UNAVAILABLE${progress}`, className: "unavailable" };
+}
+
+function fibCard(fib, lastPrice, modelReview = null) {
+  const reviewStatus = String(modelReview?.status ?? "").toLowerCase();
+  const selectedFib = reviewStatus === "selected" && modelReview?.selected
+    ? modelReview.selected
+    : null;
+  const displayFib = selectedFib ?? fib;
+  if (!displayFib) {
+    const missingReview = reviewStatus === "invalid"
+      ? `<div class="fib-llm-review rejected"><strong>HOST REJECTED · LLM Fib</strong><span>${esc(modelReview?.rationale || "LLM Fib 未通过宿主锚点校验。")}</span></div>`
+      : modelReview
+        ? `<div class="fib-llm-review pending"><strong>LLM 未选择可用 Fib</strong>${modelReview.rationale ? `<span>${esc(modelReview.rationale)}</span>` : ""}</div>`
+        : "";
+    return `<article class="agent-card"><div class="agent-card-head"><span>FIBONACCI EXTENSION</span><strong>AUTO · SKIPPED</strong></div><div class="agent-card-body"><div class="fib-policy"><span>AUTO</span><span>ADVISORY</span><strong>LLM DECIDES</strong></div>${missingReview}<p class="fib-source">没有足够的已完成 K 线生成自动三点扩展。LLM 仍须独立判断是否需要 Fib，不得把缺失值补成交易依据。</p></div></article>`;
+  }
+  const anchor = (key) => {
+    const point = displayFib.anchors?.[key];
+    if (!point) return "";
+    return `<div><span>${selectedFib ? "LLM" : "AUTO"} ${key.toUpperCase()}</span><strong>${number(point.price)}</strong><small>${esc(point.date ?? point.barId)}</small></div>`;
+  };
   const levels = [0.382, 0.618, 1, 1.618].map((ratio) => {
-    const value = fib.levels[String(ratio)];
+    const value = displayFib.levels?.[String(ratio)];
     const distance = lastPrice ? ((value - lastPrice) / lastPrice) * 100 : null;
     return `<div class="fib-level"><span>${ratio}</span><i></i><strong>${number(value)} · ${signedPercent(distance)}</strong></div>`;
   }).join("");
+  const reviewDecision = String(modelReview?.decision ?? "").toLowerCase();
+  const reviewLabels = {
+    use_auto: "LLM 采用自动锚点",
+    override: "LLM 已覆盖自动锚点",
+    ignore: "LLM 忽略自动 Fib",
+    insufficient_evidence: "LLM 判断证据不足",
+  };
+  const reviewClass = reviewStatus === "invalid"
+    ? "rejected"
+    : reviewStatus === "selected"
+      ? "selected"
+      : "pending";
+  const reviewLabel = reviewStatus === "invalid"
+    ? "HOST REJECTED · LLM Fib"
+    : reviewLabels[reviewDecision] ?? "LLM 已复核";
+  const reviewMarkup = modelReview
+    ? `<div class="fib-llm-review ${esc(reviewClass)}"><strong>${esc(reviewLabel)}</strong>${modelReview.rationale ? `<span>${esc(modelReview.rationale)}</span>` : ""}</div>`
+    : `<div class="fib-llm-review pending"><strong>等待 LLM 复核</strong><span>自动锚点可被采用、覆盖或忽略。</span></div>`;
   return `<article class="agent-card">
-    <div class="agent-card-head"><span>FIBONACCI EXTENSION</span><strong>${fib.direction === "up" ? "UP" : "DOWN"}</strong></div>
-    <div class="agent-card-body"><div class="fib-anchors">${anchor("a")}${anchor("b")}${anchor("c")}</div><div class="fib-levels">${levels}</div><p class="fib-source">${esc(fib.source)}</p></div>
+    <div class="agent-card-head"><span>FIBONACCI EXTENSION</span><strong>${selectedFib ? "LLM SELECTED · HOST CALCULATED" : "AUTO · ADVISORY"}</strong></div>
+    <div class="agent-card-body">
+      <div class="fib-policy"><span>${selectedFib ? "LLM" : "AUTO"} ${displayFib.direction === "up" ? "UP" : "DOWN"}</span><span>${selectedFib ? "SELECTED" : "ADVISORY"}</span><strong>${selectedFib ? "HOST VERIFIED" : "LLM DECIDES"}</strong></div>
+      <div class="fib-anchors">${anchor("a")}${anchor("b")}${anchor("c")}</div>
+      <div class="fib-levels">${levels}</div>
+      ${reviewMarkup}
+      <p class="fib-source">${selectedFib
+        ? `当前展示 LLM 选择的锚点；价格和 0.382 / 0.618 / 1 / 1.618 均由宿主按 ${esc(displayFib.formula || "C + (B - A) × ratio")} 复算。`
+        : `${esc(fib.source || "自动波段锚点")}。自动 Fib 只作为候选证据，不是最终失效位、目标位或仓位指令。`}</p>
+    </div>
   </article>`;
 }
 
@@ -1646,44 +1974,283 @@ function portfolioRiskCard(risk) {
   </article>`;
 }
 
+function candidateAdjudicationCard(risk, { stale = false } = {}) {
+  if (!risk) return "";
+  const sizingReview = risk.sizingReview ?? {};
+  const reviewStatus = String(sizingReview.status ?? "").toLowerCase();
+  const expired = candidateSizingExpired(risk);
+  const acceptanceExpired = expired
+    && risk.entryAllowed === true
+    && ["llm_reviewed", "bounded"].includes(reviewStatus);
+  const llmProposal = sizingReview.modelProposal
+    ?? sizingReview.llmProposed
+    ?? sizingReview.proposed
+    ?? {};
+  const hostAcceptance = sizingReview.hostAccepted ?? sizingReview.accepted ?? {};
+  const hardLimits = sizingReview.hardLimits ?? {};
+  const proposedInitial = firstFiniteUi(
+    llmProposal.initialAdditionalWeightPercent,
+    llmProposal.recommendedInitialAdditionalWeightPercent,
+    sizingReview.llmProposedInitialAdditionalWeightPercent,
+    sizingReview.proposedInitialAdditionalWeightPercent,
+  );
+  const proposedMaxTotal = firstFiniteUi(
+    llmProposal.maxTotalWeightPercent,
+    llmProposal.recommendedMaxTotalWeightPercent,
+    sizingReview.llmProposedMaxTotalWeightPercent,
+    sizingReview.proposedMaxTotalWeightPercent,
+  );
+  const acceptedInitial = firstFiniteUi(
+    hostAcceptance.initialAdditionalWeightPercent,
+    hostAcceptance.recommendedInitialAdditionalWeightPercent,
+    sizingReview.hostAcceptedInitialAdditionalWeightPercent,
+    risk.recommendedInitialAdditionalWeightPercent,
+  );
+  const acceptedMaxTotal = firstFiniteUi(
+    hostAcceptance.maxTotalWeightPercent,
+    hostAcceptance.recommendedMaxTotalWeightPercent,
+    sizingReview.hostAcceptedMaxTotalWeightPercent,
+    risk.recommendedMaxWeightPercent,
+  );
+  const hardMaxTotal = firstFiniteUi(
+    risk.hardMaxTotalWeightPercent,
+    sizingReview.hardMaxTotalWeightPercent,
+    hardLimits.accountAndConcentrationTotalWeightPercent,
+  );
+  const bindings = candidateLimitBindings({
+    risk,
+    sizingReview,
+    reviewStatus,
+    proposedMaxTotal,
+    acceptedMaxTotal,
+    hardMaxTotal,
+  });
+  const status = acceptanceExpired
+    ? "HOST ACCEPTANCE EXPIRED"
+    : reviewStatus === "blocked"
+      ? "HOST BLOCKED"
+      : reviewStatus === "bounded"
+        ? "HOST BOUNDED"
+        : reviewStatus === "llm_reviewed"
+          ? risk.entryAllowed ? "HOST ACCEPTED" : "NO ENTRY"
+          : "AWAITING LLM";
+  const tone = reviewStatus === "blocked"
+      ? "blocked"
+      : acceptanceExpired
+        ? "expired"
+      : reviewStatus === "bounded"
+        ? "bounded"
+        : reviewStatus === "llm_reviewed" && risk.entryAllowed
+          ? "accepted"
+          : "pending";
+  const historical = acceptanceExpired || stale;
+  const decisionAt = sizingReview.decisionAt ?? null;
+  const validUntil = risk.sizingValidUntil ?? null;
+  const group = sizingReview.candidateGroupKey
+    ?? sizingReview.requestedGroupKey
+    ?? risk.group
+    ?? "未分类";
+  const stage = sizingReview.narrativeStage ?? risk.stageAssumption ?? "unknown";
+  const invalidation = sizingReview.invalidation?.label
+    ?? risk.referenceLabel
+    ?? "未通过主机校验";
+  return `<article class="candidate-adjudication ${esc(tone)}">
+    <div class="candidate-adjudication-head">
+      <span>HOST ADJUDICATION · 常驻裁决摘要</span>
+      <strong>${esc(status)}</strong>
+    </div>
+    ${acceptanceExpired ? `<div class="candidate-expiry-warning"><strong>不可执行</strong><span>仓位裁决已超过 SIZING VALID UNTIL；HOST ACCEPTED 数值仅保留为历史记录。请刷新长桥持仓后重新运行。</span></div>` : ""}
+    <div class="candidate-adjudication-grid">
+      <div><span>LLM PROPOSAL</span><strong>初始 ${percent(proposedInitial)} · 最大 ${percent(proposedMaxTotal)}</strong></div>
+      <div class="${historical ? "historical" : ""}"><span>${historical ? "HOST ACCEPTED · HISTORICAL" : "HOST ACCEPTED"}</span><strong>初始 ${percent(acceptedInitial)} · 最大 ${percent(acceptedMaxTotal)}</strong></div>
+      <div><span>HARD MAX</span><strong>${percent(hardMaxTotal)}</strong></div>
+      <div><span>主题 / Stage</span><strong>${esc(group)} · ${esc(stage)}</strong></div>
+      <div><span>置信度 · 分类 / 仓位</span><strong>${esc(sizingReview.classificationConfidence ?? "unknown")} / ${esc(sizingReview.sizingConfidence ?? "unknown")}</strong></div>
+      <div><span>失效依据</span><strong>${esc(invalidation)}</strong></div>
+      <div><span>DECISION AT</span><strong>${decisionAt ? esc(shortDateTime(decisionAt)) : "—"}</strong></div>
+      <div><span>VALID UNTIL</span><strong>${validUntil ? esc(shortDateTime(validUntil)) : "—"}</strong></div>
+      <div><span>决策时快照</span><strong>${sizingReview.snapshotFreshAtDecision === true ? "FRESH" : sizingReview.snapshotFreshAtDecision === false ? "STALE" : "UNKNOWN"}</strong></div>
+    </div>
+    ${bindings.length ? `<div class="risk-bindings"><strong>LIMIT BINDINGS</strong>${bindings.map((item) => `<span>${esc(item)}</span>`).join("")}</div>` : ""}
+  </article>`;
+}
+
 function candidateRiskCard(risk) {
   const leverage = risk.leverage ?? {};
   const sizingReview = risk.sizingReview ?? {};
-  const reviewed = sizingReview.status === "skill_mcp_reviewed";
-  const status = !risk.supported
+  const reviewStatus = String(sizingReview.status ?? "").toLowerCase();
+  const finalizedReview = ["llm_reviewed", "bounded", "blocked"].includes(reviewStatus);
+  const sizingExpired = candidateSizingExpired(risk);
+  const acceptanceExpired = sizingExpired
+    && risk.entryAllowed === true
+    && ["llm_reviewed", "bounded"].includes(reviewStatus);
+  const legacyReviewed = reviewStatus === "skill_mcp_reviewed";
+  const awaitingModel = risk.awaitingModelReview === true && !finalizedReview;
+  const llmProposal = sizingReview.modelProposal
+    ?? sizingReview.llmProposed
+    ?? sizingReview.proposed
+    ?? {};
+  const hostAcceptance = sizingReview.hostAccepted ?? sizingReview.accepted ?? {};
+  const hardLimits = sizingReview.hardLimits ?? {};
+  const proposedInitial = firstFiniteUi(
+    llmProposal.initialAdditionalWeightPercent,
+    llmProposal.recommendedInitialAdditionalWeightPercent,
+    sizingReview.llmProposedInitialAdditionalWeightPercent,
+    sizingReview.proposedInitialAdditionalWeightPercent,
+    sizingReview.requestedInitialAdditionalWeightPercent,
+  );
+  const proposedMaxTotal = firstFiniteUi(
+    llmProposal.maxTotalWeightPercent,
+    llmProposal.recommendedMaxTotalWeightPercent,
+    sizingReview.llmProposedMaxTotalWeightPercent,
+    sizingReview.proposedMaxTotalWeightPercent,
+    sizingReview.requestedMaxTotalWeightPercent,
+  );
+  const acceptedInitial = firstFiniteUi(
+    hostAcceptance.initialAdditionalWeightPercent,
+    hostAcceptance.recommendedInitialAdditionalWeightPercent,
+    sizingReview.hostAcceptedInitialAdditionalWeightPercent,
+    risk.recommendedInitialAdditionalWeightPercent,
+  );
+  const acceptedMaxTotal = firstFiniteUi(
+    hostAcceptance.maxTotalWeightPercent,
+    hostAcceptance.recommendedMaxTotalWeightPercent,
+    sizingReview.hostAcceptedMaxTotalWeightPercent,
+    risk.recommendedMaxWeightPercent,
+  );
+  const hardMaxTotal = firstFiniteUi(
+    risk.hardMaxTotalWeightPercent,
+    sizingReview.hardMaxTotalWeightPercent,
+    hardLimits.accountAndConcentrationTotalWeightPercent,
+  );
+  const hardMaxAdditional = firstFiniteUi(
+    risk.hardMaxAdditionalWeightPercent,
+    sizingReview.hardMaxAdditionalWeightPercent,
+  );
+  const hardGroupTotal = firstFiniteUi(hardLimits.groupTotalWeightPercent);
+  const hardRiskBudgetTotal = firstFiniteUi(hardLimits.riskBudgetTotalWeightPercent);
+  const status = acceptanceExpired
+    ? "HOST ACCEPTANCE EXPIRED"
+    : !risk.supported
     ? "TECHNICAL ONLY"
-    : risk.entryAllowed
-      ? reviewed ? "SKILL/MCP REVIEWED · CASH" : "LOCAL CEILING · CASH"
-      : "NO NEW RISK";
+    : awaitingModel
+      ? "AWAITING LLM"
+      : reviewStatus === "blocked"
+        ? "HOST BLOCKED"
+        : reviewStatus === "bounded"
+          ? "LLM PROPOSED · HOST BOUNDED"
+          : reviewStatus === "llm_reviewed"
+            ? risk.entryAllowed ? "LLM REVIEWED · HOST ACCEPTED" : "LLM REVIEWED · NO ENTRY"
+            : legacyReviewed
+              ? "LEGACY SKILL/MCP REVIEW"
+              : risk.entryAllowed ? "HOST LEGACY RESULT" : "NO NEW RISK";
   const blockers = (risk.entryBlockReasons ?? []).filter(Boolean);
   const leverageReasons = (leverage.disabledReasons ?? []).filter(Boolean);
-  const disclosure = blockers.length
-    ? blockers.join("；")
-    : risk.limitation ?? risk.sizingNote;
-  const initialLabel = reviewed ? "Skill/MCP 初始新增" : "本地初始上限";
-  const maxLabel = reviewed ? "Skill/MCP 最大总仓位" : "本地最大总上限";
+  const disclosure = acceptanceExpired
+    ? "仓位裁决有效期已结束；下列 HOST ACCEPTED 值仅为历史裁决，不可执行。刷新长桥持仓后重新运行，主机才会重新接受仓位。"
+    : awaitingModel
+    ? "主机仅完成账户、快照与组合硬边界校验；等待 LLM 决定 Fib、失效位与建议仓位，自动 Fib 不会直接成为仓位指令。"
+    : blockers.length
+      ? blockers.join("；")
+      : risk.limitation ?? risk.sizingNote;
+  const limitBindings = candidateLimitBindings({
+    risk,
+    sizingReview,
+    reviewStatus,
+    proposedMaxTotal,
+    acceptedMaxTotal,
+    hardMaxTotal,
+  });
+  const reviewTone = reviewStatus === "blocked" || acceptanceExpired ? "risk-warning" : "risk-balanced";
+  const acceptedLabel = acceptanceExpired ? "HOST ACCEPTED · HISTORICAL" : "HOST ACCEPTED";
   return `<article class="agent-card">
-    <div class="agent-card-head"><span>ENTRY SIZE & LEVERAGE</span><strong>${status}</strong></div>
+    <div class="agent-card-head"><span>ENTRY SIZE & LEVERAGE</span><strong class="${acceptanceExpired ? "negative" : ""}">${status}</strong></div>
     <div class="agent-card-body">
+      ${acceptanceExpired ? `<div class="candidate-expiry-warning"><strong>不可执行</strong><span>SIZING VALID UNTIL ${risk.sizingValidUntil ? esc(shortDateTime(risk.sizingValidUntil)) : "—"} 已过期；刷新持仓并重跑后才能产生新的主机裁决。</span></div>` : ""}
       <div class="risk-grid">
         <div><span>当前持仓</span><strong>${percent(risk.existingPositionWeight ?? 0)}</strong></div>
-        <div><span>${initialLabel}</span><strong>${percent(risk.recommendedInitialAdditionalWeightPercent)}</strong></div>
-        <div><span>${maxLabel}</span><strong>${percent(risk.recommendedMaxWeightPercent)}</strong></div>
-        <div><span>最大新增仓位</span><strong>${percent(risk.recommendedMaxAdditionalWeightPercent)}</strong></div>
-        <div><span>初始名义金额 / ${esc(risk.baseCurrency)}</span><strong>${money(risk.recommendedInitialNotionalBase, risk.baseCurrency)}</strong></div>
-        <div><span>最大新增金额 / ${esc(risk.baseCurrency)}</span><strong>${money(risk.recommendedMaxAdditionalNotionalBase, risk.baseCurrency)}</strong></div>
+        <div><span>LLM PROPOSED · 初始新增</span><strong>${percent(proposedInitial)}</strong></div>
+        <div><span>LLM PROPOSED · 最大总仓位</span><strong>${percent(proposedMaxTotal)}</strong></div>
+        <div class="${acceptanceExpired ? "historical" : ""}"><span>${acceptedLabel} · 初始新增</span><strong>${percent(acceptedInitial)}</strong></div>
+        <div class="${acceptanceExpired ? "historical" : ""}"><span>${acceptedLabel} · 最大总仓位</span><strong>${percent(acceptedMaxTotal)}</strong></div>
+        <div><span>HARD CEILING · 最大总仓位</span><strong>${percent(hardMaxTotal)}</strong></div>
+        <div><span>HARD CEILING · 最大新增</span><strong>${percent(hardMaxAdditional)}</strong></div>
+        <div><span>HARD LIMIT · 主题总仓位</span><strong>${percent(hardGroupTotal)}</strong></div>
+        <div><span>HARD LIMIT · 风险预算总仓位</span><strong>${percent(hardRiskBudgetTotal)}</strong></div>
+        <div><span>主机接受初始金额 / ${esc(risk.baseCurrency)}</span><strong>${money(risk.recommendedInitialNotionalBase, risk.baseCurrency)}</strong></div>
+        <div><span>主机接受最大新增 / ${esc(risk.baseCurrency)}</span><strong>${money(risk.recommendedMaxAdditionalNotionalBase, risk.baseCurrency)}</strong></div>
         <div><span>风险预算</span><strong>${percent(risk.riskBudgetPercent)}</strong></div>
         <div><span>失效距离</span><strong>${percent(risk.riskDistancePercent)}</strong></div>
         <div><span>${esc(risk.referenceLabel)}</span><strong>${number(risk.referenceLevel)}</strong></div>
         <div><span>新增融资权重</span><strong>${percent(leverage.maxAdditionalBorrowedWeightPercent ?? 0)}</strong></div>
         <div><span>杠杆上限</span><strong>${number(leverage.maxLeverageMultiple, 2)}×</strong></div>
         <div><span>杠杆判断</span><strong>${leverage.decision === "disabled" ? "禁止新增 / 不可评估" : leverage.additionalLeverageAllowed ? "可复核" : "仅现金覆盖"}</strong></div>
+        <div><span>DECISION AT</span><strong>${sizingReview.decisionAt ? esc(shortDateTime(sizingReview.decisionAt)) : "—"}</strong></div>
+        <div><span>VALID UNTIL</span><strong>${risk.sizingValidUntil ? esc(shortDateTime(risk.sizingValidUntil)) : "—"}</strong></div>
       </div>
-      ${sizingReview.rationale ? `<div class="risk-balanced">Skill/MCP 复核：${esc(sizingReview.rationale)}</div>` : ""}
-      <div class="${risk.supported && risk.entryAllowed ? "risk-balanced" : "risk-warning"}">${esc(disclosure)}</div>
+      ${limitBindings.length ? `<div class="risk-bindings"><strong>LIMIT BINDINGS</strong>${limitBindings.map((item) => `<span>${esc(item)}</span>`).join("")}</div>` : ""}
+      ${sizingReview.rationale ? `<div class="${reviewTone}">LLM 复核：${esc(sizingReview.rationale)}</div>` : ""}
+      <div class="${risk.supported && risk.entryAllowed && !acceptanceExpired ? "risk-balanced" : "risk-warning"}">${esc(disclosure)}</div>
       ${leverageReasons.length ? `<div class="risk-warning">杠杆约束：${esc(leverageReasons.join("；"))}</div>` : ""}
     </div>
   </article>`;
+}
+
+function candidateLimitBindings({
+  risk,
+  sizingReview,
+  reviewStatus,
+  proposedMaxTotal,
+  acceptedMaxTotal,
+  hardMaxTotal,
+}) {
+  const rawBindings = sizingReview.limitBindings
+    ?? sizingReview.bindingConstraints
+    ?? risk.limitBindings
+    ?? risk.activeLimitBindings;
+  const bindings = [];
+  if (Array.isArray(rawBindings)) {
+    for (const binding of rawBindings) {
+      if (binding == null) continue;
+      if (typeof binding === "object") {
+        const label = binding.label ?? binding.reason ?? binding.key ?? binding.code;
+        if (label) bindings.push(String(label));
+      } else {
+        bindings.push(String(binding));
+      }
+    }
+  } else if (rawBindings && typeof rawBindings === "object") {
+    for (const [key, value] of Object.entries(rawBindings)) {
+      if (value === false || value == null) continue;
+      bindings.push(value === true ? key : `${key}: ${value}`);
+    }
+  } else if (rawBindings) {
+    bindings.push(String(rawBindings));
+  }
+  if (!bindings.length && reviewStatus === "bounded") {
+    if (proposedMaxTotal != null && hardMaxTotal != null && proposedMaxTotal > hardMaxTotal) {
+      bindings.push("LLM 最大总仓位被主机硬上限截断");
+    } else if (proposedMaxTotal != null && acceptedMaxTotal != null && proposedMaxTotal > acceptedMaxTotal) {
+      bindings.push("LLM 建议被主机风险边界收紧");
+    } else {
+      bindings.push("主机返回 bounded，但未附具体限制明细");
+    }
+  }
+  if (!bindings.length && reviewStatus === "blocked") {
+    bindings.push(...(risk.entryBlockReasons ?? []).filter(Boolean).map(String));
+    if (!bindings.length) bindings.push("主机拒绝该仓位建议，但未附具体阻断明细");
+  }
+  return [...new Set(bindings)].slice(0, 8).map(candidateBindingLabel);
+}
+
+function candidateBindingLabel(binding) {
+  const labels = {
+    account_and_concentration: "账户 / 集中度硬上限",
+    group_exposure: "主题暴露硬上限",
+    risk_budget: "风险预算硬上限",
+    initial_additional: "初始新增不得超过可接受新增仓位",
+  };
+  return labels[binding] ?? binding;
 }
 
 function planCard(plan) {
@@ -2117,6 +2684,20 @@ function number(value, digits = 2) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
+}
+
+function finiteUiNumber(value) {
+  return value != null && value !== "" && Number.isFinite(Number(value))
+    ? Number(value)
+    : null;
+}
+
+function firstFiniteUi(...values) {
+  for (const value of values) {
+    const normalized = finiteUiNumber(value);
+    if (normalized != null) return normalized;
+  }
+  return null;
 }
 
 function money(value, currency = "USD") {

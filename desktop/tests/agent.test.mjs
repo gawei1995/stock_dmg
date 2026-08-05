@@ -88,16 +88,15 @@ test("candidate scope analyzes an unheld bare US ticker and builds an entry plan
   assert.equal(run.context.isHeld, false);
   assert.equal(run.technical.capabilities.longEma, true);
   assert.equal(run.plan.available, true);
-  assert.equal(run.plan.riskSizingAvailable, true);
-  assert.ok(run.risk.provisionalMaxWeightPercent > 0);
-  assert.equal(run.risk.entryAllowed, true);
-  assert.equal(run.risk.stageAssumption, "stage_1_unvalidated");
-  assert.equal(run.risk.recommendedInitialAdditionalWeightPercent, 2);
-  assert.equal(run.risk.recommendedInitialTotalWeightPercent, 2);
-  assert.equal(run.risk.recommendedInitialNotionalBase, 200);
-  assert.equal(run.risk.recommendedMaxWeightPercent, 4);
-  assert.equal(run.risk.recommendedMaxAdditionalWeightPercent, 4);
-  assert.equal(run.risk.recommendedMaxAdditionalNotionalBase, 400);
+  assert.equal(run.plan.riskSizingAvailable, false);
+  assert.equal(run.plan.state, "awaiting_codex_strategy");
+  assert.equal(run.risk.awaitingModelReview, true);
+  assert.equal(run.risk.entryAllowed, false);
+  assert.equal(run.risk.stageAssumption, "llm_determined");
+  assert.equal(run.risk.recommendedInitialAdditionalWeightPercent, null);
+  assert.equal(run.risk.recommendedMaxWeightPercent, null);
+  assert.ok(run.risk.hardMaxTotalWeightPercent > 0);
+  assert.ok(run.risk.hardMaxAdditionalWeightPercent > 0);
   assert.equal(run.risk.cashBufferFloorPercent, 5);
   assert.equal(run.risk.concentrationHeadroom.cashFundedPercent, 35);
   assert.equal(run.risk.portfolioConstraints.grossExposurePercent, 32);
@@ -110,9 +109,10 @@ test("candidate scope analyzes an unheld bare US ticker and builds an entry plan
   assert.equal(run.risk.leverage.additionalLeverageAllowed, false);
   assert.equal(run.risk.leverage.maxAdditionalBorrowedWeightPercent, 0);
   assert.equal(run.risk.leverage.maxLeverageMultiple, 1);
-  assert.equal(run.risk.leverage.projectedGrossAtMaxPercent, 36);
-  assert.equal(run.plan.sizing.initialAdditionalWeightPercent, 2);
-  assert.equal(run.plan.sizing.maxTotalWeightPercent, 4);
+  assert.equal(run.risk.leverage.decision, "model_review_required");
+  assert.equal(run.plan.sizing.initialAdditionalWeightPercent, null);
+  assert.equal(run.plan.sizing.maxTotalWeightPercent, null);
+  assert.equal(run.analysisContext.technical.priceBars.length, 220);
   assert.equal(Object.hasOwn(run.analysisContext, "positions"), false);
   assert.equal(run.analysisContext.target.quantity, null);
   assert.equal(run.analysisContext.portfolioSummary.top1WeightPercent, 18);
@@ -224,15 +224,15 @@ test("candidate sizing blocks new risk when the full portfolio has a margin call
 
   assert.equal(run.risk.supported, true);
   assert.equal(run.risk.entryAllowed, false);
-  assert.equal(run.risk.recommendedInitialAdditionalWeightPercent, 0);
-  assert.equal(run.risk.recommendedMaxAdditionalWeightPercent, 0);
-  assert.equal(run.risk.recommendedMaxWeightPercent, 0);
+  assert.equal(run.risk.recommendedInitialAdditionalWeightPercent, null);
+  assert.equal(run.risk.recommendedMaxAdditionalWeightPercent, null);
+  assert.equal(run.risk.recommendedMaxWeightPercent, null);
   assert.match(run.risk.entryBlockReasons.join(" "), /追加保证金/);
   assert.equal(run.risk.leverage.decision, "disabled");
   assert.equal(run.risk.leverage.additionalLeverageAllowed, false);
   assert.equal(run.plan.state, "candidate_blocked");
   assert.equal(run.plan.riskSizingAvailable, false);
-  assert.match(run.conclusion.body, /新增仓位 0%/);
+  assert.match(run.conclusion.body, /新增风险被安全边界阻止/);
 });
 
 test("candidate context exposes only aggregate portfolio constraints and strips credentials", async () => {
@@ -361,11 +361,47 @@ test("invalid analysis scopes fail before doing any market-data work", async () 
   assert.equal(candleCalls, 0);
 });
 
+test("stale portfolio evidence is degraded and never described as real-time", async () => {
+  const portfolio = portfolioFixture();
+  portfolio.status = "stale";
+  portfolio.holdingsStatus = "stale";
+  portfolio.freshness = {
+    ...portfolio.freshness,
+    state: "stale",
+    freshForSizing: false,
+  };
+
+  const run = await buildAnalysisEvidence({
+    scope: "portfolio",
+    portfolio,
+    task: "检查陈旧快照",
+  });
+  const accountEvidence = run.evidence.find((item) => item.tool === "account_balance");
+  const holdingsEvidence = run.evidence.find((item) => item.tool === "stock_positions");
+
+  assert.equal(accountEvidence.status, "degraded");
+  assert.equal(holdingsEvidence.status, "degraded");
+  assert.equal(run.analysisContext.portfolioSummary.snapshotFreshForSizing, false);
+  assert.equal(run.analysisContext.portfolioSummary.snapshotState, "stale");
+  assert.match(accountEvidence.summary, /STALE.*只供回看/);
+  assert.match(holdingsEvidence.summary, /STALE.*只供回看/);
+  assert.doesNotMatch(
+    run.evidence.map((item) => item.summary).join("\n"),
+    /账户数据实时/,
+  );
+});
+
 function portfolioFixture() {
-  const timestamp = "2026-07-20T20:00:00.000Z";
+  const timestamp = new Date().toISOString();
   return {
     status: "live",
     holdingsStatus: "live",
+    freshness: {
+      state: "fresh",
+      freshForSizing: true,
+      snapshotAt: timestamp,
+      expiresAt: new Date(Date.parse(timestamp) + 2 * 60 * 1000).toISOString(),
+    },
     syncedAt: timestamp,
     quoteAsOf: timestamp,
     quoteLatestAsOf: timestamp,

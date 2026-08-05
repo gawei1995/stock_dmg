@@ -84,6 +84,8 @@ test("live Longbridge MCP FX keeps HKD assets in the correct USD magnitude", asy
   assert.ok(position.marketValueBase < 1_000);
   assert.equal(portfolio.dataQuality.valuationComplete, true);
   assert.equal(portfolio.valuationSchemaVersion, PORTFOLIO_SNAPSHOT_SCHEMA_VERSION);
+  assert.equal(portfolio.freshness.state, "fresh");
+  assert.equal(portfolio.freshness.freshForSizing, true);
 });
 
 test("an old ambiguous-FX portfolio snapshot is never restored", async () => {
@@ -110,12 +112,14 @@ test("an old ambiguous-FX portfolio snapshot is never restored", async () => {
       },
     },
   });
-  assert.deepEqual(await currentService.cachedPortfolio(), {
-    endpoint: longbridge.endpoint,
-    valuationSchemaVersion: PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
-    account: { netAssets: 117679.86 },
-    status: "cached",
-  });
+  const cached = await currentService.cachedPortfolio();
+  assert.equal(cached.endpoint, longbridge.endpoint);
+  assert.equal(cached.valuationSchemaVersion, PORTFOLIO_SNAPSHOT_SCHEMA_VERSION);
+  assert.deepEqual(cached.account, { netAssets: 117679.86 });
+  assert.equal(cached.status, "cached");
+  assert.equal(cached.holdingsStatus, "cached");
+  assert.equal(cached.freshness.state, "cached");
+  assert.equal(cached.freshness.freshForSizing, false);
 });
 
 test("Longbridge FX never guesses an unanchored or mixed provider convention", () => {
@@ -566,7 +570,7 @@ test("daily candles reuse the two-minute in-memory cache", async () => {
     async call(name, args) {
       assert.equal(name, "candlesticks");
       candleCalls += 1;
-      assert.equal(args.count, 260);
+      assert.equal(args.count, 1000);
       return [{
         timestamp: "1767225600",
         open: "100",
@@ -584,4 +588,46 @@ test("daily candles reuse the two-minute in-memory cache", async () => {
   const second = await service.candles("AAPL.US");
   assert.equal(candleCalls, 1);
   assert.equal(second[0].close, 101);
+});
+
+test("daily candle cache prunes expired rows and remains bounded at 100 entries", async () => {
+  let candleCalls = 0;
+  const longbridge = {
+    endpoint: "https://mcp.longbridge.com/v2",
+    async call(name) {
+      assert.equal(name, "candlesticks");
+      candleCalls += 1;
+      return [{
+        timestamp: "1767243600",
+        open: "100",
+        high: "102",
+        low: "99",
+        close: "101",
+        volume: "1000",
+      }];
+    },
+  };
+  const store = { async set() {}, async get() { return null; } };
+  const service = new PortfolioService({ longbridge, store });
+  service.candleCache.set("EXPIRED.US:1000", {
+    fetchedAt: Date.now() - 10 * 60 * 1000,
+    candles: [],
+  });
+  const oldestLiveKey = "LIVE0.US:1000";
+  for (let index = 0; index < 100; index += 1) {
+    service.candleCache.set(`LIVE${index}.US:1000`, {
+      fetchedAt: Date.now(),
+      candles: [],
+    });
+  }
+
+  const [bar] = await service.candles("NEW.US");
+  assert.equal(candleCalls, 1);
+  assert.equal(service.candleCache.size, 100);
+  assert.equal(service.candleCache.has("EXPIRED.US:1000"), false);
+  assert.equal(service.candleCache.has(oldestLiveKey), false);
+  assert.equal(service.candleCache.has("NEW.US:1000"), true);
+  assert.equal(bar.symbol, "NEW.US");
+  assert.equal(bar.market, "US");
+  assert.ok(bar.tradeDate);
 });
