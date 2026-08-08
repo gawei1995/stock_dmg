@@ -30,6 +30,12 @@ import {
   withPortfolioFreshness,
 } from "./src/data/freshness.mjs";
 import { AgentResultStore, normalizeAgentResult } from "./src/data/agent-result-store.mjs";
+import { ReviewStore, calculateRuleMetrics } from "./src/data/review-store.mjs";
+import {
+  matchExecutionsToEvent,
+  matchOrdersToEvent,
+  TradeHistoryService,
+} from "./src/data/trade-history-service.mjs";
 import { buildAnalysisEvidence } from "./src/engine/agent.mjs";
 import {
   applyCodexWorkspaceAnalysis,
@@ -45,8 +51,11 @@ let mainWindow;
 let tvView;
 let tvSession;
 let secureStore;
+let reviewDataStore;
 let longbridge;
 let portfolioService;
+let tradeHistoryService;
+let reviewStore;
 let portfolio;
 let codexAnalysis;
 let agentResults;
@@ -56,6 +65,7 @@ let lastTvBounds = { x: 292, y: 86, width: 820, height: 780 };
 let tvMainLoadFailed = false;
 let pendingTvUrl = null;
 let tvUrlSaveTimer = null;
+let workspaceMode = "cockpit";
 const hardenedSessions = new WeakSet();
 const tvPopups = new Set();
 const AGENT_PORTFOLIO_REFRESH_WAIT_MS = 1_500;
@@ -79,6 +89,11 @@ app.whenReady().then(async () => {
     directory: app.getPath("userData"),
     safeStorage,
   });
+  reviewDataStore = new EncryptedStore({
+    directory: app.getPath("userData"),
+    safeStorage,
+    fileName: "review-data.bin",
+  });
   agentResults = new AgentResultStore({ store: secureStore });
   longbridge = new LongbridgeClient({
     endpoint: preferredLongbridgeEndpoint(),
@@ -98,6 +113,12 @@ app.whenReady().then(async () => {
       fetchImpl: longbridgeFetch,
     }),
   });
+  tradeHistoryService = new TradeHistoryService({
+    longbridge,
+    store: reviewDataStore,
+    onStatus: sendStatus,
+  });
+  reviewStore = new ReviewStore({ store: reviewDataStore });
   portfolio = await portfolioService.cachedPortfolio();
   const codexPath = await resolveCodexExecutable();
   const configuredWorkspace = process.env.TRADING_COCKPIT_CODEX_WORKSPACE;
@@ -382,6 +403,105 @@ function registerIpc() {
       lastAgentResult,
       safeguards: { orderWrite: false, modelNarration: codexAnalysis.available },
     };
+  });
+
+  ipcMain.handle("workspace:set-mode", async (event, request) => {
+    assertTrustedSender(event);
+    const mode = request?.mode === "review" ? "review" : "cockpit";
+    workspaceMode = mode;
+    tvView?.setVisible?.(mode === "cockpit");
+    if (mode === "cockpit") requestTvBounds();
+    return { ok: true, mode };
+  });
+
+  ipcMain.handle("review:snapshot", async (event) => {
+    assertTrustedSender(event);
+    return buildReviewSnapshot();
+  });
+
+  ipcMain.handle("review:case:create", async (event, request) => {
+    assertTrustedSender(event);
+    const reviewCase = await reviewStore.createCase(request);
+    return { ok: true, reviewCase, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:case:update", async (event, request) => {
+    assertTrustedSender(event);
+    const reviewCase = await reviewStore.updateCase(request?.caseId, request?.patch);
+    return { ok: true, reviewCase, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:case:freeze", async (event, request) => {
+    assertTrustedSender(event);
+    const version = await reviewStore.freezeCase(request?.caseId, {
+      reason: request?.reason,
+    });
+    return { ok: true, version, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:case:link-broker", async (event, request) => {
+    assertTrustedSender(event);
+    const archive = await tradeHistoryService.cached();
+    const recordIds = new Set((request?.recordIds ?? []).map(String));
+    const orderIds = archive.orders
+      .filter((item) => recordIds.has(item.orderId))
+      .map((item) => item.orderId);
+    const executionIds = archive.executions
+      .filter((item) => recordIds.has(item.tradeId))
+      .map((item) => item.tradeId);
+    const links = await reviewStore.linkBrokerRecords(request?.caseId, {
+      orderIds,
+      executionIds,
+    });
+    return { ok: true, links, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:trade-history:sync", async (event, request) => {
+    assertTrustedSender(event);
+    const archive = await tradeHistoryService.sync({
+      startAt: request?.from ?? request?.startAt,
+      endAt: request?.to ?? request?.endAt,
+      symbol: request?.symbol,
+    });
+    return { ok: true, archive, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:test:register", async (event, request) => {
+    assertTrustedSender(event);
+    const experiment = await reviewStore.registerTest(request);
+    return { ok: true, experiment, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:test:complete", async (event, request) => {
+    assertTrustedSender(event);
+    const experiment = await reviewStore.completeTest(request?.testId, request);
+    return { ok: true, experiment, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:rule:create", async (event, request) => {
+    assertTrustedSender(event);
+    const rule = await reviewStore.createRule(request);
+    return { ok: true, rule, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:rule:transition", async (event, request) => {
+    assertTrustedSender(event);
+    const rule = await reviewStore.transitionRule(request?.ruleId, {
+      status: request?.to ?? request?.status,
+      reason: request?.reason,
+    });
+    return { ok: true, rule, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:rule:review", async (event, request) => {
+    assertTrustedSender(event);
+    const ruleReview = await reviewStore.addRuleReview(request?.ruleId, {
+      decision: request?.decision,
+      evidence: request?.evidence ?? request?.keep,
+      change: request?.change,
+      nextTrigger: request?.nextTrigger,
+    });
+    return { ok: true, ruleReview, snapshot: await buildReviewSnapshot() };
   });
 
   ipcMain.handle("agent:capabilities", async (event) => {
@@ -833,7 +953,7 @@ function registerIpc() {
 }
 
 function setTvBounds(value) {
-  if (!tvView || !mainWindow || !value) return;
+  if (!tvView || !mainWindow || !value || workspaceMode !== "cockpit") return;
   const content = mainWindow.getContentBounds();
   const x = clamp(Math.round(Number(value.x)), 0, content.width - 200);
   const y = clamp(Math.round(Number(value.y)), 0, content.height - 200);
@@ -842,6 +962,67 @@ function setTvBounds(value) {
   if (![x, y, width, height].every(Number.isFinite)) return;
   lastTvBounds = { x, y, width, height };
   tvView.setBounds(lastTvBounds);
+}
+
+async function buildReviewSnapshot() {
+  const [workspace, broker] = await Promise.all([
+    reviewStore.snapshot(),
+    tradeHistoryService.cached(),
+  ]);
+  const brokerMatches = Object.fromEntries(workspace.cases.map((reviewCase) => {
+    const executions = matchExecutionsToEvent(broker, {
+      symbol: reviewCase.symbol,
+      eventAt: reviewCase.eventAt,
+    });
+    const matchedOrderIds = new Set(executions.map((item) => item.orderId).filter(Boolean));
+    const orders = [
+      ...matchOrdersToEvent(broker, {
+        symbol: reviewCase.symbol,
+        eventAt: reviewCase.eventAt,
+      }),
+      ...broker.orders.filter((item) => matchedOrderIds.has(item.orderId)),
+    ].filter((item, index, rows) => rows.findIndex(
+      (candidate) => candidate.orderId === item.orderId,
+    ) === index);
+    return [reviewCase.id, {
+      orders,
+      executions,
+      recordIds: [
+        ...orders.map((item) => item.orderId),
+        ...executions.map((item) => item.tradeId),
+      ],
+      confirmed: reviewCase.brokerLinks?.confirmedAt != null,
+    }];
+  }));
+  const ruleMetrics = Object.fromEntries(workspace.rules.map((rule) => [
+    rule.id,
+    calculateRuleMetrics(workspace, rule.id),
+  ]));
+  return {
+    ...workspace,
+    reviews: workspace.ruleReviews,
+    broker: {
+      syncedAt: broker.syncedAt,
+      range: broker.range,
+      capabilities: broker.capabilities,
+      warnings: broker.warnings,
+      orderCount: broker.orders.length,
+      executionCount: broker.executions.length,
+    },
+    brokerMatches,
+    ruleMetrics,
+    summary: {
+      caseCount: workspace.cases.length,
+      frozenCount: workspace.cases.filter((item) => item.exAnteVersions?.length).length,
+      reviewDueCount: workspace.cases.filter((item) => ["event_occurred", "review_due"].includes(item.status)).length,
+      testCount: workspace.tests.length,
+      completedTestCount: workspace.tests.filter((item) => item.status === "completed").length,
+      ruleCount: workspace.rules.length,
+      validatedRuleCount: workspace.rules.filter((item) => item.status === "validated").length,
+      brokerOrderCount: broker.orders.length,
+      brokerExecutionCount: broker.executions.length,
+    },
+  };
 }
 
 function requestTvBounds() {

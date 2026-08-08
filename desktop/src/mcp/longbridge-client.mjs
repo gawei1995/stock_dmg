@@ -8,9 +8,14 @@ const READ_ONLY_TOOLS = new Set([
   "account_balance",
   "candlesticks",
   "exchange_rate",
+  "history_executions",
+  "history_orders",
+  "order_detail",
   "option_quote",
   "quote",
   "stock_positions",
+  "today_executions",
+  "today_orders",
 ]);
 const REQUIRED_TOOLS = new Set([
   "account_balance",
@@ -26,9 +31,14 @@ const DEFAULT_TOOL_TIMEOUT_MS = Object.freeze({
   account_balance: 12_000,
   candlesticks: 15_000,
   exchange_rate: 10_000,
+  history_executions: 20_000,
+  history_orders: 20_000,
+  order_detail: 12_000,
   option_quote: 12_000,
   quote: 12_000,
   stock_positions: 12_000,
+  today_executions: 12_000,
+  today_orders: 12_000,
 });
 
 export class LongbridgeClient {
@@ -181,6 +191,10 @@ export class LongbridgeClient {
       persistentAuth: this.store.persistent,
       networkStack: this.networkStack,
     };
+  }
+
+  supports(name) {
+    return READ_ONLY_TOOLS.has(name) && this.tools.has(name);
   }
 
   async call(name, args = {}, { signal, timeoutMs } = {}) {

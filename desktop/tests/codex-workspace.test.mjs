@@ -535,6 +535,55 @@ test("candidate LLM sizing is accepted subject only to validated risk envelopes"
   assert.match(enriched.plan.scenarios[0].then, /初始新增 1%/);
 });
 
+test("explicit margin_within_cap can use buying power but never exceed 150 percent gross", () => {
+  const run = candidateRunFixture();
+  run.risk.cashConstrainedWeightPercent = 0;
+  run.risk.hardMaxAdditionalWeightPercent = 1;
+  run.risk.hardMaxTotalWeightPercent = 1;
+  run.risk.portfolioConstraints.grossExposurePercent = 149;
+  run.risk.portfolioConstraints.groupExposure.push({ key: "新主题", weight: 0 });
+  const enriched = applyCodexWorkspaceAnalysis(
+    run,
+    candidateWorkspaceAnalysis({
+      candidateGroupKey: "新主题",
+      recommendedInitialAdditionalWeightPercent: 2,
+      recommendedMaxTotalWeightPercent: 5,
+      leverageDecision: "margin_within_cap",
+    }),
+  );
+
+  assert.equal(enriched.risk.sizingReview.status, "bounded");
+  assert.equal(enriched.risk.recommendedInitialAdditionalWeightPercent, 1);
+  assert.equal(enriched.risk.recommendedMaxWeightPercent, 1);
+  assert.equal(enriched.risk.leverage.decision, "margin_within_cap");
+  assert.equal(enriched.risk.leverage.additionalLeverageAllowed, true);
+  assert.equal(enriched.risk.leverage.maxAdditionalBorrowedWeightPercent, 1);
+  assert.equal(enriched.risk.leverage.projectedGrossAtMaxPercent, 150);
+  assert.ok(enriched.risk.sizingReview.limitBindings.includes("gross_exposure"));
+});
+
+test("margin_within_cap fails closed when buying power is not verifiable", () => {
+  const run = candidateRunFixture();
+  run.risk.cashConstrainedWeightPercent = 0;
+  run.risk.buyPowerValid = false;
+  run.risk.buyPowerWeightPercent = null;
+  run.risk.leverage.marginEligible = false;
+  run.risk.portfolioConstraints.groupExposure.push({ key: "新主题", weight: 0 });
+  const enriched = applyCodexWorkspaceAnalysis(
+    run,
+    candidateWorkspaceAnalysis({
+      candidateGroupKey: "新主题",
+      recommendedInitialAdditionalWeightPercent: 2,
+      recommendedMaxTotalWeightPercent: 5,
+      leverageDecision: "margin_within_cap",
+    }),
+  );
+
+  assert.equal(enriched.risk.sizingReview.status, "blocked");
+  assert.equal(enriched.risk.leverage.additionalLeverageAllowed, false);
+  assert.match(enriched.risk.sizingReview.rationale, /购买力/);
+});
+
 test("unmatched candidate themes use the worst existing theme exposure instead of zero", () => {
   const enriched = applyCodexWorkspaceAnalysis(
     candidateRunFixture(),
@@ -865,12 +914,16 @@ test("candidate turns request structured Markdown plus a bounded sizing review",
   assert.equal(turn.params.outputSchema.properties.analysisMarkdown.type, "string");
   assert.deepEqual(
     turn.params.outputSchema.properties.candidateSizing.properties.leverageDecision.enum,
-    ["cash_only", "disabled"],
+    ["cash_only", "margin_within_cap", "disabled"],
   );
   assert.deepEqual(
     turn.params.outputSchema.properties.candidateSizing.properties.fibReview
-      .properties.decision.enum,
+      .anyOf[0].properties.decision.enum,
     ["use_auto", "override", "ignore", "insufficient_evidence"],
+  );
+  assert.equal(
+    turn.params.outputSchema.properties.candidateSizing.properties.fibReview.anyOf[1].type,
+    "null",
   );
   assert.equal(turn.params.input.some((item) => item.type === "skill"
     && item.name === "analyze-market-narratives"), true);
@@ -884,7 +937,7 @@ test("composer markers map only to discovered Skills and accessible Apps", () =>
   const apps = [{ id: "research-app", name: "Research" }];
   assert.deepEqual(findRequestedSkills("$risk $missing", skills), [skills[0]]);
   assert.deepEqual(findRequestedApps("$research-app $missing", apps), [apps[0]]);
-  assert.match(expandAgentCommand("/technical 看日线"), /EMA 3\/5\/8\/13\/21/);
+  assert.match(expandAgentCommand("/technical 看日线"), /相对强弱|筹码/);
 });
 
 test("remaining context below two percent triggers persistent thread compaction", async () => {
@@ -2501,6 +2554,9 @@ function candidateRunFixture() {
       candidateGroupKnown: false,
       baseCurrency: "USD",
       riskBudgetPercent: 0.8,
+      cashConstrainedWeightPercent: 20,
+      buyPowerValid: true,
+      buyPowerWeightPercent: 200,
       hardMaxAdditionalWeightPercent: 10,
       hardMaxTotalWeightPercent: 10,
       recommendedInitialAdditionalWeightPercent: null,
@@ -2515,11 +2571,18 @@ function candidateRunFixture() {
         decision: "cash_only",
         additionalLeverageAllowed: false,
         maxAdditionalBorrowedWeightPercent: 0,
+        maxLeverageMultiple: 1.5,
+        marginEligible: true,
         disabledReasons: [],
       },
       portfolioConstraints: {
         groupExposure: [{ key: "半导体", weight: 29 }],
-        policyThresholds: { groupWarningPercent: 30 },
+        grossExposurePercent: 32,
+        policyThresholds: {
+          groupWarningPercent: 30,
+          grossWarningPercent: 120,
+          grossHardMaxPercent: 150,
+        },
       },
     },
     plan: {

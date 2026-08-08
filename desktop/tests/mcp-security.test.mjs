@@ -43,6 +43,26 @@ test("Longbridge client rejects every tool outside the query allowlist before co
   await assert.rejects(client.call("watchlist_create", {}), /not in the desktop read-only allowlist/);
 });
 
+test("broker history queries are allowlisted without making them connection requirements", async () => {
+  const client = new LongbridgeClient({
+    endpoint: "https://mcp.longbridge.com/v2",
+    store: memoryStore,
+    openExternal: async () => {},
+  });
+  client.client = {
+    async callTool({ name }) {
+      return { content: [{ type: "text", text: JSON.stringify({ name, orders: [], trades: [] }) }] };
+    },
+  };
+  client.transport = { async close() {} };
+  for (const name of ["history_orders", "history_executions", "today_orders", "today_executions", "order_detail"]) {
+    client.tools.set(name, {});
+    assert.equal(client.supports(name), true);
+    assert.equal((await client.call(name, {})).name, name);
+  }
+  assert.equal(client.supports("submit_order"), false);
+});
+
 test("OAuth discovery and MCP transport share the injected system-proxy fetch", async () => {
   const fetchFn = async () => new Response(null, { status: 401 });
   const authOptions = [];

@@ -23,12 +23,13 @@ npm run desktop:dev
 4. 在右侧选择“当前持仓 / 候选买入 / 全部组合”并运行持久 Codex Agent；候选标的不必已经持有，全组合模式会检查全部真实仓位但不会逐只拉 K 线。
 5. 需要分开讨论时点击“新建”创建独立 Codex 会话；点击“本机对话”会直接打开原 thread、显示原内容并继续。不同会话可同时运行，各自显示状态；项目工具共享而聊天上下文隔离。输入 `/`、`$` 或 `@` 仍可联想命令、Skills、Apps 与 MCP 工具。
 6. 两条分隔线可拖拽，左右栏也可隐藏；TradingView 只重算原生视口，不会被 CSS 缩放或拉伸。
+7. 切换到“复盘实验室”后，按“复盘案例 → 测试 → 候选规则 → Rule Review”记录财报季度样本；长桥历史委托/成交只读同步后可关联到案例。
 
 ## 只读边界
 
 - Longbridge 固定使用官方全球 `.com/v2`，不根据 macOS 地区猜测账户区域，也不自动回退到香港或中国大陆节点。OAuth、MCP 与 ECB 参考汇率请求统一使用 Electron/Chromium 网络栈，自动继承 macOS 系统代理。
 - OAuth 只请求 `scope=6`（账户读取）。
-- 主进程仅允许 `account_balance`、`stock_positions`、`quote`、`option_quote`、`candlesticks` 和 `exchange_rate`；其中 `option_quote` 仅用于真实合约乘数与期权报价。
+- 主进程必需查询白名单为 `account_balance`、`stock_positions`、`quote`、`option_quote`、`candlesticks` 和 `exchange_rate`；另可选允许 `history_orders`、`history_executions`、`today_orders`、`today_executions` 与 `order_detail` 供复盘使用。所有订单接口均为查询，写操作仍被拒绝。
 - 客户端拒绝调用白名单之外的所有工具；若缺少任一必需查询工具或出现真实订单工具，则拒绝建立连接。
 - Renderer 不接触 MCP Client、OAuth Token、Node.js 或任意通用工具调用入口。
 - Codex App Server 是唯一的 Agent harness，统一负责线程、历史、Skills/MCP/Apps、工具事件、取消和最终结果收集。EMA、Fib、仓位与风险引擎只是只读证据工具，不维护第二套会话或 Agent 状态。长桥桥接层不暴露提交、修改或取消订单的能力。
@@ -37,15 +38,20 @@ npm run desktop:dev
 
 ## Agent 分析口径
 
-- 短周期：EMA 3 / 5 / 8 / 13 / 21。
-- 长周期：EMA 144 / 169。
-- Fib 三点扩展：0.382 / 0.618 / 1 / 1.618，公式为 `C + (B - A) × ratio`。本地自动 A/B/C 只作 `AUTO / ADVISORY` 证据；LLM 可采用、覆盖或忽略。覆盖时只能引用真实已收盘 K 线的 `barId + high/low`，价格和扩展位由宿主复算。
+- 技术框架采用开放证据栈：价格/成交量、趋势与动量、相对强弱、板块同行、成本/筹码结构、AVWAP、波动率/期权与事件后价格反应可按适用性组合，LLM 负责权重与冲突判断。
+- EMA 3 / 5 / 8 / 13 / 21、EMA 144 / 169 与 Fib 0.382 / 0.618 / 1 / 1.618 继续作为基础确定性证据，但不是每轮必选的主框架。本地自动 Fib 仅为 `AUTO / ADVISORY`；只有 LLM 明确采用并通过真实 K 线锚点复核后才参与计划。
 - 行情计算：Longbridge 1D OHLCV、前复权、仅常规交易时段，默认请求 1000 根。正式 EMA 只使用已确认收盘日 K；当日形成中 K 线单列为 `PROVISIONAL`。EMA 使用 Close、SMA seed 和标准指数递推，EMA169 至少有 507 根已完成日 K 才标记成熟。
 - 日线同时保留提供方时间戳与交易所本地交易日；长桥日线午夜戳按该本地日期解释，并结合对应市场收盘时间判断 `FORMING / CLOSED`，避免盘中日 K 污染正式 EMA/Fib。
 - 持仓估值优先采用时间戳最新的常规/盘前/盘后/夜盘报价；组合 `quoteAsOf` 取所有已估值持仓中最旧的一项。
 - 账户总额直接采用长桥 USD 口径；多币种持仓通过已规范方向并经 USD/HKD 合理性校验的汇率图换算。集中度使用 gross exposure，另保留 net exposure。
-- 候选买入由 Codex 结合叙事/技术 Skills、已收盘 OHLCV 与可用只读 MCP 独立提出 Stage、Fib、失效位和仓位，不再使用本地 Stage 1 或 2%/4% 预设。宿主只验证锚点与失效位，并把模型建议限制在两分钟新鲜快照、现金、单仓/Top5/主题、毛暴露、风险预算、保证金和衍生品覆盖等硬边界内；界面同时显示 `LLM PROPOSED` 与 `HOST ACCEPTED`。
+- 候选买入由 Codex 结合叙事/技术 Skills、开放证据栈与可用只读 MCP 独立提出 Stage、失效位、仓位和现金/融资决策，不再使用本地 Stage 1 或 2%/4% 预设。宿主把模型建议限制在两分钟新鲜快照、购买力、单仓/Top5/主题、毛暴露、风险预算、保证金和衍生品覆盖等硬边界内；组合 gross exposure 在 120% 预警、150%（1.5×）硬性封顶，融资必须显式选择 `margin_within_cap`；界面同时显示 `LLM PROPOSED` 与 `HOST ACCEPTED`。
 - 输出：技术结构、组合权重、主题暴露、参考位静态组合影响、牛/基准/熊静态条件计划与证据链。计划不在后台监控。
+
+## 复盘、测试与规则
+
+- 每个财报季度是一个独立案例；事件前的判断、市场预期、动作、失效条件和风险预算可封存为带时间戳与哈希的不可变版本。事件后补写的内容会标为 retrospective，不进入正式统计。
+- 长桥历史委托与成交默认只读同步近一年：通用账户按不超过 90 天的窗口及 `has_more` 获取，美区委托另按 `us_page/us_limit + total_count` 完整分页，再与当日记录合并、去重；案例默认关联财报前 21 天至后 20 天的同标的记录。
+- 人工填写的 R 结果只标为观察性证据。规则晋级要求确定性引擎核验的独立事件样本：20 个样本且净期望为正才可进入暂行原则，50 个样本且净期望为正才可进入已验证规则；晋级仍由用户主动 Review。
 
 ## Codex 持久项目
 

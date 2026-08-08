@@ -6,6 +6,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <title>交易驾驶舱</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./review.css" />
   </head>
   <body>
     <header class="topbar">
@@ -14,6 +15,10 @@
         <div><strong>交易驾驶舱</strong><span>TRADING COCKPIT / DESKTOP</span></div>
       </div>
       <div class="system-strip" aria-live="polite">
+        <nav class="workspace-switch" aria-label="工作区切换">
+          <button id="workspace-cockpit" type="button" data-workspace-mode="cockpit" aria-pressed="true">驾驶舱</button>
+          <button id="workspace-review" type="button" data-workspace-mode="review" aria-pressed="false">复盘</button>
+        </nav>
         <span class="status-chip" id="longbridge-chip"><i></i>长桥未连接</span>
         <span class="status-chip tv" id="tv-chip"><i></i>TradingView 启动中</span>
         <span class="status-chip readonly"><i></i>READ ONLY</span>
@@ -155,7 +160,7 @@
             </label>
           </div>
           <div class="quick-actions" aria-label="快捷 Agent 任务">
-            <button type="button" data-scope="position" data-task="分析当前持仓的技术结构与仓位风险">持仓分析</button>
+            <button type="button" data-scope="position" data-task="综合价格量能、相对强弱、筹码或成本结构、板块联动、波动与仓位风险分析当前持仓；EMA/Fib仅在适用时采用">持仓分析</button>
             <button type="button" data-scope="portfolio" data-task="检查全部持仓的集中度、主题重复暴露、风险预算与组合健康度">组合体检</button>
             <button type="button" data-scope="candidate" data-task="为未持有标的生成候选买入计划，包括触发、失效与仓位预算">候选买入</button>
           </div>
@@ -176,7 +181,141 @@
       </aside>
     </main>
 
+    <main class="review-workspace" id="review-workspace" aria-label="复盘与规则实验室" hidden>
+      <header class="review-overview">
+        <div>
+          <span class="review-kicker">DECISION LEARNING SYSTEM</span>
+          <h1>复盘与规则实验室</h1>
+          <p>按“案例复盘 → 测试 → 规则 → Review”沉淀可验证的交易准则。历史事实与统计由宿主计算，规则迁移由你确认。</p>
+        </div>
+        <div class="review-summary" id="review-summary" aria-live="polite">
+          <div><span>案例</span><strong>0</strong></div>
+          <div><span>测试中</span><strong>0</strong></div>
+          <div><span>有效规则</span><strong>0</strong></div>
+          <div><span>待Review</span><strong>0</strong></div>
+        </div>
+        <div class="review-overview-actions">
+          <button class="review-button secondary" id="review-sync-history" type="button">同步长桥历史</button>
+          <button class="review-button primary" id="review-new-case" type="button">＋ 新建案例</button>
+        </div>
+      </header>
+
+      <nav class="review-tabs" role="tablist" aria-label="复盘流程">
+        <button id="review-tab-cases" type="button" role="tab" data-review-tab="cases" aria-controls="review-panel-cases" aria-selected="true">案例复盘 <span id="review-case-count">0</span></button>
+        <button id="review-tab-tests" type="button" role="tab" data-review-tab="tests" aria-controls="review-panel-tests" aria-selected="false">测试 <span id="review-test-count">0</span></button>
+        <button id="review-tab-rules" type="button" role="tab" data-review-tab="rules" aria-controls="review-panel-rules" aria-selected="false">规则 <span id="review-rule-count">0</span></button>
+        <button id="review-tab-governance" type="button" role="tab" data-review-tab="governance" aria-controls="review-panel-governance" aria-selected="false">Review <span id="review-due-count">0</span></button>
+      </nav>
+
+      <div class="review-notice" id="review-notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="review-panel review-case-panel" id="review-panel-cases" role="tabpanel" aria-labelledby="review-tab-cases">
+        <aside class="review-list-pane">
+          <div class="review-list-toolbar">
+            <label for="review-case-search">案例</label>
+            <input id="review-case-search" type="search" maxlength="120" placeholder="代码、季度或策略" autocomplete="off" />
+          </div>
+          <div class="review-case-list" id="review-case-list"></div>
+        </aside>
+
+        <div class="review-detail-pane">
+          <form class="review-form" id="review-case-form">
+            <div class="review-section-heading">
+              <div><span>EX-ANTE RECORD</span><h2 id="review-case-heading">新建财报案例</h2></div>
+              <span class="review-state-badge draft" id="review-case-status">DRAFT</span>
+            </div>
+            <input id="review-case-id" type="hidden" />
+            <div class="review-form-grid compact">
+              <label><span>标的</span><input id="review-case-symbol" name="symbol" type="text" maxlength="32" required placeholder="NVDA.US" autocomplete="off" spellcheck="false" /></label>
+              <label><span>财报季度</span><input id="review-case-period" name="fiscalPeriod" type="text" maxlength="40" required placeholder="FY2027 Q1" autocomplete="off" /></label>
+              <label><span>预计财报时间</span><input id="review-case-event-at" name="eventAt" type="datetime-local" required /></label>
+              <label><span>策略类型</span><select id="review-case-strategy" name="strategyType"><option value="pre_hold">财报前持有</option><option value="pre_add">财报前加仓</option><option value="pre_reduce">财报前减仓</option><option value="pre_hedge">财报前保护</option><option value="post_confirm_entry">财报后确认买入</option><option value="post_reversal_exit">财报后退出</option><option value="other">其他</option></select></label>
+              <label><span>主评价窗口</span><select id="review-case-window" name="primaryHorizon"><option value="t1">T+1</option><option value="t3">T+3</option><option value="t5" selected>T+5</option><option value="t20">T+20</option><option value="next_quarter">下次财报</option></select></label>
+              <label><span>风险预算 / R</span><input id="review-case-risk-budget" name="riskBudgetR" type="number" min="0.01" step="0.01" placeholder="例如 1.0" /></label>
+              <label><span>叙事Stage</span><input id="review-case-stage" name="stage" type="text" maxlength="24" placeholder="2 / 3 / 4P / 4E / 4F" /></label>
+              <label><span>市场温度 / 10</span><input id="review-case-temperature" name="temperature" type="number" min="0" max="10" step="0.5" placeholder="6" /></label>
+            </div>
+            <div class="review-form-grid narrative">
+              <label><span>我的判断</span><textarea id="review-case-thesis" name="thesis" rows="4" maxlength="4000" placeholder="当时认为价值由什么驱动，预期差在哪里？"></textarea></label>
+              <label><span>市场当时相信什么</span><textarea id="review-case-market-belief" name="marketBelief" rows="4" maxlength="4000" placeholder="价格、预期、定位与消息反应隐含了什么？"></textarea></label>
+              <label><span>计划动作</span><textarea id="review-case-action" name="plannedAction" rows="3" maxlength="2400" placeholder="加仓、持有、减仓或保护；包括规模与触发。"></textarea></label>
+              <label><span>失效条件</span><textarea id="review-case-invalidation" name="invalidation" rows="3" maxlength="2400" placeholder="可观察、可验证，不限定为某一种技术指标。"></textarea></label>
+            </div>
+            <div class="review-form-actions">
+              <span id="review-freeze-note">草稿可编辑；封存后只能追加事后记录。</span>
+              <button class="review-button secondary" id="review-link-records" type="button" disabled>确认关联成交</button>
+              <button class="review-button secondary" id="review-freeze-case" type="button" disabled>封存财报前判断</button>
+              <button class="review-button primary" id="review-save-case" type="submit">保存案例</button>
+            </div>
+          </form>
+
+          <section class="review-card broker-match-card" aria-labelledby="review-broker-match-heading">
+            <div class="review-card-heading"><div><span>BROKER MATCH</span><h3 id="review-broker-match-heading">自动匹配的长桥订单与成交</h3></div><strong id="review-broker-match-count">0 条</strong></div>
+            <p class="review-card-note">系统只提出匹配候选。确认前不会把订单或成交归因到本案例；订单用于执行质量，成交用于真实盈亏。</p>
+            <div class="review-record-list" id="review-broker-matches"></div>
+          </section>
+
+          <section class="review-card" aria-labelledby="review-checkpoint-heading">
+            <div class="review-card-heading"><div><span>OUTCOME PATH</span><h3 id="review-checkpoint-heading">结果检查点</h3></div><strong>主窗口预先冻结</strong></div>
+            <div class="review-checkpoints" id="review-checkpoints"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="review-panel" id="review-panel-tests" role="tabpanel" aria-labelledby="review-tab-tests" hidden>
+        <div class="review-flow-grid">
+          <form class="review-form review-flow-form" id="review-test-form">
+            <div class="review-section-heading"><div><span>REGISTERED TEST</span><h2>登记测试</h2></div><span class="review-state-badge testing">PRE-REGISTER</span></div>
+            <label><span>可证伪假设</span><textarea id="review-test-hypothesis" rows="4" maxlength="4000" required placeholder="例如：Stage 3且财报前出现好消息不涨时，减仓策略能改善净期望并降低尾部亏损。"></textarea></label>
+            <div class="review-form-grid compact">
+              <label><span>关联案例</span><select id="review-test-case"><option value="">不限定单一案例</option></select></label>
+              <label><span>关联规则</span><select id="review-test-rule"><option value="">暂不关联规则</option></select></label>
+              <label><span>策略族</span><input id="review-test-strategy" type="text" maxlength="120" required placeholder="pre_earnings_reduce" /></label>
+              <label><span>主指标</span><select id="review-test-metric"><option value="net_r">净R</option><option value="relative_return">相对基准收益</option><option value="drawdown">最大回撤</option><option value="hedge_value">对冲价值</option></select></label>
+              <label><span>评价窗口</span><select id="review-test-window"><option value="t1">T+1</option><option value="t3">T+3</option><option value="t5" selected>T+5</option><option value="t20">T+20</option></select></label>
+              <label><span>最少案例</span><input id="review-test-min-cases" type="number" min="1" max="10000" step="1" value="20" /></label>
+            </div>
+            <label><span>样本纳入条件</span><textarea id="review-test-cohort" rows="3" maxlength="3000" placeholder="财报事件、市场环境、Stage、波动率等；未交易但满足条件的案例也应纳入。"></textarea></label>
+            <label><span>排除条件</span><textarea id="review-test-exclusions" rows="2" maxlength="2000" placeholder="必须在读取结果前登记。"></textarea></label>
+            <div class="review-form-actions"><span>完成前不能改主指标与主窗口。</span><button class="review-button primary" type="submit">登记测试</button></div>
+          </form>
+          <div class="review-flow-list" id="review-test-list"></div>
+        </div>
+      </section>
+
+      <section class="review-panel" id="review-panel-rules" role="tabpanel" aria-labelledby="review-tab-rules" hidden>
+        <div class="review-flow-grid">
+          <form class="review-form review-flow-form" id="review-rule-form">
+            <div class="review-section-heading"><div><span>VERSIONED RULE</span><h2>建立候选规则</h2></div><span class="review-state-badge hypothesis">HYPOTHESIS</span></div>
+            <label><span>规则名称</span><input id="review-rule-title" type="text" maxlength="160" required placeholder="财报前好消息不涨的减仓纪律" /></label>
+            <label><span>观察条件</span><textarea id="review-rule-condition" rows="3" maxlength="3000" required placeholder="必须是事前可观察的条件。"></textarea></label>
+            <label><span>对应动作</span><textarea id="review-rule-action" rows="3" maxlength="3000" required placeholder="触发后执行什么，仓位或保护如何变化？"></textarea></label>
+            <label><span>失效与反证</span><textarea id="review-rule-invalidation" rows="3" maxlength="3000" required placeholder="什么证据出现时，这条规则应停止使用？"></textarea></label>
+            <label><span>适用范围</span><input id="review-rule-scope" type="text" maxlength="500" placeholder="标的、行业、Stage、市场环境" /></label>
+            <div class="review-form-actions"><span>新规则从假设开始，不因单次盈亏直接晋升。</span><button class="review-button primary" type="submit">建立规则</button></div>
+          </form>
+          <div class="review-flow-list" id="review-rule-list"></div>
+        </div>
+      </section>
+
+      <section class="review-panel" id="review-panel-governance" role="tabpanel" aria-labelledby="review-tab-governance" hidden>
+        <div class="review-flow-grid governance">
+          <form class="review-form review-flow-form" id="review-governance-form">
+            <div class="review-section-heading"><div><span>RULE GOVERNANCE</span><h2>记录规则Review</h2></div><span class="review-state-badge review">KEEP / MODIFY / RETIRE</span></div>
+            <label><span>规则</span><select id="review-governance-rule" required><option value="">请选择规则</option></select></label>
+            <label><span>Keep</span><textarea id="review-governance-keep" rows="3" maxlength="3000" required placeholder="哪些行为或规则部分得到支持？"></textarea></label>
+            <label><span>Change</span><textarea id="review-governance-change" rows="3" maxlength="3000" required placeholder="需要怎样做出可观察、可测试的调整？"></textarea></label>
+            <label><span>Next trigger</span><textarea id="review-governance-next" rows="3" maxlength="3000" required placeholder="什么条件触发下次动作或重新审查？"></textarea></label>
+            <label><span>裁决</span><select id="review-governance-verdict"><option value="KEEP">KEEP</option><option value="MODIFY">MODIFY</option><option value="RETIRE">RETIRE</option></select></label>
+            <div class="review-form-actions"><span>Review不覆盖旧版本，只追加审计记录。</span><button class="review-button primary" type="submit">保存Review</button></div>
+          </form>
+          <div class="review-flow-list" id="review-governance-list"></div>
+        </div>
+      </section>
+    </main>
+
     <script src="./markdown.js"></script>
     <script src="./renderer.js"></script>
+    <script src="./review.js"></script>
   </body>
 </html>

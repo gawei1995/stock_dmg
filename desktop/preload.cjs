@@ -25,6 +25,22 @@ contextBridge.exposeInMainWorld("cockpit", {
   recoverAgentResult: (request) => ipcRenderer.invoke("agent:result:recover", request),
   cancelAgent: (request) => ipcRenderer.invoke("agent:cancel", request),
   savePlan: (run) => ipcRenderer.invoke("agent:save-plan", run),
+  workspace: {
+    setMode: (mode) => ipcRenderer.invoke("workspace:set-mode", { mode }),
+  },
+  review: {
+    snapshot: () => ipcRenderer.invoke("review:snapshot"),
+    createCase: (request) => ipcRenderer.invoke("review:case:create", request),
+    updateCase: (request) => ipcRenderer.invoke("review:case:update", request),
+    freezeCase: (request) => ipcRenderer.invoke("review:case:freeze", request),
+    linkBrokerRecords: (request) => ipcRenderer.invoke("review:case:link-broker", request),
+    syncTradeHistory: (request) => ipcRenderer.invoke("review:trade-history:sync", request),
+    registerTest: (request) => ipcRenderer.invoke("review:test:register", request),
+    completeTest: (request) => ipcRenderer.invoke("review:test:complete", request),
+    createRule: (request) => ipcRenderer.invoke("review:rule:create", request),
+    transitionRule: (request) => ipcRenderer.invoke("review:rule:transition", request),
+    addRuleReview: (request) => ipcRenderer.invoke("review:rule:review", request),
+  },
   tv: {
     setBounds: (bounds) => ipcRenderer.send("tv:set-bounds", bounds),
     loadSymbol: (tvSymbol) => ipcRenderer.invoke("tv:load-symbol", tvSymbol),

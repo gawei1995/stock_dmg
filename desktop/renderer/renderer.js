@@ -1716,7 +1716,7 @@ function renderAgentRun(run, { stale = false } = {}) {
     structuredSections.push(`<button class="save-plan" type="button" data-save-plan="${esc(run.id)}" ${runStale ? "disabled" : ""}>${runStale ? "上下文或裁决已失效 · 请刷新后重新运行" : "保存为静态计划快照 · 不监控、不下单"}</button>`);
   }
   const structured = structuredSections.length
-    ? `<details class="structured-evidence"><summary><span>展开结构化证据</span><strong>${structuredModuleCount} 个模块 · EMA / FIB / 风险 / 计划</strong></summary><div class="structured-evidence-body">${structuredSections.join("")}</div></details>`
+    ? `<details class="structured-evidence"><summary><span>展开结构化证据</span><strong>${structuredModuleCount} 个模块 · 市场证据 / 风险 / 计划</strong></summary><div class="structured-evidence-body">${structuredSections.join("")}</div></details>`
     : "";
   const adjudication = run.context?.scope === "candidate"
     ? candidateAdjudicationCard(run.risk, { stale: runStale })
@@ -2184,7 +2184,7 @@ function candidateRiskCard(risk) {
         <div><span>${esc(risk.referenceLabel)}</span><strong>${number(risk.referenceLevel)}</strong></div>
         <div><span>新增融资权重</span><strong>${percent(leverage.maxAdditionalBorrowedWeightPercent ?? 0)}</strong></div>
         <div><span>杠杆上限</span><strong>${number(leverage.maxLeverageMultiple, 2)}×</strong></div>
-        <div><span>杠杆判断</span><strong>${leverage.decision === "disabled" ? "禁止新增 / 不可评估" : leverage.additionalLeverageAllowed ? "可复核" : "仅现金覆盖"}</strong></div>
+        <div><span>杠杆判断</span><strong>${leverage.decision === "disabled" ? "禁止新增 / 不可评估" : leverage.decision === "margin_within_cap" ? "融资上限内 · ≤150%" : leverage.additionalLeverageAllowed ? "可复核" : "仅现金覆盖"}</strong></div>
         <div><span>DECISION AT</span><strong>${sizingReview.decisionAt ? esc(shortDateTime(sizingReview.decisionAt)) : "—"}</strong></div>
         <div><span>VALID UNTIL</span><strong>${risk.sizingValidUntil ? esc(shortDateTime(risk.sizingValidUntil)) : "—"}</strong></div>
       </div>

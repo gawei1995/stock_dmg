@@ -13,12 +13,30 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "交易驾驶舱｜TradingView × 长桥 × 交易 Agent",
+  title: "交易驾驶舱｜看盘、组合风险与复盘规则",
   description:
-    "统一 TradingView 看盘、长桥行情与仓位，由交易 Agent 输出组合风险分析和条件化交易计划。",
+    "统一 TradingView 看盘、长桥真实仓位与历史成交，由交易 Agent 管理组合暴露，并建立复盘、测试、规则与人工 Review 闭环。",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
+  },
+  openGraph: {
+    title: "交易驾驶舱｜看盘、组合风险与复盘规则",
+    description: "TradingView 看盘、长桥真实账户、Codex Agent 与可验证复盘闭环。",
+    type: "website",
+    locale: "zh_CN",
+    images: [{
+      url: "/trading-cockpit-og.png",
+      width: 1731,
+      height: 909,
+      alt: "交易驾驶舱的组合风险、市场证据与复盘闭环",
+    }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "交易驾驶舱｜看盘、组合风险与复盘规则",
+    description: "TradingView 看盘、长桥真实账户、Codex Agent 与可验证复盘闭环。",
+    images: ["/trading-cockpit-og.png"],
   },
 };
 

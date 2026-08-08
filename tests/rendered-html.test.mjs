@@ -22,9 +22,12 @@ test("server-renders the trading cockpit", async () => {
   const html = await response.text();
   assert.match(html, /交易驾驶舱/);
   assert.match(html, /TradingView/);
-  assert.match(html, /长桥行情/);
-  assert.match(html, /FIBONACCI MAP/);
-  assert.match(html, /EMA 144/);
+  assert.match(html, /长桥仓位/);
+  assert.match(html, /历史订单与逐笔成交/);
+  assert.match(html, /OPEN EVIDENCE STACK/i);
+  assert.match(html, /复盘不是结案/);
+  assert.match(html, /120% 预警/);
+  assert.match(html, /150% 硬上限/);
   assert.match(html, /只读模式/);
   assert.match(html, /演示数据/);
 });
