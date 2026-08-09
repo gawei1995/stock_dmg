@@ -78,6 +78,84 @@ test("a snapshot sealed after the event is retrospective and excluded from forma
   assert.equal((await store.snapshot()).cases[0].status, "retrospective");
 });
 
+test("an order-first case derives broker dates and event metadata before the user writes a thesis", async () => {
+  let id = 0;
+  const store = new ReviewStore({
+    store: new MemoryStore(),
+    now: () => new Date("2026-08-01T00:00:00.000Z"),
+    idFactory: () => `id-${++id}`,
+  });
+  const reviewCase = await store.createCaseFromBrokerRecords({
+    symbol: "NVDA.US",
+    activityStartAt: "2026-07-30T14:00:00.000Z",
+    activityEndAt: "2026-07-30T14:01:00.000Z",
+    orderIds: ["o-1"],
+    executionIds: ["t-1"],
+    recordIds: ["order:o-1", "execution:t-1"],
+    event: {
+      eventCandidateId: "nvda-event",
+      eventAt: "2026-08-20T00:00:00.000Z",
+      eventDate: "2026-08-20",
+      eventTimePrecision: "session",
+      eventSession: "amc",
+      timezone: "America/New_York",
+      fiscalQuarter: "FY2026 Q2",
+    },
+    eventAssociation: {
+      status: "matched",
+      source: "Longbridge finance_calendar",
+      confidence: "high",
+    },
+  });
+
+  assert.equal(reviewCase.origin, "longbridge_records");
+  assert.equal(reviewCase.symbol, "NVDA.US");
+  assert.equal(reviewCase.fiscalQuarter, "FY2026 Q2");
+  assert.equal(reviewCase.brokerActivity.startAt, "2026-07-30T14:00:00.000Z");
+  assert.deepEqual(reviewCase.brokerLinks.orderIds, ["o-1"]);
+  assert.equal(reviewCase.exAnteDraft.myView, null);
+});
+
+test("session-only earnings dates conservatively reject same-local-day snapshots as ex-ante", async () => {
+  let now = "2026-08-20T14:00:00.000Z";
+  let id = 0;
+  const store = new ReviewStore({
+    store: new MemoryStore(),
+    now: () => new Date(now),
+    idFactory: () => `id-${++id}`,
+  });
+  const reviewCase = await store.createCaseFromBrokerRecords({
+    symbol: "NVDA.US",
+    activityStartAt: "2026-08-10T14:00:00.000Z",
+    activityEndAt: "2026-08-10T14:00:00.000Z",
+    orderIds: ["o-1"],
+    recordIds: ["order:o-1"],
+    event: {
+      eventCandidateId: "event-1",
+      eventAt: "2026-08-20T00:00:00.000Z",
+      eventDate: "2026-08-20",
+      eventTimePrecision: "session",
+      eventSession: "amc",
+      timezone: "America/New_York",
+      fiscalQuarter: "FY2026 Q2",
+    },
+    eventAssociation: { status: "matched" },
+  });
+  await store.updateCase(reviewCase.id, {
+    exAnte: {
+      myView: "增长超预期",
+      marketView: "市场预期高增长",
+      plannedAction: "持有",
+      invalidation: "指引下修",
+      riskBudgetR: 1,
+    },
+  });
+  now = "2026-08-20T15:00:00.000Z";
+  const version = await store.freezeCase(reviewCase.id);
+  assert.equal(version.eligibleForFormalStats, false);
+  assert.equal(version.timing, "retrospective");
+});
+
 test("rule metrics count one registered event result and label small samples as observational", async () => {
   let id = 0;
   const repository = new MemoryStore();
@@ -127,9 +205,57 @@ test("rule metrics count one registered event result and label small samples as 
   assert.equal(metrics.verifiedSampleCount, 0);
   assert.equal(metrics.winRatePercent, 50);
   assert.equal(metrics.expectancyR, 0.5);
+  assert.equal(metrics.payoffRatio, 2);
+  assert.equal(metrics.breakEvenWinRatePercent, 33.3333);
   assert.equal(metrics.profitFactor, 2);
   assert.equal(metrics.evidenceLabel, "观察性发现 · 含待核验人工结果");
   assert.equal((await store.snapshot()).tests.every((item) => item.outcomeSource === "manual"), true);
+});
+
+test("order-first event facts remain immutable while the four human fields can be frozen without optional R", async () => {
+  let id = 0;
+  const store = new ReviewStore({
+    store: new MemoryStore(),
+    now: () => new Date("2026-08-01T00:00:00.000Z"),
+    idFactory: () => `id-${++id}`,
+  });
+  const reviewCase = await store.createCaseFromBrokerRecords({
+    symbol: "NVDA.US",
+    activityStartAt: "2026-07-30T14:00:00.000Z",
+    activityEndAt: "2026-07-30T14:01:00.000Z",
+    orderIds: ["o-1"],
+    recordIds: ["order:o-1"],
+    event: {
+      eventCandidateId: "event-1",
+      eventAt: "2026-08-20T00:00:00.000Z",
+      eventDate: "2026-08-20",
+      eventTimePrecision: "session",
+      eventSession: "amc",
+      timezone: "America/New_York",
+      fiscalQuarter: "FY2026 Q2",
+    },
+    eventAssociation: { status: "matched", source: "Longbridge finance_calendar" },
+  });
+  await store.updateCase(reviewCase.id, {
+    symbol: "AAPL.US",
+    fiscalQuarter: "FY1999 Q1",
+    eventAt: "1999-01-01T00:00:00.000Z",
+    eventSession: "bmo",
+    exAnte: {
+      myView: "增长超预期",
+      marketView: "市场预期已高",
+      plannedAction: "只在确认后加仓",
+      invalidation: "指引下修",
+    },
+  });
+  const version = await store.freezeCase(reviewCase.id);
+  const saved = (await store.snapshot()).cases[0];
+
+  assert.equal(saved.symbol, "NVDA.US");
+  assert.equal(saved.fiscalQuarter, "FY2026 Q2");
+  assert.equal(saved.eventAt, "2026-08-20T00:00:00.000Z");
+  assert.equal(saved.eventSession, "amc");
+  assert.equal(version.snapshot.exAnte.riskBudgetR, null);
 });
 
 test("rule promotion follows the explicit human-reviewed state machine", async () => {

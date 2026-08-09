@@ -44,35 +44,70 @@ export class ReviewStore {
   async createCase(input) {
     return this.#mutate((workspace) => {
       const now = this.now().toISOString();
-      const reviewCase = {
+      const reviewCase = buildReviewCase({
         id: this.idFactory(),
-        symbol: requiredSymbol(input?.symbol),
-        fiscalQuarter: cleanText(input?.fiscalQuarter, 40) || "待确认季度",
+        now,
+        input,
         eventAt: requiredIso(input?.eventAt, "财报时间无效。"),
-        eventSession: enumValue(input?.eventSession, ["bmo", "amc", "intraday", "unknown"], "unknown"),
-        timezone: cleanText(input?.timezone, 80) || "America/New_York",
-        strategyType: enumValue(input?.strategyType, [
-          "pre_add",
-          "pre_hold",
-          "pre_reduce",
-          "pre_hedge",
-          "post_confirm_entry",
-          "post_reversal_exit",
-          "other",
-        ], "other"),
-        benchmark: cleanText(input?.benchmark, 40) || "QQQ.US",
-        primaryHorizon: enumValue(input?.primaryHorizon, ["t1", "t3", "t5", "t20", "next_quarter"], "t5"),
-        status: "draft",
-        createdAt: now,
-        updatedAt: now,
-        exAnteDraft: normalizeExAnte(input?.exAnte),
-        exAnteVersions: [],
-        outcome: normalizeOutcome(null),
-        review: normalizeReview(null),
-        brokerLinks: { orderIds: [], executionIds: [], confirmedAt: null },
-        ruleIds: [],
-        archived: false,
-      };
+        origin: "manual",
+      });
+      workspace.cases.unshift(reviewCase);
+      return reviewCase;
+    });
+  }
+
+  /**
+   * Host-only constructor for an order-first review. The Electron main process
+   * must resolve these values from the encrypted broker archive before calling
+   * this method; renderer-provided symbols and timestamps are never accepted.
+   */
+  async createCaseFromBrokerRecords(input) {
+    return this.#mutate((workspace) => {
+      const now = this.now().toISOString();
+      const activityStartAt = requiredIso(input?.activityStartAt, "长桥记录开始时间无效。");
+      const activityEndAt = requiredIso(input?.activityEndAt, "长桥记录结束时间无效。");
+      if (Date.parse(activityStartAt) > Date.parse(activityEndAt)) {
+        throw new Error("长桥记录时间范围无效。");
+      }
+      const eventAt = optionalIso(input?.event?.eventAt);
+      const reviewCase = buildReviewCase({
+        id: this.idFactory(),
+        now,
+        input: {
+          symbol: input?.symbol,
+          fiscalQuarter: input?.event?.fiscalQuarter,
+          eventDate: input?.event?.eventDate,
+          eventTimePrecision: input?.event?.eventTimePrecision,
+          eventSession: input?.event?.eventSession,
+          timezone: input?.event?.timezone,
+          strategyType: input?.strategyType,
+          benchmark: input?.benchmark,
+          primaryHorizon: input?.primaryHorizon,
+          exAnte: input?.exAnte,
+        },
+        eventAt,
+        origin: "longbridge_records",
+        brokerLinks: {
+          orderIds: uniqueIds(input?.orderIds),
+          executionIds: uniqueIds(input?.executionIds),
+          confirmedAt: now,
+        },
+        brokerActivity: {
+          startAt: activityStartAt,
+          endAt: activityEndAt,
+          recordCount: uniqueIds(input?.recordIds).length,
+          symbols: uniqueSymbols(input?.relatedSymbols ?? [input?.symbol]),
+        },
+        eventMetadata: {
+          status: enumValue(input?.eventAssociation?.status, [
+            "matched", "needs_confirmation", "unavailable",
+          ], eventAt ? "matched" : "needs_confirmation"),
+          source: cleanText(input?.eventAssociation?.source, 120),
+          confidence: enumValue(input?.eventAssociation?.confidence, ["high", "candidate", "low"], null),
+          eventCandidateId: cleanId(input?.event?.eventCandidateId),
+          message: cleanText(input?.eventAssociation?.message, 500),
+        },
+      });
       workspace.cases.unshift(reviewCase);
       return reviewCase;
     });
@@ -81,10 +116,19 @@ export class ReviewStore {
   async updateCase(caseId, patch) {
     return this.#mutate((workspace) => {
       const reviewCase = requiredCase(workspace, caseId);
-      if (patch?.symbol != null) reviewCase.symbol = requiredSymbol(patch.symbol);
-      if (patch?.fiscalQuarter != null) reviewCase.fiscalQuarter = cleanText(patch.fiscalQuarter, 40) || reviewCase.fiscalQuarter;
-      if (patch?.eventAt != null) reviewCase.eventAt = requiredIso(patch.eventAt, "财报时间无效。");
-      if (patch?.eventSession != null) reviewCase.eventSession = enumValue(patch.eventSession, ["bmo", "amc", "intraday", "unknown"], reviewCase.eventSession);
+      // For order-first cases these fields are host-derived broker/event facts.
+      // The renderer may echo their current readonly values, but it cannot
+      // rewrite them through a crafted update payload.
+      if (reviewCase.origin !== "longbridge_records") {
+        if (patch?.symbol != null) reviewCase.symbol = requiredSymbol(patch.symbol);
+        if (patch?.fiscalQuarter != null) reviewCase.fiscalQuarter = cleanText(patch.fiscalQuarter, 40) || reviewCase.fiscalQuarter;
+        if (patch?.eventAt != null) {
+          reviewCase.eventAt = requiredIso(patch.eventAt, "财报时间无效。");
+          reviewCase.eventDate = reviewCase.eventAt.slice(0, 10);
+          reviewCase.eventTimePrecision = "exact";
+        }
+        if (patch?.eventSession != null) reviewCase.eventSession = enumValue(patch.eventSession, ["bmo", "amc", "intraday", "unknown"], reviewCase.eventSession);
+      }
       if (patch?.strategyType != null) reviewCase.strategyType = enumValue(patch.strategyType, [
         "pre_add", "pre_hold", "pre_reduce", "pre_hedge", "post_confirm_entry", "post_reversal_exit", "other",
       ], reviewCase.strategyType);
@@ -109,11 +153,16 @@ export class ReviewStore {
       if (["cancelled", "closed"].includes(reviewCase.status)) {
         throw new Error("已取消或关闭的案例不能封存新版本。");
       }
+      if (!reviewCase.eventAt || !Number.isFinite(Date.parse(reviewCase.eventAt))) {
+        throw new Error("财报事件尚未确认，不能封存为事前计划。");
+      }
       const sealedAt = this.now().toISOString();
       const snapshot = {
         symbol: reviewCase.symbol,
         fiscalQuarter: reviewCase.fiscalQuarter,
         eventAt: reviewCase.eventAt,
+        eventDate: reviewCase.eventDate,
+        eventTimePrecision: reviewCase.eventTimePrecision,
         eventSession: reviewCase.eventSession,
         timezone: reviewCase.timezone,
         strategyType: reviewCase.strategyType,
@@ -122,12 +171,13 @@ export class ReviewStore {
         exAnte: normalizeExAnte(reviewCase.exAnteDraft),
       };
       validateExAnteSnapshot(snapshot.exAnte);
+      const eligibleForFormalStats = isConservativelyExAnte(sealedAt, reviewCase);
       const version = {
         version: reviewCase.exAnteVersions.length + 1,
         sealedAt,
         reason: cleanText(reason, 240) || "用户封存财报前计划",
-        timing: Date.parse(sealedAt) < Date.parse(reviewCase.eventAt) ? "ex_ante" : "retrospective",
-        eligibleForFormalStats: Date.parse(sealedAt) < Date.parse(reviewCase.eventAt),
+        timing: eligibleForFormalStats ? "ex_ante" : "retrospective",
+        eligibleForFormalStats,
         hash: sha256(stableStringify(snapshot)),
         snapshot,
       };
@@ -172,7 +222,20 @@ export class ReviewStore {
         ruleId,
         title: cleanText(input?.title, 160) || "未命名测试",
         hypothesis: cleanText(input?.hypothesis, 2_000),
-        primaryMetric: enumValue(input?.primaryMetric, ["net_r", "relative_return", "drawdown", "hedge_value"], "net_r"),
+        primaryMetric: enumValue(input?.primaryMetric, [
+          "net_r",
+          "relative_return",
+          "drawdown",
+          "hedge_value",
+          "win_rate",
+          "payoff_ratio",
+          "expectancy_r",
+          "mae_r",
+          "mfe_r",
+          "action_adherence",
+          "invalidation_latency",
+          "peak_gross_exposure",
+        ], "net_r"),
         primaryHorizon,
         status: "registered",
         registeredAt: now,
@@ -334,6 +397,11 @@ export function calculateRuleMetrics(workspace, ruleId) {
   const losses = values.filter((value) => value < 0);
   const grossProfit = sum(wins);
   const grossLoss = Math.abs(sum(losses));
+  const averageWinR = wins.length ? round(sum(wins) / wins.length) : null;
+  const averageLossR = losses.length ? round(Math.abs(sum(losses) / losses.length)) : null;
+  const payoffRatio = averageWinR != null && averageLossR > 0
+    ? round(averageWinR / averageLossR)
+    : null;
   return {
     ruleId,
     sampleCount: values.length,
@@ -342,8 +410,14 @@ export function calculateRuleMetrics(workspace, ruleId) {
     winCount: wins.length,
     lossCount: losses.length,
     winRatePercent: values.length ? round(wins.length / values.length * 100) : null,
-    averageWinR: wins.length ? round(sum(wins) / wins.length) : null,
-    averageLossR: losses.length ? round(Math.abs(sum(losses) / losses.length)) : null,
+    averageWinR,
+    averageLossR,
+    medianWinR: wins.length ? round(median(wins)) : null,
+    medianLossR: losses.length ? round(Math.abs(median(losses))) : null,
+    payoffRatio,
+    breakEvenWinRatePercent: payoffRatio != null
+      ? round(100 / (1 + payoffRatio))
+      : null,
     expectancyR: values.length ? round(sum(values) / values.length) : null,
     verifiedExpectancyR: verifiedValues.length
       ? round(sum(verifiedValues) / verifiedValues.length)
@@ -385,6 +459,52 @@ function normalizeWorkspace(value) {
   });
 }
 
+function buildReviewCase({
+  id,
+  now,
+  input,
+  eventAt,
+  origin,
+  brokerLinks = { orderIds: [], executionIds: [], confirmedAt: null },
+  brokerActivity = null,
+  eventMetadata = null,
+}) {
+  return {
+    id,
+    origin,
+    symbol: requiredSymbol(input?.symbol),
+    fiscalQuarter: cleanText(input?.fiscalQuarter, 40) || "待确认季度",
+    eventAt,
+    eventDate: cleanDate(input?.eventDate) || eventAt?.slice(0, 10) || null,
+    eventTimePrecision: enumValue(input?.eventTimePrecision, ["exact", "session", "date"], origin === "manual" ? "exact" : "date"),
+    eventSession: enumValue(input?.eventSession, ["bmo", "amc", "intraday", "unknown"], "unknown"),
+    timezone: cleanText(input?.timezone, 80) || "America/New_York",
+    strategyType: enumValue(input?.strategyType, [
+      "pre_add",
+      "pre_hold",
+      "pre_reduce",
+      "pre_hedge",
+      "post_confirm_entry",
+      "post_reversal_exit",
+      "other",
+    ], "other"),
+    benchmark: cleanText(input?.benchmark, 40) || "QQQ.US",
+    primaryHorizon: enumValue(input?.primaryHorizon, ["t1", "t3", "t5", "t20", "next_quarter"], "t5"),
+    status: "draft",
+    createdAt: now,
+    updatedAt: now,
+    exAnteDraft: normalizeExAnte(input?.exAnte),
+    exAnteVersions: [],
+    outcome: normalizeOutcome(null),
+    review: normalizeReview(null),
+    brokerLinks,
+    brokerActivity,
+    eventMetadata,
+    ruleIds: [],
+    archived: false,
+  };
+}
+
 function normalizeExAnte(value) {
   return {
     myView: cleanText(value?.myView, 6_000),
@@ -418,6 +538,10 @@ function normalizeOutcome(value) {
     netR: finiteOrNull(value?.netR),
     maeR: finiteOrNull(value?.maeR),
     mfeR: finiteOrNull(value?.mfeR),
+    actionAdherencePercent: boundedPercent(value?.actionAdherencePercent),
+    invalidationLatencyMinutes: nonNegativeOrNull(value?.invalidationLatencyMinutes),
+    peakGrossExposurePercent: boundedPercent(value?.peakGrossExposurePercent, 200),
+    planViolationCount: nonNegativeIntegerOrNull(value?.planViolationCount),
     censored: Boolean(value?.censored),
   };
 }
@@ -445,7 +569,6 @@ function validateExAnteSnapshot(value) {
     ["invalidation", "失效条件"],
   ].filter(([key]) => !value[key]).map(([, label]) => label);
   if (missing.length) throw new Error(`封存前请补全：${missing.join("、")}。`);
-  if (!(value.riskBudgetR > 0)) throw new Error("封存前需要填写大于 0 的事前风险预算 R。");
   const probabilities = [value.bullProbability, value.baseProbability, value.bearProbability];
   const supplied = probabilities.filter((item) => item != null);
   if (supplied.length !== 0 && supplied.length !== 3) {
@@ -486,6 +609,45 @@ function requiredIso(value, message) {
   return new Date(millis).toISOString();
 }
 
+function optionalIso(value) {
+  if (value == null || value === "") return null;
+  const millis = Date.parse(String(value));
+  return Number.isFinite(millis) ? new Date(millis).toISOString() : null;
+}
+
+function isConservativelyExAnte(sealedAt, reviewCase) {
+  if (!reviewCase.eventTimePrecision || reviewCase.eventTimePrecision === "exact") {
+    return Date.parse(sealedAt) < Date.parse(reviewCase.eventAt);
+  }
+  const eventDate = cleanDate(reviewCase.eventDate) || reviewCase.eventAt?.slice(0, 10);
+  if (!eventDate) return false;
+  // A date/session-only calendar entry does not identify the exact release
+  // timestamp. Treat same-local-day snapshots as retrospective rather than
+  // awarding false ex-ante eligibility.
+  return dateInTimezone(sealedAt, reviewCase.timezone) < eventDate;
+}
+
+function dateInTimezone(value, timezone) {
+  const date = new Date(value);
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone || "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+function cleanDate(value) {
+  const text = String(value ?? "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   if (value && typeof value === "object") {
@@ -516,6 +678,12 @@ function uniqueIds(values) {
   return [...new Set((Array.isArray(values) ? values : []).map(cleanId).filter(Boolean))].slice(0, 2_000);
 }
 
+function uniqueSymbols(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((item) => String(item ?? "").trim().toUpperCase())
+    .filter((item) => /^[A-Z0-9._:-]{1,40}$/.test(item)))].slice(0, 100);
+}
+
 function finiteOrNull(value) {
   if (value == null || value === "") return null;
   const number = Number(value);
@@ -525,6 +693,21 @@ function finiteOrNull(value) {
 function boundedProbability(value) {
   const number = finiteOrNull(value);
   return number == null ? null : Math.min(Math.max(number, 0), 100);
+}
+
+function boundedPercent(value, maximum = 100) {
+  const number = finiteOrNull(value);
+  return number == null ? null : Math.min(Math.max(number, 0), maximum);
+}
+
+function nonNegativeOrNull(value) {
+  const number = finiteOrNull(value);
+  return number == null ? null : Math.max(number, 0);
+}
+
+function nonNegativeIntegerOrNull(value) {
+  const number = nonNegativeOrNull(value);
+  return number == null ? null : Math.trunc(number);
 }
 
 function median(values) {

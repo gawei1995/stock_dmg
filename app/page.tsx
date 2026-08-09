@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 
 type AgentTab = "agent" | "risk" | "plan";
-type ReviewStage = "review" | "test" | "rule" | "approval";
+type ReviewStage = "import" | "associate" | "reconstruct" | "analyze";
 type EmaPeriod = 3 | 5 | 8 | 13 | 21 | 144 | 169;
 
 type Instrument = {
@@ -176,16 +176,16 @@ const evidenceStack = [
 ];
 
 const reviewStages = [
-  { key: "review" as const, index: "01", label: "复盘", eyebrow: "RECONSTRUCT", title: "还原当时的决定", copy: "先冻结财报前判断，再连接真实订单、逐笔成交与持仓快照；盈亏不能覆盖当时的信息集。" },
-  { key: "test" as const, index: "02", label: "测试", eyebrow: "MEASURE", title: "用同一口径比较", copy: "以一个财报事件为一个样本，固定 T+1 / T+5 / T+20，统计净 R、MAE、MFE 与反事实路径。" },
-  { key: "rule" as const, index: "03", label: "规则", eyebrow: "PROMOTE", title: "把发现写成假设", copy: "只有可观察、可执行、可证伪且跨季度稳定的结论，才从观察升级为暂行规则。" },
-  { key: "approval" as const, index: "04", label: "Review", eyebrow: "HUMAN GATE", title: "由你批准进入系统", copy: "Agent 提供证据、反例和置信度；规则是否启用、降级或停用，始终由你确认。" },
+  { key: "import" as const, index: "01", label: "同步订单", eyebrow: "BROKER FACTS", title: "先取得真实交易事实", copy: "从长桥只读同步历史订单与逐笔成交；标的、时间、方向、数量和成交价不再要求手工重填。" },
+  { key: "associate" as const, index: "02", label: "关联财报", eyebrow: "EVENT MATCH", title: "让订单成为案例入口", copy: "选择订单后，用财报日历匹配日期、财年、季度与盘前/盘后；候选关联必须由你确认。" },
+  { key: "reconstruct" as const, index: "03", label: "补充判断", eyebrow: "HUMAN CONTEXT", title: "你只补当时的信息集", copy: "我的判断、市场相信什么、计划动作和失效条件由你填写；系统事实与 Agent 推断不会覆盖原文。" },
+  { key: "analyze" as const, index: "04", label: "Skill 复盘", eyebrow: "REVIEW & TEST", title: "同一套 Skill 评估并提出验证", copy: "单事件先分析决策与执行；再按财报季度汇总胜率、赔率、净 R、MAE/MFE、失效纪律和候选规则。" },
 ];
 
 const orderHistory = [
-  { time: "07-22 10:14:08", symbol: "NVDA", side: "买入", quantity: "180", average: "$168.72", role: "财报前战术仓", state: "已匹配" },
-  { time: "07-24 09:41:36", symbol: "NVDA", side: "卖出", quantity: "80", average: "$176.38", role: "事件后兑现", state: "已匹配" },
-  { time: "07-24 15:52:11", symbol: "QQQ 保护", side: "买入", quantity: "12", average: "$6.15", role: "组合对冲", state: "待确认" },
+  { id: "fill-01", time: "07-22 10:14:08", symbol: "NVDA", side: "买入", quantity: "180", average: "$168.72", role: "待归因", state: "候选" },
+  { id: "fill-02", time: "07-24 09:41:36", symbol: "NVDA", side: "卖出", quantity: "80", average: "$176.38", role: "待归因", state: "候选" },
+  { id: "fill-03", time: "07-24 15:52:11", symbol: "QQQ 保护", side: "买入", quantity: "12", average: "$6.15", role: "组合级保护", state: "待确认" },
 ];
 
 function getEmaStructure(instrument: Instrument) {
@@ -211,7 +211,8 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<AgentTab>("agent");
   const [riskBudget, setRiskBudget] = useState(1.2);
   const [planReady, setPlanReady] = useState(false);
-  const [reviewStage, setReviewStage] = useState<ReviewStage>("review");
+  const [reviewStage, setReviewStage] = useState<ReviewStage>("import");
+  const [selectedReviewOrders, setSelectedReviewOrders] = useState(["fill-01", "fill-02"]);
 
   const selected = useMemo(
     () => instruments.find((instrument) => instrument.symbol === selectedSymbol) ?? instruments[0],
@@ -229,6 +230,12 @@ export default function Home() {
   function selectInstrument(symbol: string) {
     setSelectedSymbol(symbol);
     setPlanReady(false);
+  }
+
+  function toggleReviewOrder(id: string) {
+    setSelectedReviewOrders((current) => current.includes(id)
+      ? current.filter((value) => value !== id)
+      : [...current, id]);
   }
 
   return (
@@ -516,7 +523,7 @@ export default function Home() {
               <span className="readonly-pill"><i />只读同步</span>
             </div>
             <div className="orders-summary">
-              <div><span>导入范围</span><strong>财报前 21 天 → 财报后 20 天</strong></div>
+              <div><span>历史同步</span><strong>默认 365 天 · 最多 730 天</strong></div>
               <div><span>归因单元</span><strong>股票 × 财报季度 × 决策包</strong></div>
               <div><span>写操作</span><strong>永久关闭</strong></div>
             </div>
@@ -533,14 +540,14 @@ export default function Home() {
                 </tbody>
               </table>
             </div>
-            <div className="orders-note"><strong>事实与解释分离</strong><p>订单号、成交号、数量、价格、费用和时间来自长桥，只读保留；Agent 只能建议它属于哪一个财报决策包，最终关联由你确认。</p></div>
+            <div className="orders-note"><strong>事实与解释分离</strong><p>订单号、成交号、数量、价格、费用和时间来自长桥，只读保留；选择订单会补齐它的逐笔成交，选择成交会补齐父订单与同单成交。Agent 只能建议它属于哪一个财报决策包，最终关联由你确认。</p></div>
           </article>
         </section>
 
         <section className="review-section" id="review" aria-labelledby="review-title">
           <div className="section-heading">
-            <div><p className="eyebrow">Decision learning loop</p><h2 id="review-title">复盘不是结案，是下一条规则的起点。</h2></div>
-            <p>保留财报前的原始判断，用长桥真实成交还原执行，再用固定观察窗口测试赔率、胜率和尾部风险。Agent 可以提出规律，但不能替你批准规律。</p>
+            <div><p className="eyebrow">Order-first decision review</p><h2 id="review-title">从真实订单开始，不从空白表单开始。</h2></div>
+            <p>复盘不是结案：长桥先提供交易事实，财报日历补齐事件和季度，你再补当时的判断与计划。复盘 Skill 负责分析、跨季度验证和提出规则候选，但不会替你改写原始记录或批准规则。</p>
           </div>
 
           <div className="review-flow" aria-label="复盘到规则的工作流">
@@ -552,44 +559,59 @@ export default function Home() {
           </div>
 
           <div className="review-workspace">
-            <article className="case-panel panel" aria-labelledby="case-title">
-              <div className="panel-title"><div><span>EARNINGS CASE · NVDA FY26 Q2</span><h3 id="case-title">财报决策包</h3></div><span className="case-status">EX-ANTE 已封存</span></div>
-              <div className="case-timeline" aria-label="财报案例时间线">
-                <div className="done"><span>T−21</span><strong>案例建立</strong><small>市场预期 / 初始仓位</small></div>
-                <div className="done"><span>T−3</span><strong>计划封存</strong><small>情景概率 / 1R / 失效位</small></div>
-                <div className="current"><span>T+1</span><strong>成交归因</strong><small>订单 / 逐笔成交 / 费用</small></div>
-                <div><span>T+5</span><strong>主窗口</strong><small>净 R / MAE / MFE</small></div>
-                <div><span>T+20</span><strong>Review</strong><small>规则候选 / 反例</small></div>
+            <article className="case-panel review-intake panel" aria-labelledby="case-title">
+              <div className="panel-title"><div><span>LONG BRIDGE · READ-ONLY INTAKE</span><h3 id="case-title">选择要复盘的订单 / 成交</h3></div><span className="case-status pending">{selectedReviewOrders.length} 条已选</span></div>
+              <div className="review-intake-toolbar">
+                <div><span>同步范围</span><strong>最近 365 天</strong><small>历史订单 + 今日订单 + 逐笔成交</small></div>
+                <button type="button"><i />同步长桥历史</button>
               </div>
-              <div className="case-comparison">
-                <div><span>财报前判断</span><strong>主升叙事延续，但预期拥挤</strong><p>Base 50% · Bull 30% · Bear 20%<br />计划：核心仓不动，战术仓不超过 2.0%</p></div>
-                <div><span>真实执行</span><strong>净增 100 股 + QQQ 保护</strong><p>3 笔成交已导入，2 笔自动匹配；对冲成交等待人工确认。</p></div>
+              <div className="review-order-picker" aria-label="可选择的长桥成交演示">
+                {orderHistory.map((order) => {
+                  const selectedOrder = selectedReviewOrders.includes(order.id);
+                  return (
+                    <button key={order.id} type="button" className={selectedOrder ? "selected" : ""} onClick={() => toggleReviewOrder(order.id)} aria-pressed={selectedOrder}>
+                      <i aria-hidden="true">{selectedOrder ? "✓" : ""}</i>
+                      <span><strong>{order.symbol} · {order.side} {order.quantity}</strong><small>{order.time} · {order.average}</small></span>
+                      <em>{order.state}</em>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="event-candidate">
+                <div className="event-candidate-head"><span>AUTO ENRICHMENT · 待确认</span><strong>最接近的财报事件</strong></div>
+                <div className="event-fields">
+                  <div><span>标的</span><strong>NVDA.US</strong><small>来自所选订单</small></div>
+                  <div><span>财报日期</span><strong>2026-08-26 · 盘后</strong><small>来自长桥财报日历</small></div>
+                  <div><span>财报季度</span><strong>FY2027 Q2</strong><small>fiscal_year + period</small></div>
+                  <div><span>关联置信度</span><strong>候选</strong><small>由你确认是否因财报操作</small></div>
+                </div>
+                <div className="human-context-preview"><span>确认关联后由你补充</span><p>我的判断 · 市场当时相信什么 · 计划动作 · 失效条件</p></div>
               </div>
             </article>
 
             <aside className="review-detail panel" aria-live="polite">
               <div className="review-detail-head"><span>{activeReview.index} · {activeReview.eyebrow}</span><strong>{activeReview.title}</strong><p>{activeReview.copy}</p></div>
               <div className="review-metrics">
-                <div><span>净结果</span><strong className="positive">+1.34R</strong><small>已计手续费与对冲成本</small></div>
-                <div><span>最大不利波动</span><strong>−0.42R</strong><small>MAE · T+1 至 T+5</small></div>
-                <div><span>最大有利波动</span><strong>+1.91R</strong><small>MFE · 兑现效率 70%</small></div>
-                <div><span>相对基准</span><strong className="positive">+0.78R</strong><small>相对 QQQ</small></div>
+                <div><span>事实来源</span><strong>Longbridge</strong><small>订单 / 成交 / 时间只读</small></div>
+                <div><span>案例单元</span><strong>股票 × 财报</strong><small>再绑定一组计划动作</small></div>
+                <div><span>主评价窗口</span><strong>待冻结</strong><small>T+1 / T+5 / T+20 选一</small></div>
+                <div><span>正式统计</span><strong>尚未进入</strong><small>需事前版本与确定性结果</small></div>
               </div>
               <div className="rule-candidate">
-                <span>候选规则 · 仅测试中</span>
-                <strong>高预期财报前，不因单一突破增加核心仓</strong>
-                <p>当前样本 8 / 目标 30。需继续跨股票、跨市场环境验证；暂不进入交易前硬约束。</p>
-                <div><span>HYPOTHESIS</span><i><b /></i><span>VALIDATED</span></div>
+                <span>复盘 Skill · 同一 Codex harness</span>
+                <strong>单事件还原 → 季度通盘 → 跨季度验证</strong>
+                <p>输出决策质量、执行一致性、净 R、胜率、赔率、MAE/MFE、失效延迟、反事实与候选规则。小样本只标为观察，不自动晋升。</p>
+                <div><span>REVIEW</span><i><b /></i><span>HUMAN GATE</span></div>
               </div>
-              <button type="button" className="review-action">打开完整 Review <span>↗</span></button>
+              <button type="button" className="review-action" onClick={() => setReviewStage(reviewStage === "import" ? "associate" : reviewStage === "associate" ? "reconstruct" : reviewStage === "reconstruct" ? "analyze" : "import")}>{reviewStage === "analyze" ? "重新查看同步入口" : "继续下一步"} <span>→</span></button>
             </aside>
           </div>
 
           <div className="review-principles">
-            <article><span>01</span><strong>先看决策质量</strong><p>盈利不自动证明判断正确，亏损也不自动证明过程错误。</p></article>
-            <article><span>02</span><strong>固定评价窗口</strong><p>主窗口事前选择，T+1 / T+5 / T+20 不允许事后挑最好看的结果。</p></article>
-            <article><span>03</span><strong>记录未交易信号</strong><p>符合条件但没有下单的案例同样进入样本，避免幸存者偏差。</p></article>
-            <article><span>04</span><strong>规则必须可停用</strong><p>市场环境改变或样本失效时，规则自动降级并等待人工 Review。</p></article>
+            <article><span>REVIEW</span><strong>还原单事件</strong><p>事实、你的事前原文和 Agent 推断分栏；盈利不自动证明过程正确。</p></article>
+            <article><span>TEST</span><strong>固定口径验证</strong><p>主窗口、样本纳入和排除条件先登记，再计算胜率、赔率与净期望。</p></article>
+            <article><span>RULE</span><strong>只产生候选规则</strong><p>可观察、可执行、可证伪，并保留反例和适用市场环境。</p></article>
+            <article><span>REVIEW</span><strong>人工升降级</strong><p>跨季度稳定后才可暂行；环境改变、尾部恶化或反证出现时降级。</p></article>
           </div>
         </section>
 

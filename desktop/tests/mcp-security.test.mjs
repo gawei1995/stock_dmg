@@ -55,7 +55,7 @@ test("broker history queries are allowlisted without making them connection requ
     },
   };
   client.transport = { async close() {} };
-  for (const name of ["history_orders", "history_executions", "today_orders", "today_executions", "order_detail"]) {
+  for (const name of ["finance_calendar", "history_orders", "history_executions", "today_orders", "today_executions", "order_detail"]) {
     client.tools.set(name, {});
     assert.equal(client.supports(name), true);
     assert.equal((await client.call(name, {})).name, name);

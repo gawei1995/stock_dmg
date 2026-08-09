@@ -42,6 +42,10 @@ import {
   CodexWorkspaceService,
   resolveCodexExecutable,
 } from "./src/engine/codex-workspace.mjs";
+import {
+  buildReviewAnalysisRun,
+  selectReviewCaseIds,
+} from "./src/review/review-analysis.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rendererPath = path.join(__dirname, "renderer", "index.html");
@@ -419,10 +423,55 @@ function registerIpc() {
     return buildReviewSnapshot();
   });
 
+  ipcMain.handle("review:intake:snapshot", async (event, request) => {
+    assertTrustedSender(event);
+    if (Array.isArray(request?.recordIds) && request.recordIds.length) {
+      await tradeHistoryService.lookupEventCandidates({ recordIds: request.recordIds });
+    }
+    const snapshot = await buildReviewSnapshot(request);
+    return { ok: true, intake: snapshot.intake, snapshot };
+  });
+
+  ipcMain.handle("review:intake:events", async (event, request) => {
+    assertTrustedSender(event);
+    const lookup = await tradeHistoryService.lookupEventCandidates({
+      recordIds: request?.recordIds,
+      daysBefore: request?.daysBefore,
+      daysAfter: request?.daysAfter,
+    });
+    const snapshot = await buildReviewSnapshot(request);
+    return { ok: true, ...lookup, intake: snapshot.intake, snapshot };
+  });
+
   ipcMain.handle("review:case:create", async (event, request) => {
     assertTrustedSender(event);
     const reviewCase = await reviewStore.createCase(request);
     return { ok: true, reviewCase, snapshot: await buildReviewSnapshot() };
+  });
+
+  ipcMain.handle("review:case:create-from-records", async (event, request) => {
+    assertTrustedSender(event);
+    let selection = null;
+    if (request?.eventCandidateId) {
+      selection = await tradeHistoryService.resolveReviewSelection({
+        recordIds: request?.recordIds,
+        eventCandidateId: request.eventCandidateId,
+      }).catch(() => null);
+    }
+    if (!selection) {
+      await tradeHistoryService.lookupEventCandidates({ recordIds: request?.recordIds });
+      selection = await tradeHistoryService.resolveReviewSelection({
+        recordIds: request?.recordIds,
+        eventCandidateId: request?.eventCandidateId,
+      });
+    }
+    const reviewCase = await reviewStore.createCaseFromBrokerRecords({
+      ...selection,
+      strategyType: request?.strategyType,
+      benchmark: request?.benchmark,
+      primaryHorizon: request?.primaryHorizon,
+    });
+    return { ok: true, reviewCase, selection, snapshot: await buildReviewSnapshot() };
   });
 
   ipcMain.handle("review:case:update", async (event, request) => {
@@ -442,28 +491,41 @@ function registerIpc() {
   ipcMain.handle("review:case:link-broker", async (event, request) => {
     assertTrustedSender(event);
     const archive = await tradeHistoryService.cached();
-    const recordIds = new Set((request?.recordIds ?? []).map(String));
-    const orderIds = archive.orders
-      .filter((item) => recordIds.has(item.orderId))
-      .map((item) => item.orderId);
-    const executionIds = archive.executions
-      .filter((item) => recordIds.has(item.tradeId))
-      .map((item) => item.tradeId);
+    const recordIds = typedBrokerRecordIds(archive, request?.recordIds);
+    const selection = await tradeHistoryService.resolveReviewSelection({ recordIds });
+    const workspace = await reviewStore.snapshot();
+    const reviewCase = workspace.cases.find((item) => item.id === String(request?.caseId ?? ""));
+    if (!reviewCase) throw new Error("未找到复盘案例。");
+    if (selection.symbol !== reviewCase.symbol) {
+      throw new Error("所选长桥记录与当前案例标的不一致，已拒绝关联。");
+    }
     const links = await reviewStore.linkBrokerRecords(request?.caseId, {
-      orderIds,
-      executionIds,
+      orderIds: selection.orderIds,
+      executionIds: selection.executionIds,
     });
     return { ok: true, links, snapshot: await buildReviewSnapshot() };
   });
 
   ipcMain.handle("review:trade-history:sync", async (event, request) => {
     assertTrustedSender(event);
-    const archive = await tradeHistoryService.sync({
+    await tradeHistoryService.sync({
       startAt: request?.from ?? request?.startAt,
       endAt: request?.to ?? request?.endAt,
       symbol: request?.symbol,
     });
-    return { ok: true, archive, snapshot: await buildReviewSnapshot() };
+    const snapshot = await buildReviewSnapshot(request);
+    return { ok: true, intake: snapshot.intake, snapshot };
+  });
+
+  ipcMain.handle("review:intake:sync", async (event, request) => {
+    assertTrustedSender(event);
+    await tradeHistoryService.sync({
+      startAt: request?.from ?? request?.startAt,
+      endAt: request?.to ?? request?.endAt,
+      symbol: request?.symbol,
+    });
+    const snapshot = await buildReviewSnapshot(request);
+    return { ok: true, intake: snapshot.intake, snapshot };
   });
 
   ipcMain.handle("review:test:register", async (event, request) => {
@@ -653,17 +715,30 @@ function registerIpc() {
 
   ipcMain.handle("agent:run", async (event, request) => {
     assertTrustedSender(event);
-    if (!portfolio) throw new Error("请先连接长桥并至少同步一次真实持仓。");
+    const scope = validateAnalysisScope(request?.scope);
+    if (scope !== "review" && !portfolio) {
+      throw new Error("请先连接长桥并至少同步一次真实持仓。");
+    }
     const requestStartedAt = Date.now();
     const operationId = validateOperationId(request?.operationId) ?? randomUUID();
     const threadId = validateThreadId(request?.threadId ?? codexAnalysis.status().threadId);
     if (activeAgentOperations.has(operationId)) throw new Error("该 Agent 请求已在运行。");
     if (activeAgentByThread.has(threadId)) throw new Error("当前对话已有一轮分析正在运行；可切换到其他对话并行分析。");
-    const scope = validateAnalysisScope(request?.scope);
-    const symbol = scope === "portfolio" ? null : normalizeAnalysisSymbol(request?.symbol);
-    const targetLabel = scope === "portfolio" ? "全部持仓" : symbol;
+    const symbol = ["portfolio", "review"].includes(scope)
+      ? null
+      : normalizeAnalysisSymbol(request?.symbol);
+    const targetLabel = scope === "portfolio"
+      ? "全部持仓"
+      : scope === "review"
+        ? "交易复盘"
+        : symbol;
     const riskBudgetPercent = clamp(Number(request?.riskBudgetPercent ?? 0.8), 0.05, 5);
-    const task = String(request?.task ?? "分析当前持仓").slice(0, 4_000);
+    const defaultTask = scope === "review"
+      ? "$review-earnings-decisions 基于已确认关联的长桥历史订单、成交、财报事件与用户事前记录完成复盘。"
+      : scope === "portfolio"
+        ? "检查全部持仓的集中度、重复暴露、下行情景和组合健康度"
+        : "分析当前持仓";
+    const task = String(request?.task ?? defaultTask).slice(0, 4_000);
     const controller = new AbortController();
     activeAgentOperations.set(operationId, {
       operationId,
@@ -688,8 +763,8 @@ function registerIpc() {
         operationId,
         text: task,
       });
-      let analysisPortfolio = withPortfolioFreshness(portfolio);
-      if (!analysisPortfolio.freshness.freshForSizing) {
+      let analysisPortfolio = portfolio ? withPortfolioFreshness(portfolio) : null;
+      if (scope !== "review" && !analysisPortfolio.freshness.freshForSizing) {
         portfolio = analysisPortfolio;
         safeSend("cockpit:portfolio", portfolio);
         sendStatus({
@@ -762,26 +837,58 @@ function registerIpc() {
       }
       if (controller.signal.aborted) throw new Error("Codex 分析已取消。");
       const evidenceStartedAt = Date.now();
-      const localRun = await buildAnalysisEvidence({
-        portfolio: analysisPortfolio,
-        scope,
-        symbol,
-        task,
-        riskBudgetPercent,
-        loadCandles: (value) => portfolioService.candles(value, 1000, {
+      let localRun;
+      if (scope === "review") {
+        const [reviewWorkspace, reviewArchive] = await Promise.all([
+          reviewStore.snapshot(),
+          tradeHistoryService.cached(),
+        ]);
+        const reviewCaseIds = selectReviewCaseIds(reviewWorkspace, {
+          caseId: request?.reviewCaseId ?? request?.caseId,
+          caseIds: request?.reviewCaseIds ?? request?.caseIds,
+          fiscalQuarter: request?.fiscalQuarter,
+        });
+        localRun = buildReviewAnalysisRun({
+          workspace: reviewWorkspace,
+          archive: reviewArchive,
+          caseIds: reviewCaseIds,
+          runId: randomUUID(),
+          task,
+          portfolio: analysisPortfolio,
+        });
+      } else {
+        localRun = await buildAnalysisEvidence({
+          portfolio: analysisPortfolio,
+          scope,
+          symbol,
+          task,
+          riskBudgetPercent,
+          loadCandles: (value) => portfolioService.candles(value, 1000, {
+            signal: controller.signal,
+          }),
           signal: controller.signal,
-        }),
-        signal: controller.signal,
-        onStage: ({ phase, message }) => sendStatus({
+          onStage: ({ phase, message }) => sendStatus({
+            domain: "agent",
+            state: "agent_running",
+            active: true,
+            threadId,
+            operationId,
+            phase,
+            message,
+          }),
+        });
+      }
+      if (scope === "review") {
+        sendStatus({
           domain: "agent",
           state: "agent_running",
           active: true,
           threadId,
           operationId,
-          phase,
-          message,
-        }),
-      });
+          phase: "review_evidence_ready",
+          message: "已汇总关联订单、成交、财报事件与版本化事前记录",
+        });
+      }
       const evidenceMs = Date.now() - evidenceStartedAt;
       safeSend("cockpit:agent-stream", {
         kind: "evidence_ready",
@@ -898,6 +1005,9 @@ function registerIpc() {
   ipcMain.handle("agent:save-plan", async (event, run) => {
     assertTrustedSender(event);
     const scope = validateAnalysisScope(run?.context?.scope);
+    if (scope === "review") {
+      throw new Error("复盘结论属于研究记录，不保存为当前交易计划。");
+    }
     if (!run?.id || !run?.plan || (scope !== "portfolio" && !run?.context?.symbol)) {
       throw new Error("计划数据无效。");
     }
@@ -964,24 +1074,34 @@ function setTvBounds(value) {
   tvView.setBounds(lastTvBounds);
 }
 
-async function buildReviewSnapshot() {
-  const [workspace, broker] = await Promise.all([
+async function buildReviewSnapshot(intakeOptions = {}) {
+  const [workspace, broker, intake] = await Promise.all([
     reviewStore.snapshot(),
     tradeHistoryService.cached(),
+    tradeHistoryService.intake(intakeOptions),
   ]);
   const brokerMatches = Object.fromEntries(workspace.cases.map((reviewCase) => {
-    const executions = matchExecutionsToEvent(broker, {
-      symbol: reviewCase.symbol,
-      eventAt: reviewCase.eventAt,
-    });
-    const matchedOrderIds = new Set(executions.map((item) => item.orderId).filter(Boolean));
-    const orders = [
-      ...matchOrdersToEvent(broker, {
+    const confirmed = reviewCase.brokerLinks?.confirmedAt != null
+      || reviewCase.origin === "longbridge_records";
+    const linkedExecutionIds = new Set(reviewCase.brokerLinks?.executionIds ?? []);
+    const linkedOrderIds = new Set(reviewCase.brokerLinks?.orderIds ?? []);
+    const executions = confirmed
+      ? broker.executions.filter((item) => linkedExecutionIds.has(item.tradeId))
+      : matchExecutionsToEvent(broker, {
         symbol: reviewCase.symbol,
         eventAt: reviewCase.eventAt,
-      }),
-      ...broker.orders.filter((item) => matchedOrderIds.has(item.orderId)),
-    ].filter((item, index, rows) => rows.findIndex(
+      });
+    const matchedOrderIds = new Set(executions.map((item) => item.orderId).filter(Boolean));
+    const orders = (confirmed
+      ? broker.orders.filter((item) => linkedOrderIds.has(item.orderId)
+        || matchedOrderIds.has(item.orderId))
+      : [
+        ...matchOrdersToEvent(broker, {
+          symbol: reviewCase.symbol,
+          eventAt: reviewCase.eventAt,
+        }),
+        ...broker.orders.filter((item) => matchedOrderIds.has(item.orderId)),
+      ]).filter((item, index, rows) => rows.findIndex(
       (candidate) => candidate.orderId === item.orderId,
     ) === index);
     return [reviewCase.id, {
@@ -991,7 +1111,7 @@ async function buildReviewSnapshot() {
         ...orders.map((item) => item.orderId),
         ...executions.map((item) => item.tradeId),
       ],
-      confirmed: reviewCase.brokerLinks?.confirmedAt != null,
+      confirmed,
     }];
   }));
   const ruleMetrics = Object.fromEntries(workspace.rules.map((rule) => [
@@ -1009,6 +1129,7 @@ async function buildReviewSnapshot() {
       orderCount: broker.orders.length,
       executionCount: broker.executions.length,
     },
+    intake,
     brokerMatches,
     ruleMetrics,
     summary: {
@@ -1023,6 +1144,18 @@ async function buildReviewSnapshot() {
       brokerExecutionCount: broker.executions.length,
     },
   };
+}
+
+function typedBrokerRecordIds(archive, values) {
+  const orderIds = new Set((archive?.orders ?? []).map((item) => String(item.orderId)));
+  const executionIds = new Set((archive?.executions ?? []).map((item) => String(item.tradeId)));
+  return [...new Set((Array.isArray(values) ? values : []).map((value) => {
+    const id = String(value ?? "").trim();
+    if (/^(?:order|execution):/.test(id)) return id;
+    if (orderIds.has(id)) return `order:${id}`;
+    if (executionIds.has(id)) return `execution:${id}`;
+    return id;
+  }).filter(Boolean))];
 }
 
 function requestTvBounds() {
@@ -1116,7 +1249,7 @@ export function preferredLongbridgeEndpoint() {
 
 function validateAnalysisScope(value) {
   const scope = String(value ?? "position").trim().toLowerCase();
-  if (!["position", "candidate", "portfolio"].includes(scope)) {
+  if (!["position", "candidate", "portfolio", "review"].includes(scope)) {
     throw new Error("分析范围无效。");
   }
   return scope;

@@ -194,6 +194,9 @@ function bindEvents() {
   elements.agentSessionSelect.addEventListener("change", switchAgentSession);
   elements.newAgentSession.addEventListener("click", createAgentSession);
   elements.agentForm.addEventListener("submit", submitAgentTask);
+  window.addEventListener("cockpit:review-analysis-prepared", (event) => {
+    void submitPreparedReviewAnalysis(event.detail);
+  });
   elements.agentCancel.addEventListener("click", cancelAgentTask);
   elements.agentInput.addEventListener("input", updatePromptSuggestions);
   elements.agentInput.addEventListener("keydown", handlePromptKeydown);
@@ -451,6 +454,7 @@ function ensureSessionView(threadId) {
       scope: "position",
       candidateSymbol: "",
       riskBudget: "0.8",
+      reviewContext: null,
       lastAgentResult: null,
     });
   }
@@ -470,7 +474,22 @@ function renderOpenedSession(payload) {
   const threadId = String(payload?.activeSessionId ?? payload?.currentThreadId ?? state.activeSessionId ?? "");
   const view = ensureSessionView(threadId);
   if (Array.isArray(payload?.transcript)) view.transcript = payload.transcript;
-  if (payload?.lastAgentResult?.run) view.lastAgentResult = payload.lastAgentResult;
+  if (payload?.lastAgentResult?.run) {
+    view.lastAgentResult = payload.lastAgentResult;
+    const lastRun = payload.lastAgentResult.run;
+    if (lastRun.context?.scope === "review") {
+      const quarters = [...new Set((lastRun.analysisContext?.cases ?? [])
+        .map((item) => String(item?.fiscalQuarter ?? "").trim())
+        .filter(Boolean))];
+      view.scope = "review";
+      view.reviewContext = {
+        reviewCaseIds: lastRun.context.reviewCaseIds ?? [],
+        fiscalQuarter: quarters.length === 1 && lastRun.context.reviewMode === "earnings_quarter"
+          ? quarters[0]
+          : null,
+      };
+    }
+  }
   resetAgentConversation();
   restoreSessionComposer(view);
 
@@ -536,7 +555,9 @@ function summarizeConversationTitle(value) {
 }
 
 function restoreSessionComposer(view) {
-  const scope = ["position", "candidate", "portfolio"].includes(view.scope) ? view.scope : "position";
+  const scope = ["position", "candidate", "portfolio", "review"].includes(view.scope)
+    ? view.scope
+    : "position";
   state.analysisScope = scope;
   state.candidateSymbol = view.candidateSymbol ?? "";
   document.querySelectorAll(".scope-segmented [data-scope]").forEach((button) => {
@@ -546,7 +567,8 @@ function restoreSessionComposer(view) {
   elements.candidateSymbol.value = state.candidateSymbol;
   elements.riskBudget.value = view.riskBudget || "0.8";
   elements.agentInput.value = view.draft || "";
-  renderAgentContext();
+  if (scope === "review") renderReviewAgentContext(view.reviewContext ?? {});
+  else renderAgentContext();
 }
 
 function syncActiveAgents(activeAgents) {
@@ -592,6 +614,9 @@ function restoreSessionAgentResult(payload) {
 function setAnalysisScope(scope) {
   if (!["position", "candidate", "portfolio"].includes(scope) || scope === state.analysisScope) return;
   state.analysisScope = scope;
+  const view = ensureSessionView(state.activeSessionId);
+  view.scope = scope;
+  view.reviewContext = null;
   document.querySelectorAll(".scope-segmented [data-scope]").forEach((button) => {
     button.setAttribute("aria-checked", String(button.dataset.scope === scope));
   });
@@ -1194,6 +1219,10 @@ async function syncSelectedToTv() {
 }
 
 function renderAgentContext() {
+  if (state.analysisScope === "review") {
+    renderReviewAgentContext(ensureSessionView(state.activeSessionId).reviewContext ?? {});
+    return;
+  }
   const position = selectedPosition();
   const scope = state.analysisScope;
   const asOf = state.portfolio?.syncedAt;
@@ -1234,11 +1263,16 @@ function appendContextDirty() {
 async function submitAgentTask(event) {
   event.preventDefault();
   closePromptSuggestions();
-  if (!state.portfolio) {
+  const scope = state.analysisScope;
+  if (scope !== "review" && !state.portfolio) {
     setSystemMessage("请先连接长桥并同步真实组合", "warning");
     return;
   }
-  const scope = state.analysisScope;
+  const reviewContext = ensureSessionView(state.activeSessionId).reviewContext;
+  if (scope === "review" && !reviewContext?.reviewCaseIds?.length) {
+    setSystemMessage("当前复盘对话缺少已关联案例，请返回复盘台重新选择。", "warning");
+    return;
+  }
   const position = selectedPosition();
   const candidateSymbol = normalizeCandidateSymbol(elements.candidateSymbol.value || state.candidateSymbol);
   if (scope === "position" && !position) {
@@ -1256,26 +1290,105 @@ async function submitAgentTask(event) {
     position: "分析当前持仓的技术结构、组合风险和条件计划",
     candidate: "为未持有候选标的生成买入计划，包括触发、失效条件和风险预算",
     portfolio: "检查全部持仓的集中度、重复暴露、下行情景和组合健康度",
+    review: "继续基于当前已关联订单、财报事件与事前记录分析，并更新验证或规避建议",
   };
   const task = elements.agentInput.value.trim() || defaultTasks[scope];
   const riskBudgetPercent = Number(elements.riskBudget.value || 0.8);
+  const targetSymbol = scope === "position" ? position?.symbol : scope === "candidate" ? candidateSymbol : null;
+  startAgentOperation({
+    scope,
+    targetSymbol,
+    task,
+    riskBudgetPercent,
+    targetLabel: scope === "review"
+      ? reviewContext.fiscalQuarter || `${reviewContext.reviewCaseIds.length} 个复盘案例`
+      : null,
+    requestExtras: scope === "review" ? {
+      reviewCaseIds: reviewContext.reviewCaseIds,
+      caseIds: reviewContext.reviewCaseIds,
+      fiscalQuarter: reviewContext.fiscalQuarter ?? null,
+    } : {},
+  });
+}
+
+async function submitPreparedReviewAnalysis(detail) {
+  const source = detail?.request ?? detail?.analysis ?? detail ?? {};
+  const reviewCaseIds = [...new Set([
+    ...(Array.isArray(source.reviewCaseIds) ? source.reviewCaseIds : []),
+    ...(Array.isArray(source.caseIds) ? source.caseIds : []),
+    source.caseId,
+  ].map((item) => String(item ?? "").trim()).filter(Boolean))];
+  if (!reviewCaseIds.length) {
+    setSystemMessage("复盘 Agent 请求缺少案例 ID，请返回复盘台重新选择。", "warning");
+    return;
+  }
+  if (!state.activeSessionId) await createAgentSession();
+  if (!state.activeSessionId) {
+    setSystemMessage("无法创建 Codex 对话，复盘尚未提交。", "error");
+    return;
+  }
+  document.querySelector("#workspace-cockpit")?.click();
+  if (state.layout.agentCollapsed) setPaneCollapsed("agent", false);
+  const task = String(source.task ?? "").trim()
+    || (source.fiscalQuarter
+      ? `$review-earnings-decisions 通盘复盘 ${source.fiscalQuarter} 的已关联财报决策，评估赔率、胜率、动作一致性、失效纪律，并提出下一轮验证与规避计划。`
+      : "$review-earnings-decisions 基于已确认关联的长桥订单、成交、财报事件和用户事前记录，复盘该决策；区分过程质量与结果运气，并提出可验证的下一步。 ");
+  elements.agentInput.value = task;
+  const view = ensureSessionView(state.activeSessionId);
+  view.draft = task;
+  view.scope = "review";
+  view.reviewContext = {
+    reviewCaseIds,
+    fiscalQuarter: source.fiscalQuarter ?? null,
+  };
+  state.analysisScope = "review";
+  document.querySelectorAll(".scope-segmented [data-scope]").forEach((button) => {
+    button.setAttribute("aria-checked", "false");
+  });
+  elements.candidateSymbolField.hidden = true;
+  renderReviewAgentContext({
+    fiscalQuarter: source.fiscalQuarter,
+    caseCount: reviewCaseIds.length,
+  });
+  startAgentOperation({
+    scope: "review",
+    targetSymbol: null,
+    targetLabel: source.fiscalQuarter || `${reviewCaseIds.length} 个复盘案例`,
+    task,
+    riskBudgetPercent: Number(elements.riskBudget.value || 0.8),
+    requestExtras: {
+      reviewCaseIds,
+      caseIds: reviewCaseIds,
+      fiscalQuarter: source.fiscalQuarter ?? null,
+    },
+  });
+}
+
+function startAgentOperation({
+  scope,
+  targetSymbol = null,
+  targetLabel = null,
+  task,
+  riskBudgetPercent,
+  requestExtras = {},
+}) {
   const threadId = String(state.activeSessionId ?? "");
   if (!threadId) {
     setSystemMessage("请先新建或打开一个 Codex 对话", "warning");
-    return;
+    return false;
   }
   if (activeOperationForThread(threadId)) {
     setSystemMessage("当前对话已有分析在运行；可以新建或切换到其他对话并行分析。", "warning");
-    return;
+    return false;
   }
-
-  const targetSymbol = scope === "position" ? position?.symbol : scope === "candidate" ? candidateSymbol : null;
   const requestId = crypto.randomUUID();
   const operation = {
     operationId: requestId,
     threadId,
     status: "running",
-    progress: "正在获取长桥日线并计算 EMA、Fib 与组合风险…",
+    progress: scope === "review"
+      ? "正在汇总已关联订单、成交、财报事件与事前记录…"
+      : "正在获取长桥日线并计算 EMA、Fib 与组合风险…",
     task,
     streamText: "",
     finalText: "",
@@ -1296,8 +1409,8 @@ async function submitAgentTask(event) {
   elements.agentThread.insertAdjacentHTML("beforeend", `<div class="user-message">${esc(task)}</div>`);
   state.activeRunNode = createOperationNode(operation);
   elements.agentThread.append(state.activeRunNode);
-  const targetLabel = scope === "portfolio" ? "全部组合" : targetSymbol;
-  elements.agentLiveStatus.textContent = `正在分析 ${targetLabel}`;
+  const displayTarget = targetLabel ?? (scope === "portfolio" ? "全部组合" : targetSymbol);
+  elements.agentLiveStatus.textContent = `正在分析 ${displayTarget}`;
   elements.agentCancel.hidden = false;
   updateAgentSubmitState();
   renderAgentSessions();
@@ -1310,11 +1423,21 @@ async function submitAgentTask(event) {
     symbol: targetSymbol,
     task,
     riskBudgetPercent,
+    ...requestExtras,
   }).then((run) => {
     acceptAgentResult({ threadId, operationId: requestId, run });
   }).catch((error) => {
     failAgentOperation(operation, error.message || "Agent 运行失败");
   });
+  return true;
+}
+
+function renderReviewAgentContext({ fiscalQuarter = null, caseCount = 0, reviewCaseIds = [] } = {}) {
+  const resolvedCaseCount = caseCount || reviewCaseIds.length;
+  elements.agentContext.innerHTML = `
+    <div><span>复盘范围</span><strong>${esc(fiscalQuarter || `${resolvedCaseCount} 个已关联案例`)}</strong></div>
+    <div><span>事实层</span><strong>长桥历史订单 + 成交 + 财报事件</strong></div>
+    <div><span>分析方式</span><strong>$review-earnings-decisions · 同一 Codex 对话</strong></div>`;
 }
 
 function handleAgentResult(envelope) {
@@ -1510,7 +1633,11 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
   if (operationId) {
     rememberSettledOperation(operationId);
   }
-  const resultLabel = runScope === "portfolio" ? "全部组合" : run.context.symbol || "目标";
+  const resultLabel = runScope === "portfolio"
+    ? "全部组合"
+    : runScope === "review"
+      ? "复盘"
+      : run.context.symbol || "目标";
   const label = stale
     ? `${resultLabel} 分析完成，但上下文已变化`
     : `${resultLabel} 分析完成`;
@@ -1522,8 +1649,10 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
 }
 
 function isRunStale(run, now = Date.now()) {
-  if (!run?.context || !state.portfolio) return true;
+  if (!run?.context) return true;
   const runScope = run.context.scope ?? (run.context.symbol ? "position" : "portfolio");
+  if (runScope === "review") return false;
+  if (!state.portfolio) return true;
   const activeTarget = state.analysisScope === "position"
     ? normalizeCandidateSymbol(state.selectedSymbol)
     : state.analysisScope === "candidate"
@@ -2317,7 +2446,7 @@ function updateAgentSubmitState() {
   const active = activeOperationForThread(state.activeSessionId);
   const activeSession = state.agentSessions.find((session) => session.id === state.activeSessionId);
   elements.agentSubmit.disabled = state.busy
-    || !state.portfolio
+    || (state.analysisScope !== "review" && !state.portfolio)
     || !state.codexAvailable
     || !state.activeSessionId
     || Boolean(activeSession?.provisioning)

@@ -4,7 +4,9 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   applyCodexWorkspaceAnalysis,
+  buildCodexEvidence,
   buildReadOnlyToolGuard,
+  buildWorkspacePrompt,
   CodexAppServerRpc,
   CodexWorkspaceService,
   expandAgentCommand,
@@ -12,6 +14,34 @@ import {
   findRequestedApps,
   findRequestedSkills,
 } from "../src/engine/codex-workspace.mjs";
+
+test("review evidence works without a live portfolio and enforces the order-first skill boundary", () => {
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-earnings-decisions 复盘所选财报交易",
+    run: {
+      context: {
+        scope: "review",
+        reviewCaseIds: ["case-1"],
+        snapshotAt: "2026-08-10T00:00:00.000Z",
+      },
+      analysisContext: {
+        scope: "review",
+        cases: [{ id: "case-1", symbol: "NVDA.US", fiscalQuarter: "FY2027 Q2" }],
+        brokerRecords: [{ kind: "execution", recordId: "trade-1" }],
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+  const prompt = buildWorkspacePrompt(evidence);
+
+  assert.equal(evidence.analysisScope, "review");
+  assert.equal(evidence.dataQuality.portfolioStatus, "not_required_for_review");
+  assert.equal(evidence.technical, null);
+  assert.match(prompt, /review-earnings-decisions/);
+  assert.match(prompt, /不要从订单日期猜财季/);
+});
 
 test("history exposes one aggregated assistant answer and hides commentary segments", () => {
   const transcript = extractThreadTranscript([{ items: [
@@ -188,6 +218,49 @@ test("analyze fails closed only when an unguarded Longbridge write tool remains 
   }), /尚未被线程配置禁用的长桥交易写能力/);
   assert.equal(service.rpc.calls.some((call) => call.method === "turn/start"), false);
   service.dispose();
+});
+
+test("a newly named Longbridge order-write tool fails closed even on a configured guarded server", async () => {
+  const service = new CodexWorkspaceService({
+    codexPath: "/fake/codex",
+    workspaceDirectory: "/tmp/stock-agent-workspace",
+    store: new MemoryStore(),
+    rpcFactory: (options) => new GuardedNovelWriteRpc(options),
+  });
+  await service.prepare();
+
+  assert.equal(service.status().readOnlyGuardReady, false);
+  assert.deepEqual(service.capabilities().readOnlyGuard.residualTools, [{
+    server: "broker_data",
+    tool: "submit_bracket_order",
+  }]);
+  await assert.rejects(service.analyze({
+    portfolio: portfolioFixture(),
+    run: runFixture(),
+    task: "只读分析",
+  }), /尚未被线程配置禁用的长桥交易写能力/);
+  service.dispose();
+});
+
+test("an unknown Longbridge tool fails closed even when the server labels it read-only", async () => {
+  const blocked = new CodexWorkspaceService({
+    codexPath: "/fake/codex",
+    workspaceDirectory: "/tmp/stock-agent-workspace",
+    store: new MemoryStore(),
+    rpcFactory: (options) => new GuardedUnknownToolRpc(options),
+  });
+  await blocked.prepare();
+  assert.equal(blocked.status().readOnlyGuardReady, false);
+  assert.deepEqual(blocked.capabilities().readOnlyGuard.residualTools, [{
+    server: "broker_data",
+    tool: "buy_stock",
+  }]);
+  await assert.rejects(blocked.analyze({
+    portfolio: portfolioFixture(),
+    run: runFixture(),
+    task: "只读分析",
+  }), /尚未被线程配置禁用的长桥交易写能力/);
+  blocked.dispose();
 });
 
 test("Codex workspace resumes the saved project thread after an app restart", async () => {
@@ -932,6 +1005,41 @@ test("candidate turns request structured Markdown plus a bounded sizing review",
   service.dispose();
 });
 
+test("review turns automatically attach the project review and narrative skills", async () => {
+  const store = new MemoryStore();
+  const rpcInstances = [];
+  const service = createService({ store, rpcInstances });
+  await service.prepare();
+  await service.analyze({
+    portfolio: null,
+    task: "复盘已选择的财报订单",
+    run: {
+      id: "review-run-1",
+      state: "REVIEW_READY",
+      context: { scope: "review", reviewCaseIds: ["case-1"] },
+      analysisContext: {
+        scope: "review",
+        cases: [{ id: "case-1", symbol: "NVDA.US" }],
+        brokerRecords: [{ kind: "execution", recordId: "trade-1" }],
+      },
+      evidence: [],
+      safeguards: { orderWrite: false },
+      capabilities: {},
+      plan: { available: false },
+      sections: ["conclusion", "evidence"],
+    },
+  });
+  const turn = rpcInstances[0].calls.find((call) => call.method === "turn/start");
+  assert.equal(turn.params.outputSchema, undefined);
+  assert.equal(turn.params.input.some((item) => item.type === "skill"
+    && item.name === "review-earnings-decisions"), true);
+  assert.equal(turn.params.input.some((item) => item.type === "skill"
+    && item.name === "analyze-market-narratives"), true);
+  assert.equal(turn.params.input.some((item) => item.type === "skill"
+    && item.name === "analyze-technical-structure"), false);
+  service.dispose();
+});
+
 test("composer markers map only to discovered Skills and accessible Apps", () => {
   const skills = [{ name: "risk", path: "/skills/risk/SKILL.md" }];
   const apps = [{ id: "research-app", name: "Research" }];
@@ -1485,7 +1593,7 @@ test("a late turn/start response cannot cancel stable-final settlement", async (
       task: "迟到 start 响应也要交付 final",
       operationId: "operation-late-start-final",
     }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("late start stable final timed out")), 7_000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("late start stable final timed out")), 9_000)),
   ]);
   assert.equal(analysis.text, "late start stable final");
   service.dispose();
@@ -1696,6 +1804,13 @@ class FakeRpc {
           enabled: true,
           scope: "user",
         },
+        {
+          name: "review-earnings-decisions",
+          path: "/skills/review-earnings-decisions/SKILL.md",
+          description: "Review selected earnings orders and validate rules",
+          enabled: true,
+          scope: "repo",
+        },
       ] }] };
     }
     if (method === "mcpServerStatus/list") {
@@ -1821,6 +1936,35 @@ class UnguardedLongbridgeRpc extends FakeRpc {
       }] };
     }
     return super.request(method, params);
+  }
+}
+
+class GuardedNovelWriteRpc extends GuardedLongbridgeRpc {
+  async request(method, params) {
+    const result = await super.request(method, params);
+    if (method === "mcpServerStatus/list") {
+      result.data[0].tools.submit_bracket_order = {
+        name: "submit_bracket_order",
+        title: "Submit bracket order",
+        description: "Place a bracket order",
+      };
+    }
+    return result;
+  }
+}
+
+class GuardedUnknownToolRpc extends GuardedLongbridgeRpc {
+  async request(method, params) {
+    const result = await super.request(method, params);
+    if (method === "mcpServerStatus/list") {
+      result.data[0].tools.buy_stock = {
+        name: "buy_stock",
+        title: "Buy stock",
+        description: "Buy a stock",
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      };
+    }
+    return result;
   }
 }
 

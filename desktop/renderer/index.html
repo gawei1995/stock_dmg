@@ -196,7 +196,8 @@
         </div>
         <div class="review-overview-actions">
           <button class="review-button secondary" id="review-sync-history" type="button">同步长桥历史</button>
-          <button class="review-button primary" id="review-new-case" type="button">＋ 新建案例</button>
+          <button class="review-button secondary" id="review-batch-analyze" type="button" disabled>季度通盘复盘</button>
+          <button class="review-button primary" id="review-new-case" type="button">从订单建立案例</button>
         </div>
       </header>
 
@@ -211,53 +212,115 @@
 
       <section class="review-panel review-case-panel" id="review-panel-cases" role="tabpanel" aria-labelledby="review-tab-cases">
         <aside class="review-list-pane">
+          <div class="review-list-switch" role="group" aria-label="复盘资料">
+            <button id="review-show-intake" type="button" aria-pressed="true">待关联订单 <span id="review-intake-count">0</span></button>
+            <button id="review-show-cases" type="button" aria-pressed="false">已有案例 <span id="review-list-case-count">0</span></button>
+          </div>
           <div class="review-list-toolbar">
-            <label for="review-case-search">案例</label>
-            <input id="review-case-search" type="search" maxlength="120" placeholder="代码、季度或策略" autocomplete="off" />
+            <label class="sr-only" for="review-case-search">筛选</label>
+            <input id="review-case-search" type="search" maxlength="120" placeholder="代码、季度或订单状态" autocomplete="off" />
+            <select id="review-quarter-filter" aria-label="财报季度筛选"><option value="">全部财报季度</option></select>
           </div>
           <div class="review-case-list" id="review-case-list"></div>
         </aside>
 
         <div class="review-detail-pane">
+          <section class="review-intake" id="review-intake-panel" aria-labelledby="review-intake-heading">
+            <div class="review-stepper" aria-label="财报复盘流程">
+              <span class="active"><b>1</b>同步并选择订单</span>
+              <span><b>2</b>确认财报事件</span>
+              <span><b>3</b>补充当时判断</span>
+              <span><b>4</b>交给 Agent 复盘</span>
+            </div>
+
+            <section class="review-card review-intake-card">
+              <div class="review-card-heading">
+                <div><span>LONG BRIDGE · READ ONLY</span><h3 id="review-intake-heading">先从真实订单与成交开始</h3></div>
+                <strong id="review-intake-status">尚未同步</strong>
+              </div>
+              <p class="review-card-note">订单提供计划与执行状态，成交提供真实数量和价格。选择同一财报决策相关的一组记录（可含正股与保护腿）后，系统再匹配财报日期与季度；不会因为时间接近就自动断定你的交易动机。</p>
+              <div class="review-intake-toolbar">
+                <label><span>历史范围</span><select id="review-intake-range"><option value="90">近 90 天</option><option value="180">近 180 天</option><option value="365" selected>近 1 年</option><option value="730">近 2 年</option></select></label>
+                <label><span>记录类型</span><select id="review-intake-kind"><option value="">订单 + 成交</option><option value="order">仅订单</option><option value="execution">仅成交</option></select></label>
+                <label class="review-intake-search"><span>筛选记录</span><input id="review-intake-search" type="search" maxlength="100" placeholder="代码、方向、状态" autocomplete="off" /></label>
+                <button class="review-button secondary" id="review-intake-sync" type="button">同步历史</button>
+              </div>
+              <div class="review-intake-table-head" aria-hidden="true"><span></span><span>时间 / 类型</span><span>标的</span><span>方向 / 状态</span><span>数量</span><span>价格</span></div>
+              <div class="review-record-list review-intake-records" id="review-intake-records"></div>
+              <div class="review-intake-pagination" id="review-intake-pagination">
+                <span id="review-intake-page-status">尚未加载历史记录</span>
+                <button class="review-button secondary" id="review-intake-load-more" type="button" hidden>加载更多</button>
+              </div>
+              <div class="review-intake-selection">
+                <span id="review-intake-selected-count">尚未选择记录</span>
+                <button class="review-button secondary" id="review-intake-clear" type="button" disabled>清除选择</button>
+              </div>
+            </section>
+
+            <section class="review-card review-event-card">
+              <div class="review-card-heading">
+                <div><span>EARNINGS ASSOCIATION</span><h3>确认财报事件，而不是手填日期</h3></div>
+                <strong id="review-event-match-status">等待选择订单</strong>
+              </div>
+              <p class="review-card-note">财报日期、盘前/盘后与财报季度来自只读事件数据。系统给出候选，你负责确认这些订单是否确实属于该财报决策。</p>
+              <div class="review-event-candidates" id="review-event-candidates"></div>
+              <div class="review-derived-context" id="review-derived-context"></div>
+              <div class="review-form-actions review-intake-actions">
+                <span>选择订单会联带其全部逐笔成交；选择成交会联带父订单与同单成交。系统会在确认后显示补齐数量，且不会修改或提交任何券商订单。</span>
+                <button class="review-button primary" id="review-create-from-records" type="button" disabled>建立财报复盘案例</button>
+              </div>
+            </section>
+          </section>
+
+          <section class="review-case-detail" id="review-case-detail" hidden>
           <form class="review-form" id="review-case-form">
             <div class="review-section-heading">
-              <div><span>EX-ANTE RECORD</span><h2 id="review-case-heading">新建财报案例</h2></div>
+              <div><span>HUMAN CONTEXT · EX-ANTE RECORD</span><h2 id="review-case-heading">财报案例</h2></div>
               <span class="review-state-badge draft" id="review-case-status">DRAFT</span>
             </div>
             <input id="review-case-id" type="hidden" />
-            <div class="review-form-grid compact">
-              <label><span>标的</span><input id="review-case-symbol" name="symbol" type="text" maxlength="32" required placeholder="NVDA.US" autocomplete="off" spellcheck="false" /></label>
-              <label><span>财报季度</span><input id="review-case-period" name="fiscalPeriod" type="text" maxlength="40" required placeholder="FY2027 Q1" autocomplete="off" /></label>
-              <label><span>预计财报时间</span><input id="review-case-event-at" name="eventAt" type="datetime-local" required /></label>
-              <label><span>策略类型</span><select id="review-case-strategy" name="strategyType"><option value="pre_hold">财报前持有</option><option value="pre_add">财报前加仓</option><option value="pre_reduce">财报前减仓</option><option value="pre_hedge">财报前保护</option><option value="post_confirm_entry">财报后确认买入</option><option value="post_reversal_exit">财报后退出</option><option value="other">其他</option></select></label>
-              <label><span>主评价窗口</span><select id="review-case-window" name="primaryHorizon"><option value="t1">T+1</option><option value="t3">T+3</option><option value="t5" selected>T+5</option><option value="t20">T+20</option><option value="next_quarter">下次财报</option></select></label>
-              <label><span>风险预算 / R</span><input id="review-case-risk-budget" name="riskBudgetR" type="number" min="0.01" step="0.01" placeholder="例如 1.0" /></label>
-              <label><span>叙事Stage</span><input id="review-case-stage" name="stage" type="text" maxlength="24" placeholder="2 / 3 / 4P / 4E / 4F" /></label>
-              <label><span>市场温度 / 10</span><input id="review-case-temperature" name="temperature" type="number" min="0" max="10" step="0.5" placeholder="6" /></label>
+            <div class="review-source-context">
+              <label><span>标的 · 来自订单</span><input id="review-case-symbol" name="symbol" type="text" maxlength="32" required readonly /></label>
+              <label><span>财报季度 · 来自事件</span><input id="review-case-period" name="fiscalPeriod" type="text" maxlength="40" required readonly /></label>
+              <label><span>财报时间 · 来自事件</span><input id="review-case-event-at" name="eventAt" type="datetime-local" required readonly /></label>
+              <div><span>已关联记录</span><strong id="review-case-linked-count">0 条</strong></div>
             </div>
+            <p class="review-human-note">下面四项由你保留当时的主观信息。Agent 会区分“当时可知事实、你的原始判断、事后结果”，不会用结果倒推一个看似完美的理由。</p>
             <div class="review-form-grid narrative">
               <label><span>我的判断</span><textarea id="review-case-thesis" name="thesis" rows="4" maxlength="4000" placeholder="当时认为价值由什么驱动，预期差在哪里？"></textarea></label>
               <label><span>市场当时相信什么</span><textarea id="review-case-market-belief" name="marketBelief" rows="4" maxlength="4000" placeholder="价格、预期、定位与消息反应隐含了什么？"></textarea></label>
               <label><span>计划动作</span><textarea id="review-case-action" name="plannedAction" rows="3" maxlength="2400" placeholder="加仓、持有、减仓或保护；包括规模与触发。"></textarea></label>
               <label><span>失效条件</span><textarea id="review-case-invalidation" name="invalidation" rows="3" maxlength="2400" placeholder="可观察、可验证，不限定为某一种技术指标。"></textarea></label>
             </div>
+            <details class="review-optional-fields">
+              <summary>评价设置与当时环境（可选）</summary>
+              <div class="review-form-grid compact">
+                <label><span>策略类型</span><select id="review-case-strategy" name="strategyType"><option value="pre_hold">财报前持有</option><option value="pre_add">财报前加仓</option><option value="pre_reduce">财报前减仓</option><option value="pre_hedge">财报前保护</option><option value="post_confirm_entry">财报后确认买入</option><option value="post_reversal_exit">财报后退出</option><option value="other">其他</option></select></label>
+                <label><span>主评价窗口</span><select id="review-case-window" name="primaryHorizon"><option value="t1">T+1</option><option value="t3">T+3</option><option value="t5" selected>T+5</option><option value="t20">T+20</option><option value="next_quarter">下次财报</option></select></label>
+                <label><span>风险预算 / R</span><input id="review-case-risk-budget" name="riskBudgetR" type="number" min="0.01" step="0.01" placeholder="例如 1.0" /></label>
+                <label><span>叙事Stage</span><input id="review-case-stage" name="stage" type="text" maxlength="24" placeholder="2 / 3 / 4P / 4E / 4F" /></label>
+                <label><span>市场温度 / 10</span><input id="review-case-temperature" name="temperature" type="number" min="0" max="10" step="0.5" placeholder="6" /></label>
+              </div>
+            </details>
             <div class="review-form-actions">
               <span id="review-freeze-note">草稿可编辑；封存后只能追加事后记录。</span>
-              <button class="review-button secondary" id="review-link-records" type="button" disabled>确认关联成交</button>
+              <button class="review-button secondary" id="review-link-records" type="button" disabled hidden>确认关联成交</button>
+              <button class="review-button secondary" id="review-case-analyze" type="button">用复盘 Skill 分析</button>
               <button class="review-button secondary" id="review-freeze-case" type="button" disabled>封存财报前判断</button>
               <button class="review-button primary" id="review-save-case" type="submit">保存案例</button>
             </div>
           </form>
 
           <section class="review-card broker-match-card" aria-labelledby="review-broker-match-heading">
-            <div class="review-card-heading"><div><span>BROKER MATCH</span><h3 id="review-broker-match-heading">自动匹配的长桥订单与成交</h3></div><strong id="review-broker-match-count">0 条</strong></div>
-            <p class="review-card-note">系统只提出匹配候选。确认前不会把订单或成交归因到本案例；订单用于执行质量，成交用于真实盈亏。</p>
+            <div class="review-card-heading"><div><span>BROKER EVIDENCE</span><h3 id="review-broker-match-heading">已确认关联的长桥订单与成交</h3></div><strong id="review-broker-match-count">0 条</strong></div>
+            <p class="review-card-note">这些记录构成事实层。订单用于检查计划、撤改与执行质量，成交用于计算真实数量、成本与盈亏；账户标识不会进入 Agent 上下文。</p>
             <div class="review-record-list" id="review-broker-matches"></div>
           </section>
 
           <section class="review-card" aria-labelledby="review-checkpoint-heading">
             <div class="review-card-heading"><div><span>OUTCOME PATH</span><h3 id="review-checkpoint-heading">结果检查点</h3></div><strong>主窗口预先冻结</strong></div>
             <div class="review-checkpoints" id="review-checkpoints"></div>
+          </section>
           </section>
         </div>
       </section>
@@ -271,7 +334,7 @@
               <label><span>关联案例</span><select id="review-test-case"><option value="">不限定单一案例</option></select></label>
               <label><span>关联规则</span><select id="review-test-rule"><option value="">暂不关联规则</option></select></label>
               <label><span>策略族</span><input id="review-test-strategy" type="text" maxlength="120" required placeholder="pre_earnings_reduce" /></label>
-              <label><span>主指标</span><select id="review-test-metric"><option value="net_r">净R</option><option value="relative_return">相对基准收益</option><option value="drawdown">最大回撤</option><option value="hedge_value">对冲价值</option></select></label>
+              <label><span>主指标</span><select id="review-test-metric"><option value="net_r">净R</option><option value="expectancy_r">净期望R</option><option value="win_rate">胜率</option><option value="payoff_ratio">赔率</option><option value="relative_return">相对基准收益</option><option value="mae_r">MAE / R</option><option value="mfe_r">MFE / R</option><option value="action_adherence">动作遵守度</option><option value="invalidation_latency">失效执行延迟</option><option value="peak_gross_exposure">峰值毛敞口</option><option value="drawdown">最大回撤</option><option value="hedge_value">对冲价值</option></select></label>
               <label><span>评价窗口</span><select id="review-test-window"><option value="t1">T+1</option><option value="t3">T+3</option><option value="t5" selected>T+5</option><option value="t20">T+20</option></select></label>
               <label><span>最少案例</span><input id="review-test-min-cases" type="number" min="1" max="10000" step="1" value="20" /></label>
             </div>

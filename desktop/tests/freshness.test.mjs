@@ -77,7 +77,8 @@ test("a failed refresh can explicitly downgrade a recent snapshot", () => {
 test("desktop gates Agent fallback and plan saving on the freshness contract", async () => {
   const main = await readFile(new URL("../main.mjs", import.meta.url), "utf8");
 
-  assert.match(main, /let analysisPortfolio = withPortfolioFreshness\(portfolio\)/);
+  assert.match(main, /let analysisPortfolio = portfolio \? withPortfolioFreshness\(portfolio\) : null/);
+  assert.match(main, /scope !== "review" && !analysisPortfolio\.freshness\.freshForSizing/);
   assert.match(
     main,
     /refreshOutcome\.error[\s\S]{0,500}forceState:\s*"stale"[\s\S]{0,900}refreshOutcome\.timedOut[\s\S]{0,500}forceState:\s*"stale"/,

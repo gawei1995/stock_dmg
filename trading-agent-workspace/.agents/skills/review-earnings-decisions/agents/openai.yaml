@@ -1,0 +1,4 @@
+interface:
+  display_name: "财报交易复盘"
+  short_description: "关联真实订单，复盘单次财报决策并验证跨季度交易规则"
+  default_prompt: "使用 $review-earnings-decisions 关联已选订单，完成本财报季度复盘并设计下一轮可验证规则。"

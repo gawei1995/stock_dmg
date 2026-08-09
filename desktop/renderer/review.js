@@ -12,14 +12,28 @@
     "CLOSED",
   ]);
   const RULE_STATES = ["HYPOTHESIS", "TESTING", "PROVISIONAL", "VALIDATED", "RETIRED"];
+  const INTAKE_PAGE_LIMIT = 250;
+  const INTAKE_SEARCH_DEBOUNCE_MS = 240;
 
   const state = {
     mode: "cockpit",
     activeTab: "cases",
+    casePane: "intake",
     loading: false,
     selectedCaseId: null,
-    creatingCase: false,
     caseFilter: "",
+    quarterFilter: "",
+    intakeSearch: "",
+    intakeKind: "",
+    intakePageLoading: false,
+    intakePageToken: 0,
+    intakeSearchTimer: null,
+    eventLookupToken: 0,
+    eventLookupLoading: false,
+    eventLookupMessage: "",
+    selectedRecordIds: new Set(),
+    selectedRecordCache: new Map(),
+    selectedEventId: null,
     snapshot: emptySnapshot(),
   };
 
@@ -37,9 +51,32 @@
     ruleCount: document.querySelector("#review-rule-count"),
     dueCount: document.querySelector("#review-due-count"),
     newCase: document.querySelector("#review-new-case"),
+    batchAnalyze: document.querySelector("#review-batch-analyze"),
     syncHistory: document.querySelector("#review-sync-history"),
+    showIntake: document.querySelector("#review-show-intake"),
+    showCases: document.querySelector("#review-show-cases"),
+    intakeCount: document.querySelector("#review-intake-count"),
+    listCaseCount: document.querySelector("#review-list-case-count"),
     caseSearch: document.querySelector("#review-case-search"),
+    quarterFilter: document.querySelector("#review-quarter-filter"),
     caseList: document.querySelector("#review-case-list"),
+    intakePanel: document.querySelector("#review-intake-panel"),
+    caseDetail: document.querySelector("#review-case-detail"),
+    intakeStatus: document.querySelector("#review-intake-status"),
+    intakeRange: document.querySelector("#review-intake-range"),
+    intakeKind: document.querySelector("#review-intake-kind"),
+    intakeSearch: document.querySelector("#review-intake-search"),
+    intakeSync: document.querySelector("#review-intake-sync"),
+    intakeRecords: document.querySelector("#review-intake-records"),
+    intakePagination: document.querySelector("#review-intake-pagination"),
+    intakePageStatus: document.querySelector("#review-intake-page-status"),
+    intakeLoadMore: document.querySelector("#review-intake-load-more"),
+    intakeSelectedCount: document.querySelector("#review-intake-selected-count"),
+    intakeClear: document.querySelector("#review-intake-clear"),
+    eventMatchStatus: document.querySelector("#review-event-match-status"),
+    eventCandidates: document.querySelector("#review-event-candidates"),
+    derivedContext: document.querySelector("#review-derived-context"),
+    createFromRecords: document.querySelector("#review-create-from-records"),
     caseForm: document.querySelector("#review-case-form"),
     caseId: document.querySelector("#review-case-id"),
     caseHeading: document.querySelector("#review-case-heading"),
@@ -58,10 +95,12 @@
     caseInvalidation: document.querySelector("#review-case-invalidation"),
     freezeNote: document.querySelector("#review-freeze-note"),
     freezeCase: document.querySelector("#review-freeze-case"),
+    analyzeCase: document.querySelector("#review-case-analyze"),
     linkRecords: document.querySelector("#review-link-records"),
     saveCase: document.querySelector("#review-save-case"),
     brokerMatches: document.querySelector("#review-broker-matches"),
     brokerMatchCount: document.querySelector("#review-broker-match-count"),
+    caseLinkedCount: document.querySelector("#review-case-linked-count"),
     checkpoints: document.querySelector("#review-checkpoints"),
     testForm: document.querySelector("#review-test-form"),
     testHypothesis: document.querySelector("#review-test-hypothesis"),
@@ -103,18 +142,48 @@
     });
     window.addEventListener("hashchange", () => applyRoute());
 
-    elements.newCase?.addEventListener("click", beginNewCase);
+    elements.newCase?.addEventListener("click", showIntakePane);
+    elements.showIntake?.addEventListener("click", showIntakePane);
+    elements.showCases?.addEventListener("click", showCasePane);
+    elements.batchAnalyze?.addEventListener("click", prepareQuarterAnalysis);
     elements.syncHistory?.addEventListener("click", syncTradeHistory);
+    elements.intakeSync?.addEventListener("click", syncTradeHistory);
     elements.caseSearch?.addEventListener("input", (event) => {
       state.caseFilter = String(event.target.value ?? "").trim().toLowerCase();
       renderCaseList();
     });
+    elements.quarterFilter?.addEventListener("change", (event) => {
+      state.quarterFilter = String(event.target.value ?? "");
+      renderCaseList();
+      updateBatchButton();
+    });
+    elements.intakeSearch?.addEventListener("input", (event) => {
+      state.intakeSearch = String(event.target.value ?? "").trim().toLowerCase();
+      scheduleIntakeSearch();
+    });
+    elements.intakeKind?.addEventListener("change", (event) => {
+      state.intakeKind = String(event.target.value ?? "");
+      renderIntakeRecords();
+    });
+    elements.intakeRecords?.addEventListener("change", handleIntakeRecordSelection);
+    elements.intakeLoadMore?.addEventListener("click", () => loadIntakePage({ append: true }));
+    elements.intakeClear?.addEventListener("click", clearIntakeSelection);
+    elements.eventCandidates?.addEventListener("change", handleEventSelection);
+    elements.createFromRecords?.addEventListener("click", createCaseFromRecords);
     elements.caseList?.addEventListener("click", (event) => {
       const button = event.target.closest("[data-review-case-id]");
       if (button) selectCase(button.dataset.reviewCaseId);
+      const symbolButton = event.target.closest("[data-intake-symbol]");
+      if (symbolButton) {
+        state.intakeSearch = symbolButton.dataset.intakeSymbol.toLowerCase();
+        elements.intakeSearch.value = symbolButton.dataset.intakeSymbol;
+        renderCaseList();
+        void loadIntakePage({ append: false });
+      }
     });
     elements.caseForm?.addEventListener("submit", saveCase);
     elements.freezeCase?.addEventListener("click", freezeSelectedCase);
+    elements.analyzeCase?.addEventListener("click", prepareCaseAnalysis);
     elements.linkRecords?.addEventListener("click", linkSelectedBrokerRecords);
     elements.brokerMatches?.addEventListener("change", updateLinkButton);
 
@@ -201,17 +270,26 @@
     window.history.replaceState(null, "", hash);
   }
 
-  async function loadSnapshot({ preserveNewCase = false } = {}) {
+  async function loadSnapshot({ preservePane = false } = {}) {
     const managesLoadingState = !state.loading;
     if (managesLoadingState) setLoading(true, "正在读取加密复盘记录…");
     try {
       const result = await callReview("snapshot");
-      state.snapshot = normalizeSnapshot(result);
+      const separateIntake = await optionalReviewCall([
+        "reviewIntakeSnapshot",
+        "intakeSnapshot",
+      ], {
+        offset: 0,
+        limit: INTAKE_PAGE_LIMIT,
+        query: state.intakeSearch,
+      });
+      state.snapshot = normalizeSnapshot(result, separateIntake);
       const caseExists = state.snapshot.cases.some((item) => caseId(item) === state.selectedCaseId);
-      if (!preserveNewCase && !caseExists) {
-        state.selectedCaseId = state.snapshot.cases[0] ? caseId(state.snapshot.cases[0]) : null;
-        state.creatingCase = !state.selectedCaseId;
+      if (!caseExists) state.selectedCaseId = null;
+      if (!preservePane && !state.selectedCaseId) {
+        state.casePane = "intake";
       }
+      pruneIntakeSelection();
       renderAll();
       clearNotice();
     } catch (error) {
@@ -223,8 +301,15 @@
     }
   }
 
-  function normalizeSnapshot(result) {
+  function normalizeSnapshot(result, separateIntake = null) {
     const source = result?.snapshot ?? result?.data ?? result ?? {};
+    const intakeSource = separateIntake?.intake
+      ?? separateIntake?.snapshot
+      ?? separateIntake?.data
+      ?? source.intake
+      ?? source.reviewIntake
+      ?? source.broker
+      ?? {};
     return {
       cases: arrayValue(source.cases, source.reviewCases),
       brokerMatches: source.brokerMatches && typeof source.brokerMatches === "object"
@@ -235,17 +320,23 @@
       reviews: arrayValue(source.reviews, source.ruleReviews),
       ruleMetrics: source.ruleMetrics && typeof source.ruleMetrics === "object" ? source.ruleMetrics : {},
       summary: source.summary && typeof source.summary === "object" ? source.summary : {},
+      intake: normalizeIntake(intakeSource, source),
     };
   }
 
   function emptySnapshot() {
-    return { cases: [], brokerMatches: {}, tests: [], rules: [], reviews: [], ruleMetrics: {}, summary: {} };
+    return {
+      cases: [], brokerMatches: {}, tests: [], rules: [], reviews: [], ruleMetrics: {}, summary: {},
+      intake: normalizeIntake(),
+    };
   }
 
   function renderAll() {
     renderSummary();
+    renderQuarterFilter();
     renderCaseList();
     renderSelectedCase();
+    renderIntake();
     renderTests();
     renderRules();
     renderGovernance();
@@ -268,10 +359,16 @@
     elements.testCount.textContent = String(state.snapshot.tests.length);
     elements.ruleCount.textContent = String(state.snapshot.rules.length);
     elements.dueCount.textContent = String(dueReviews);
+    elements.listCaseCount.textContent = String(state.snapshot.cases.length);
+    elements.intakeCount.textContent = String(state.snapshot.intake.totalRecordCount);
+    updateBatchButton();
   }
 
   function renderCaseList() {
+    elements.showIntake.setAttribute("aria-pressed", String(state.casePane === "intake"));
+    elements.showCases.setAttribute("aria-pressed", String(state.casePane === "case"));
     const cases = state.snapshot.cases.filter((item) => {
+      if (state.quarterFilter && casePeriod(item) !== state.quarterFilter) return false;
       if (!state.caseFilter) return true;
       return [caseSymbol(item), casePeriod(item), item.strategyFamily, item.strategy]
         .filter(Boolean)
@@ -280,9 +377,48 @@
         .includes(state.caseFilter);
     });
     elements.caseList.replaceChildren();
+    if (state.casePane === "intake") {
+      const records = filteredIntakeRecords();
+      const bySymbol = new Map();
+      for (const record of records) {
+        const symbol = brokerSymbol(record);
+        if (!symbol) continue;
+        const group = bySymbol.get(symbol) ?? { symbol, count: 0, latestAt: null };
+        group.count += 1;
+        const at = brokerRecordAt(record);
+        if (timestamp(at) > timestamp(group.latestAt)) group.latestAt = at;
+        bySymbol.set(symbol, group);
+      }
+      const groups = [...bySymbol.values()]
+        .filter((item) => !state.caseFilter || item.symbol.toLowerCase().includes(state.caseFilter))
+        .sort((left, right) => timestamp(right.latestAt) - timestamp(left.latestAt));
+      if (!groups.length) {
+        elements.caseList.append(emptyNode(
+          state.snapshot.intake.syncedAt
+            ? "当前范围没有可关联记录。\n可扩大历史范围后重新同步。"
+            : "先同步长桥历史。\n订单与成交会在这里按标的归组。",
+          true,
+        ));
+        return;
+      }
+      for (const group of groups) {
+        const button = node("button", `review-case-item${state.intakeSearch === group.symbol.toLowerCase() ? " active" : ""}`);
+        button.type = "button";
+        button.dataset.intakeSymbol = group.symbol;
+        button.append(
+          node("strong", "", group.symbol),
+          node("small", "", `${group.count} 条`),
+          node("p", "", `最近记录 ${formatDateTime(group.latestAt)}`),
+        );
+        elements.caseList.append(button);
+      }
+      return;
+    }
     if (!cases.length) {
       elements.caseList.append(emptyNode(
-        state.caseFilter ? "没有匹配的案例。" : "还没有复盘案例。\n从财报前判断开始建立第一条记录。",
+        state.caseFilter || state.quarterFilter
+          ? "没有匹配的案例。"
+          : "还没有复盘案例。\n先从真实订单建立第一条记录。",
         true,
       ));
       return;
@@ -301,19 +437,30 @@
     }
   }
 
-  function beginNewCase() {
+  function showIntakePane() {
     state.selectedCaseId = null;
-    state.creatingCase = true;
+    state.casePane = "intake";
     setReviewTab("cases");
     renderCaseList();
     renderSelectedCase();
-    elements.caseSymbol.focus();
+    renderIntake();
+    elements.intakeSearch.focus();
+  }
+
+  function showCasePane() {
+    state.casePane = "case";
+    if (!state.selectedCaseId && state.snapshot.cases[0]) {
+      state.selectedCaseId = caseId(state.snapshot.cases[0]);
+    }
+    setReviewTab("cases");
+    renderCaseList();
+    renderSelectedCase();
   }
 
   function selectCase(id) {
     if (!id) return;
     state.selectedCaseId = String(id);
-    state.creatingCase = false;
+    state.casePane = "case";
     renderCaseList();
     renderSelectedCase();
   }
@@ -324,10 +471,10 @@
 
   function renderSelectedCase() {
     const item = selectedCase();
-    if (!item) {
-      resetCaseForm();
-      renderBrokerMatches(null);
-      renderCheckpoints(null);
+    const showCase = state.casePane === "case" && Boolean(item);
+    elements.intakePanel.hidden = showCase;
+    elements.caseDetail.hidden = !showCase;
+    if (!showCase) {
       return;
     }
     const exAnte = item.exAnteDraft ?? item.exAnte ?? item.decision ?? item.draft ?? {};
@@ -360,23 +507,9 @@
     elements.freezeCase.textContent = frozen ? "已封存" : "封存财报前判断";
     elements.saveCase.disabled = frozen || state.loading;
     elements.saveCase.textContent = frozen ? "财报前记录已锁定" : "保存案例";
+    elements.analyzeCase.disabled = state.loading;
     renderBrokerMatches(item);
     renderCheckpoints(item);
-  }
-
-  function resetCaseForm() {
-    elements.caseForm.reset();
-    elements.caseId.value = "";
-    elements.caseHeading.textContent = "新建财报案例";
-    setCaseStatus("DRAFT");
-    setSelectValue(elements.caseWindow, "t5");
-    setSelectValue(elements.caseStrategy, "pre_hold");
-    setCaseFormFrozen(false);
-    elements.freezeNote.textContent = "草稿可编辑；封存后只能追加事后记录。";
-    elements.freezeCase.disabled = true;
-    elements.freezeCase.textContent = "封存财报前判断";
-    elements.saveCase.disabled = state.loading;
-    elements.saveCase.textContent = "保存案例";
   }
 
   function setCaseStatus(value) {
@@ -397,16 +530,19 @@
     const draft = caseDraftFromForm();
     if (!draft.symbol || !draft.fiscalQuarter || !draft.eventAt) return;
     const currentId = elements.caseId.value.trim();
-    await runAction(currentId ? "正在更新案例…" : "正在建立案例…", async () => {
-      const result = currentId
-        ? await callReview("updateCase", { caseId: currentId, patch: draft })
-        : await callReview("createCase", draft);
+    if (!currentId) {
+      showNotice("请先从长桥订单建立案例，再补充当时判断。", "warning");
+      showIntakePane();
+      return;
+    }
+    await runAction("正在更新案例…", async () => {
+      const result = await callReview("updateCase", { caseId: currentId, patch: draft });
       state.selectedCaseId = String(
         result?.caseId ?? result?.case?.id ?? result?.reviewCase?.id ?? currentId ?? "",
       ) || null;
-      state.creatingCase = false;
-      await loadSnapshot();
-      showNotice(currentId ? "案例草稿已更新。" : "案例已建立；请在财报前核对并封存。", "success");
+      state.casePane = "case";
+      await loadSnapshot({ preservePane: true });
+      showNotice("当时判断已保存。", "success");
     });
   }
 
@@ -480,23 +616,27 @@
 
   function renderBrokerMatches(item) {
     const records = brokerMatchesForCase(item);
+    const confirmed = records.filter((record) => record.linked === true || record.confirmed === true);
+    const shownRecords = confirmed.length ? confirmed : records;
     elements.brokerMatches.replaceChildren();
-    elements.brokerMatchCount.textContent = `${records.length} 条`;
-    if (!records.length) {
+    elements.brokerMatchCount.textContent = `${shownRecords.length} 条`;
+    elements.caseLinkedCount.textContent = `${confirmed.length || arrayValue(item?.brokerLinks?.orderIds).length + arrayValue(item?.brokerLinks?.executionIds).length} 条`;
+    elements.linkRecords.hidden = confirmed.length > 0 || !records.length;
+    if (!shownRecords.length) {
       elements.brokerMatches.append(emptyNode(
-        item ? "暂无匹配候选。可同步长桥历史后重试。" : "先保存案例，再匹配订单与成交。",
+        item ? "这个旧案例尚未关联真实订单。可回到“待关联订单”重新建立，或同步历史后确认候选。" : "先从订单建立案例。",
         true,
       ));
       updateLinkButton();
       return;
     }
-    for (const record of records) {
+    for (const record of shownRecords) {
       const id = brokerRecordId(record);
       const row = node("label", "review-record-row");
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.dataset.brokerRecordId = id;
-      checkbox.disabled = record.linked === true || record.confirmed === true;
+      checkbox.disabled = confirmed.length > 0 || record.linked === true || record.confirmed === true;
       checkbox.checked = checkbox.disabled;
       row.append(
         checkbox,
@@ -536,16 +676,476 @@
 
   async function syncTradeHistory() {
     if (state.loading) return;
-    const item = selectedCase();
+    const days = Number(elements.intakeRange?.value || 365);
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
     await runAction("正在同步长桥历史订单与成交…", async () => {
-      await callReview("syncTradeHistory", {
-        caseId: item ? caseId(item) : null,
-        symbol: item ? caseSymbol(item) : null,
-        eventAt: item ? item.eventAt ?? item.event?.scheduledAt ?? null : null,
-      });
-      await loadSnapshot({ preserveNewCase: state.creatingCase });
-      showNotice("长桥历史已同步；自动匹配仅作为候选，仍需手动确认归属。", "success");
+      const payload = {
+        from: from.toISOString(),
+        to: to.toISOString(),
+        startAt: from.toISOString(),
+        endAt: to.toISOString(),
+      };
+      const intakeMethod = firstReviewMethod(["syncReviewIntake", "syncIntake"]);
+      if (intakeMethod) await callReview(intakeMethod, payload);
+      else await callReview("syncTradeHistory", payload);
+      state.casePane = "intake";
+      state.selectedCaseId = null;
+      await loadSnapshot({ preservePane: true });
+      const completeness = Object.values(state.snapshot.intake.completeness ?? {});
+      const degraded = state.snapshot.intake.warnings.length > 0
+        || completeness.some((value) => ["stale", "best_effort", "not_synced"].includes(String(value)));
+      showNotice(
+        degraded
+          ? "历史记录已尽力同步，但部分长桥数据源未完整返回；当前结果已标记为降级，请先核对完整性提示再关联。"
+          : "长桥历史已同步。财报事件自动匹配仅作为候选；请选择真实订单与成交后亲自确认。",
+        degraded ? "warning" : "success",
+      );
     });
+  }
+
+  function renderIntake() {
+    const intake = state.snapshot.intake;
+    const brokerCounts = `${formatNumber(intake.orderCount, 0)} 笔订单 · ${formatNumber(intake.executionCount, 0)} 笔成交`;
+    elements.intakeStatus.textContent = intake.syncedAt
+      ? `${brokerCounts} · ${formatDateTime(intake.syncedAt)}`
+      : "尚未同步";
+    renderIntakeRecords();
+    renderIntakePagination();
+    renderEventCandidates();
+    renderDerivedContext();
+  }
+
+  function renderIntakeRecords() {
+    const records = filteredIntakeRecords();
+    elements.intakeRecords.replaceChildren();
+    if (!records.length) {
+      elements.intakeRecords.append(emptyNode(
+        state.intakePageLoading
+          ? "正在从本机加密历史中查询完整结果…"
+          : state.snapshot.intake.syncedAt
+          ? "没有符合筛选条件的历史记录。"
+          : "尚未取得历史订单。点击“同步历史”后，这里会显示只读订单与成交。",
+        true,
+      ));
+      updateIntakeSelectionSummary();
+      return;
+    }
+    for (const record of records) {
+      const id = brokerRecordId(record);
+      const symbol = brokerSymbol(record);
+      const type = brokerRecordType(record);
+      const linked = recordAlreadyLinked(id);
+      const label = node("label", `review-record-row review-intake-record${linked ? " linked" : ""}`);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.intakeRecordId = id;
+      checkbox.checked = state.selectedRecordIds.has(id);
+      checkbox.disabled = !id || linked || state.loading || state.intakePageLoading;
+      label.append(
+        checkbox,
+        node("span", "review-record-time", `${formatShortDateTime(brokerRecordAt(record))}\n${type === "order" ? "订单" : "成交"}`),
+        node("strong", "", symbol || "—"),
+        node("span", "", `${String(record.side ?? record.direction ?? "—").toUpperCase()}\n${String(record.status ?? (type === "execution" ? "FILLED" : "—")).toUpperCase()}`),
+        node("span", "", formatNumber(record.quantity ?? record.executedQuantity ?? record.qty)),
+        priceText(record.price ?? record.executedPrice ?? record.submittedPrice, record.currency),
+      );
+      if (linked) label.title = "这条记录已经关联到一个复盘案例";
+      elements.intakeRecords.append(label);
+    }
+    updateIntakeSelectionSummary();
+  }
+
+  function filteredIntakeRecords() {
+    return state.snapshot.intake.records.filter((record) => {
+      if (state.intakeKind && brokerRecordType(record) !== state.intakeKind) return false;
+      return true;
+    });
+  }
+
+  function renderIntakePagination() {
+    const intake = state.snapshot.intake;
+    const loaded = intake.records.length;
+    const total = intake.totalRecordCount;
+    const queryLabel = state.intakeSearch ? ` · 服务端筛选“${state.intakeSearch}”` : "";
+    elements.intakePagination.classList.toggle("loading", state.intakePageLoading);
+    elements.intakePageStatus.textContent = state.intakePageLoading
+      ? `${loaded ? `已保留 ${loaded} 条，` : ""}正在读取历史${queryLabel}`
+      : `已加载 ${formatNumber(loaded, 0)} / ${formatNumber(total, 0)} 条${queryLabel}`;
+    elements.intakeLoadMore.hidden = intake.nextOffset == null;
+    elements.intakeLoadMore.disabled = state.loading || state.intakePageLoading || intake.nextOffset == null;
+    elements.intakeLoadMore.textContent = state.intakePageLoading ? "加载中…" : "加载更多";
+  }
+
+  function scheduleIntakeSearch() {
+    if (state.intakeSearchTimer) clearTimeout(state.intakeSearchTimer);
+    state.intakeSearchTimer = setTimeout(() => {
+      state.intakeSearchTimer = null;
+      void loadIntakePage({ append: false });
+    }, INTAKE_SEARCH_DEBOUNCE_MS);
+    renderIntakePagination();
+  }
+
+  async function loadIntakePage({ append = false } = {}) {
+    if (state.loading || state.intakePageLoading) {
+      if (!append) {
+        if (state.intakeSearchTimer) clearTimeout(state.intakeSearchTimer);
+        state.intakeSearchTimer = setTimeout(() => {
+          state.intakeSearchTimer = null;
+          void loadIntakePage({ append: false });
+        }, 100);
+      }
+      return;
+    }
+    const method = firstReviewMethod(["reviewIntakeSnapshot", "intakeSnapshot"]);
+    if (!method) {
+      showNotice("历史订单分页接口尚未就绪。", "error");
+      return;
+    }
+    const previous = state.snapshot.intake;
+    const offset = append ? previous.nextOffset : 0;
+    if (append && offset == null) return;
+    const requestQuery = state.intakeSearch;
+    const token = ++state.intakePageToken;
+    state.intakePageLoading = true;
+    if (!append) {
+      state.snapshot.intake = {
+        ...previous,
+        records: [],
+        totalRecordCount: 0,
+        offset: 0,
+        nextOffset: null,
+      };
+    }
+    renderCaseList();
+    renderIntakeRecords();
+    renderIntakePagination();
+    try {
+      const result = await callReview(method, {
+        offset,
+        limit: INTAKE_PAGE_LIMIT,
+        query: requestQuery,
+      });
+      if (token !== state.intakePageToken) return;
+      if (requestQuery !== state.intakeSearch) {
+        state.snapshot.intake = previous;
+        return;
+      }
+      const source = result?.intake ?? result?.snapshot?.intake ?? result?.data?.intake ?? result?.data ?? result ?? {};
+      const page = normalizeIntake(source);
+      state.snapshot.intake = append ? mergeIntakePages(previous, page) : page;
+      pruneIntakeSelection();
+      renderQuarterFilter();
+      renderCaseList();
+      renderSummary();
+    } catch (error) {
+      if (token !== state.intakePageToken) return;
+      state.snapshot.intake = previous;
+      showNotice(error.message || "历史订单查询失败。", "error");
+    } finally {
+      if (token === state.intakePageToken) {
+        state.intakePageLoading = false;
+        renderIntake();
+      }
+    }
+  }
+
+  function mergeIntakePages(previous, page) {
+    const records = [...new Map([
+      ...previous.records,
+      ...page.records,
+    ].map((item) => [brokerRecordId(item), item])).values()]
+      .sort((left, right) => timestamp(brokerRecordAt(right)) - timestamp(brokerRecordAt(left)));
+    const eventCandidates = [...new Map([
+      ...previous.eventCandidates,
+      ...page.eventCandidates,
+    ].map((item) => [eventCandidateId(item), item])).values()];
+    return {
+      ...previous,
+      ...page,
+      records,
+      eventCandidates,
+      totalRecordCount: page.totalRecordCount,
+      nextOffset: page.nextOffset,
+    };
+  }
+
+  function handleIntakeRecordSelection(event) {
+    const checkbox = event.target.closest("[data-intake-record-id]");
+    if (!checkbox) return;
+    const id = checkbox.dataset.intakeRecordId;
+    const record = state.snapshot.intake.records.find((item) => brokerRecordId(item) === id);
+    if (!record) return;
+    if (checkbox.checked) {
+      state.selectedRecordIds.add(id);
+      state.selectedRecordCache.set(id, record);
+    } else {
+      state.selectedRecordIds.delete(id);
+      state.selectedRecordCache.delete(id);
+    }
+    reconcileSelectedEvent();
+    renderIntakeRecords();
+    renderEventCandidates();
+    renderDerivedContext();
+    void lookupEventCandidatesForSelection();
+  }
+
+  function clearIntakeSelection() {
+    state.eventLookupToken += 1;
+    state.eventLookupLoading = false;
+    state.selectedRecordIds.clear();
+    state.selectedRecordCache.clear();
+    state.selectedEventId = null;
+    state.eventLookupMessage = "";
+    renderIntakeRecords();
+    renderEventCandidates();
+    renderDerivedContext();
+  }
+
+  function selectedIntakeRecords() {
+    return [...state.selectedRecordIds]
+      .map((id) => state.selectedRecordCache.get(id)
+        ?? state.snapshot.intake.records.find((item) => brokerRecordId(item) === id))
+      .filter(Boolean);
+  }
+
+  function selectedIntakeSymbols() {
+    return [...new Set(selectedIntakeRecords().map(brokerSymbol).filter(Boolean))];
+  }
+
+  function updateIntakeSelectionSummary() {
+    const selected = selectedIntakeRecords();
+    const symbols = selectedIntakeSymbols();
+    elements.intakeSelectedCount.textContent = selected.length
+      ? `已选择 ${selected.length} 条 · ${symbols.join(" + ")} · ${formatDateRange(selected.map(brokerRecordAt))}`
+      : "尚未选择记录";
+    elements.intakeClear.disabled = !selected.length || state.loading;
+  }
+
+  function renderEventCandidates() {
+    const selected = selectedIntakeRecords();
+    const candidates = eventCandidatesForSelection();
+    elements.eventCandidates.replaceChildren();
+    if (!selected.length) {
+      elements.eventMatchStatus.textContent = "等待选择订单";
+      elements.eventCandidates.append(emptyNode("选择至少一条订单或成交后，系统才会查询同标的的财报事件。", true));
+      return;
+    }
+    if (state.eventLookupLoading) {
+      elements.eventMatchStatus.textContent = "正在查询财报日历…";
+      elements.eventCandidates.append(emptyNode("正在根据所选标的与交易时间查询只读财报事件。", true));
+      return;
+    }
+    if (!candidates.length) {
+      elements.eventMatchStatus.textContent = "财报事件待补全";
+      elements.eventCandidates.append(emptyNode(
+        state.eventLookupMessage || "订单已取得，但财报日历没有返回可确认的日期与季度。系统不会用订单时间猜测财报季度，请检查只读财报日历能力后重试。",
+        true,
+      ));
+      return;
+    }
+    elements.eventMatchStatus.textContent = `${candidates.length} 个候选`;
+    for (const candidate of candidates) {
+      const id = eventCandidateId(candidate);
+      const label = node("label", `review-event-option${id === state.selectedEventId ? " active" : ""}`);
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "review-earnings-event";
+      radio.value = id;
+      radio.checked = id === state.selectedEventId;
+      radio.disabled = state.loading;
+      label.append(
+        radio,
+        node("strong", "", `${eventPeriod(candidate)} · ${eventSessionLabel(candidate)}`),
+        node("span", "", formatDateTime(eventAt(candidate))),
+        node("small", "", eventDistanceLabel(candidate, selected)),
+      );
+      elements.eventCandidates.append(label);
+    }
+  }
+
+  function handleEventSelection(event) {
+    const radio = event.target.closest("input[name='review-earnings-event']");
+    if (!radio) return;
+    state.selectedEventId = radio.value;
+    renderEventCandidates();
+    renderDerivedContext();
+  }
+
+  async function lookupEventCandidatesForSelection() {
+    const method = firstReviewMethod(["lookupEventCandidates", "lookupReviewEvents", "reviewEventCandidates"]);
+    const recordIds = selectedIntakeRecords().map(brokerRecordId);
+    const token = ++state.eventLookupToken;
+    if (!method || !recordIds.length) return;
+    state.eventLookupLoading = true;
+    state.eventLookupMessage = "";
+    renderEventCandidates();
+    try {
+      const result = await callReview(method, { recordIds });
+      if (token !== state.eventLookupToken) return;
+      const source = result?.data ?? result ?? {};
+      const candidates = arrayValue(source.eventCandidates, source.events);
+      const merged = [...new Map([
+        ...state.snapshot.intake.eventCandidates,
+        ...candidates,
+      ].filter((item) => eventCandidateId(item)).map((item) => [eventCandidateId(item), item])).values()];
+      state.snapshot.intake.eventCandidates = merged;
+      state.eventLookupMessage = String(source.message ?? "");
+      reconcileSelectedEvent();
+    } catch (error) {
+      if (token !== state.eventLookupToken) return;
+      state.eventLookupMessage = error.message || "财报事件查询失败。";
+    } finally {
+      if (token === state.eventLookupToken) {
+        state.eventLookupLoading = false;
+        renderQuarterFilter();
+        renderEventCandidates();
+        renderDerivedContext();
+      }
+    }
+  }
+
+  function renderDerivedContext() {
+    const records = selectedIntakeRecords();
+    const candidate = selectedEventCandidate();
+    elements.derivedContext.replaceChildren();
+    if (!records.length) {
+      elements.createFromRecords.disabled = true;
+      return;
+    }
+    elements.derivedContext.append(
+      metricCell("相关标的", selectedIntakeSymbols().join(" + ") || "—"),
+      metricCell("订单 / 成交", `${records.filter((item) => brokerRecordType(item) === "order").length} / ${records.filter((item) => brokerRecordType(item) === "execution").length}`),
+      metricCell("交易时间", formatDateRange(records.map(brokerRecordAt))),
+      metricCell("财报季度", candidate ? eventPeriod(candidate) : "待确认"),
+      metricCell("财报时间", candidate ? formatDateTime(eventAt(candidate)) : "待确认"),
+    );
+    elements.createFromRecords.disabled = !candidate || state.loading;
+  }
+
+  async function createCaseFromRecords() {
+    const records = selectedIntakeRecords();
+    const candidate = selectedEventCandidate();
+    if (!records.length || !candidate || state.loading) return;
+    const payload = {
+      recordIds: records.map(brokerRecordId),
+      eventCandidateId: eventCandidateId(candidate),
+      symbol: eventSymbol(candidate),
+      fiscalQuarter: eventPeriod(candidate),
+      eventAt: eventAt(candidate),
+      eventSession: eventSession(candidate),
+      primaryHorizon: "t5",
+      strategyType: "other",
+    };
+    await runAction("正在建立订单关联的财报案例…", async () => {
+      let result;
+      const createMethod = firstReviewMethod(["createReviewCaseFromRecords", "createCaseFromRecords"]);
+      if (createMethod) {
+        result = await callReview(createMethod, payload);
+      } else {
+        result = await callReview("createCase", {
+          ...payload,
+          exAnte: {},
+        });
+        const createdId = reviewCaseIdFromResult(result);
+        if (!createdId) throw new Error("案例已创建，但宿主没有返回案例 ID，无法确认订单关联。");
+        await callReview("linkBrokerRecords", { caseId: createdId, recordIds: payload.recordIds, confirmed: true });
+      }
+      const createdId = reviewCaseIdFromResult(result);
+      if (!createdId) throw new Error("建立案例后未取得案例 ID。");
+      state.selectedCaseId = createdId;
+      state.casePane = "case";
+      state.selectedRecordIds.clear();
+      state.selectedRecordCache.clear();
+      state.selectedEventId = null;
+      await loadSnapshot({ preservePane: true });
+      const autoIncluded = Math.max(0, Number(result?.selection?.autoIncludedRecordCount ?? 0));
+      showNotice(
+        autoIncluded
+          ? `订单、成交与财报事件已关联；系统从加密历史自动补齐了 ${autoIncluded} 条父订单或同单成交。现在请补充当时的四项判断。`
+          : "订单、成交与财报事件已关联。现在请补充当时的四项判断，再交给复盘 Agent。",
+        "success",
+      );
+    });
+  }
+
+  function reconcileSelectedEvent() {
+    const candidates = eventCandidatesForSelection();
+    if (candidates.some((item) => eventCandidateId(item) === state.selectedEventId)) return;
+    const closest = closestEventCandidate(candidates, selectedIntakeRecords());
+    state.selectedEventId = closest ? eventCandidateId(closest) : null;
+  }
+
+  function eventCandidatesForSelection() {
+    const symbols = new Set(selectedIntakeSymbols());
+    if (!symbols.size) return [];
+    return state.snapshot.intake.eventCandidates
+      .filter((item) => symbols.has(eventSymbol(item)))
+      .sort((left, right) => Math.abs(eventDistanceMs(left, selectedIntakeRecords())) - Math.abs(eventDistanceMs(right, selectedIntakeRecords())));
+  }
+
+  function selectedEventCandidate() {
+    return eventCandidatesForSelection().find((item) => eventCandidateId(item) === state.selectedEventId) ?? null;
+  }
+
+  async function prepareCaseAnalysis() {
+    const item = selectedCase();
+    if (!item || state.loading) return;
+    if (!caseHasConfirmedBrokerRecords(item)) {
+      showNotice("这个案例尚未确认关联长桥订单或成交，不能进入订单证据复盘。", "warning");
+      return;
+    }
+    await runAction("正在准备复盘 Skill 上下文…", async () => {
+      if (!caseFrozen(item)) {
+        await callReview("updateCase", {
+          caseId: caseId(item),
+          patch: caseDraftFromForm(),
+        });
+      }
+      const request = {
+        scope: "earnings_case",
+        caseId: caseId(item),
+        caseIds: [caseId(item)],
+        task: `$review-earnings-decisions 复盘 ${caseSymbol(item)} · ${casePeriod(item)} 的已关联财报决策。区分订单与成交事实、我的事前判断、过程质量和结果运气；评估赔率、动作一致性与失效纪律，并给出下一轮可验证计划。`,
+      };
+      const method = firstReviewMethod(["prepareReviewAnalysis", "prepareAnalysis"]);
+      const result = method ? await callReview(method, request) : { request };
+      announcePreparedAnalysis(result, `已把 ${caseSymbol(item)} · ${casePeriod(item)} 的订单证据与事前记录交给复盘 Agent。`);
+    });
+  }
+
+  async function prepareQuarterAnalysis() {
+    const cases = casesForSelectedQuarter();
+    if (!state.quarterFilter || !cases.length || state.loading) return;
+    await runAction("正在准备季度通盘复盘…", async () => {
+      const current = selectedCase();
+      if (current && casePeriod(current) === state.quarterFilter && !caseFrozen(current)) {
+        await callReview("updateCase", {
+          caseId: caseId(current),
+          patch: caseDraftFromForm(),
+        });
+      }
+      const request = {
+        scope: "earnings_quarter",
+        fiscalQuarter: state.quarterFilter,
+        caseIds: cases.map(caseId),
+        task: `$review-earnings-decisions 通盘复盘 ${state.quarterFilter} 的 ${cases.length} 个已关联财报决策。统一评估赔率、胜率、动作一致性、失效执行与尾部风险，提出未来应保留、验证和规避的行为；候选规则不得自动晋级。`,
+      };
+      const method = firstReviewMethod(["prepareReviewAnalysis", "prepareAnalysis"]);
+      const result = method ? await callReview(method, request) : { request };
+      announcePreparedAnalysis(result, `已把 ${state.quarterFilter} 的 ${cases.length} 个案例交给复盘 Agent，统一评估赔率、胜率、动作与失效纪律。`);
+    });
+  }
+
+  function announcePreparedAnalysis(result, fallbackMessage) {
+    const detail = result?.analysis ?? result?.request ?? result ?? {};
+    // runAction keeps workspace navigation locked while its operation is
+    // active. Dispatch on the next task so its finally block clears loading
+    // before the shared Agent harness switches back to the cockpit.
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("cockpit:review-analysis-prepared", { detail }));
+    }, 0);
+    showNotice(result?.message || fallbackMessage, "success");
   }
 
   function renderCheckpoints(item) {
@@ -757,6 +1357,8 @@
         appendDefinition(details, "证据", metrics.evidenceLabel ?? "—");
         appendDefinition(details, "样本 / 核验", `${formatNumber(metrics.sampleCount, 0)} / ${formatNumber(metrics.verifiedSampleCount, 0)}`);
         appendDefinition(details, "期望R / 胜率", `${signedNumber(metrics.expectancyR)} / ${signedPercent(metrics.winRatePercent)}`);
+        appendDefinition(details, "赔率 / 盈亏平衡胜率", `${formatNumber(metrics.payoffRatio)} / ${signedPercent(metrics.breakEvenWinRatePercent)}`);
+        appendDefinition(details, "Profit Factor / 尾部亏损率", `${formatNumber(metrics.profitFactor)} / ${signedPercent(metrics.tailLossRatePercent)}`);
       }
       article.append(header, details);
       const actions = node("div", "review-item-actions");
@@ -858,13 +1460,30 @@
     return result;
   }
 
+  function firstReviewMethod(methods) {
+    return methods.find((method) => typeof api?.review?.[method] === "function") ?? null;
+  }
+
+  async function optionalReviewCall(methods, payload) {
+    const method = firstReviewMethod(methods);
+    return method ? callReview(method, payload) : null;
+  }
+
   function setLoading(value, message = "") {
     state.loading = Boolean(value);
     elements.workspace.setAttribute("aria-busy", String(state.loading));
     elements.syncHistory.disabled = state.loading;
     elements.newCase.disabled = state.loading;
+    elements.intakeSync.disabled = state.loading;
+    elements.createFromRecords.disabled = state.loading || !selectedEventCandidate();
+    elements.analyzeCase.disabled = state.loading || !selectedCase();
+    updateBatchButton();
+    renderIntakePagination();
     if (state.loading && message) showNotice(message, "loading");
-    if (!state.loading) updateLinkButton();
+    if (!state.loading) {
+      updateLinkButton();
+      updateIntakeSelectionSummary();
+    }
   }
 
   function showNotice(message, tone = "success") {
@@ -878,6 +1497,227 @@
     elements.notice.hidden = true;
     elements.notice.className = "review-notice";
     elements.notice.textContent = "";
+  }
+
+  function normalizeIntake(source = {}, root = {}) {
+    const archive = source?.archive ?? source?.brokerArchive ?? source?.tradeHistory ?? source ?? {};
+    const explicitRecords = arrayValue(
+      source?.records,
+      source?.availableRecords,
+      source?.unlinkedRecords,
+      source?.brokerRecords,
+      root?.brokerRecords,
+    );
+    const orders = arrayValue(source?.orders, archive?.orders).map((item) => ({
+      ...item,
+      _reviewKind: "order",
+      recordId: item?.recordId ?? item?.orderId ?? item?.order_id,
+    }));
+    const executions = arrayValue(source?.executions, source?.trades, archive?.executions, archive?.trades).map((item) => ({
+      ...item,
+      _reviewKind: "execution",
+      recordId: item?.recordId ?? item?.tradeId ?? item?.trade_id ?? item?.executionId,
+    }));
+    const records = explicitRecords.length
+      ? explicitRecords.map((item) => ({
+        ...item,
+        _reviewKind: brokerRecordType(item),
+        recordId: brokerRecordId(item),
+      }))
+      : [...orders, ...executions];
+    const dedupedRecords = [...new Map(records
+      .filter((item) => brokerRecordId(item))
+      .map((item) => [brokerRecordId(item), item])).values()]
+      .sort((left, right) => timestamp(brokerRecordAt(right)) - timestamp(brokerRecordAt(left)));
+    const groups = arrayValue(source?.groups, source?.associationCandidates, source?.eventGroups);
+    const groupEvents = groups.flatMap((item) => arrayValue(item?.eventCandidates, item?.events).length
+      ? arrayValue(item?.eventCandidates, item?.events)
+      : item?.eventCandidate || item?.event ? [item.eventCandidate ?? item.event] : []);
+    const eventCandidates = arrayValue(
+      source?.eventCandidates,
+      source?.earningsEvents,
+      source?.events,
+      root?.eventCandidates,
+    );
+    const dedupedEvents = [...new Map([...eventCandidates, ...groupEvents]
+      .filter((item) => eventCandidateId(item) && eventSymbol(item) && eventAt(item) && eventPeriod(item) !== "待确认季度")
+      .map((item) => [eventCandidateId(item), item])).values()];
+    const orderCount = numberOr(source?.orderCount, archive?.orderCount, orders.length);
+    const executionCount = numberOr(source?.executionCount, source?.tradeCount, archive?.executionCount, executions.length);
+    return {
+      records: dedupedRecords,
+      eventCandidates: dedupedEvents,
+      groups,
+      syncedAt: source?.syncedAt ?? archive?.syncedAt ?? null,
+      range: source?.range ?? archive?.range ?? null,
+      capabilities: source?.capabilities ?? archive?.capabilities ?? {},
+      completeness: source?.completeness ?? archive?.completeness ?? {},
+      warnings: arrayValue(source?.warnings, archive?.warnings),
+      orderCount: orderCount || dedupedRecords.filter((item) => brokerRecordType(item) === "order").length,
+      executionCount: executionCount || dedupedRecords.filter((item) => brokerRecordType(item) === "execution").length,
+      totalRecordCount: numberOr(source?.totalRecordCount, archive?.totalRecordCount, dedupedRecords.length),
+      offset: nonNegativeInteger(source?.offset ?? archive?.offset, 0),
+      limit: nonNegativeInteger(source?.limit ?? archive?.limit, INTAKE_PAGE_LIMIT),
+      nextOffset: nullableNonNegativeInteger(source?.nextOffset ?? archive?.nextOffset),
+    };
+  }
+
+  function pruneIntakeSelection() {
+    for (const record of state.snapshot.intake.records) {
+      const id = brokerRecordId(record);
+      if (state.selectedRecordIds.has(id)) state.selectedRecordCache.set(id, record);
+    }
+    reconcileSelectedEvent();
+  }
+
+  function renderQuarterFilter() {
+    const selected = state.quarterFilter;
+    const values = [...new Set([
+      ...state.snapshot.cases.map(casePeriod),
+      ...state.snapshot.intake.eventCandidates.map(eventPeriod),
+    ].filter((value) => value && value !== "未标记季度" && value !== "待确认季度"))]
+      .sort((left, right) => right.localeCompare(left, "zh-CN", { numeric: true }));
+    elements.quarterFilter.replaceChildren(new Option("全部财报季度", ""));
+    values.forEach((value) => elements.quarterFilter.append(new Option(value, value)));
+    if (values.includes(selected)) elements.quarterFilter.value = selected;
+    else state.quarterFilter = "";
+  }
+
+  function casesForSelectedQuarter() {
+    if (!state.quarterFilter) return [];
+    return state.snapshot.cases.filter((item) => (
+      casePeriod(item) === state.quarterFilter && caseHasConfirmedBrokerRecords(item)
+    ));
+  }
+
+  function caseHasConfirmedBrokerRecords(item) {
+    const links = item?.brokerLinks;
+    if (!links?.confirmedAt) return false;
+    return arrayValue(links.orderIds).length + arrayValue(links.executionIds).length > 0;
+  }
+
+  function updateBatchButton() {
+    const count = casesForSelectedQuarter().length;
+    elements.batchAnalyze.disabled = state.loading || !state.quarterFilter || !count;
+    elements.batchAnalyze.textContent = state.quarterFilter
+      ? `季度通盘复盘 · ${count}`
+      : "季度通盘复盘";
+  }
+
+  function recordAlreadyLinked(recordId) {
+    if (!recordId) return false;
+    const candidate = String(recordId);
+    return state.snapshot.cases.some((item) => {
+      const linked = new Set([
+        ...arrayValue(item?.brokerLinks?.orderIds).flatMap((id) => {
+          const raw = stripBrokerRecordPrefix(id);
+          return [String(id), raw, `order:${raw}`];
+        }),
+        ...arrayValue(item?.brokerLinks?.executionIds).flatMap((id) => {
+          const raw = stripBrokerRecordPrefix(id);
+          return [String(id), raw, `execution:${raw}`];
+        }),
+      ]);
+      return linked.has(candidate) || linked.has(stripBrokerRecordPrefix(candidate));
+    });
+  }
+
+  function stripBrokerRecordPrefix(value) {
+    return String(value ?? "").replace(/^(?:order|execution):/, "");
+  }
+
+  function brokerRecordType(item) {
+    const value = String(item?._reviewKind ?? item?.type ?? item?.kind ?? item?.recordType ?? "").toLowerCase();
+    if (value.includes("exec") || value.includes("trade") || item?.tradeId || item?.executionId) return "execution";
+    return "order";
+  }
+
+  function brokerSymbol(item) {
+    return normalizeSymbol(item?.symbol ?? item?.ticker);
+  }
+
+  function brokerRecordAt(item) {
+    return item?.activityAt ?? item?.doneAt ?? item?.executedAt ?? item?.tradeDoneAt ?? item?.submittedAt ?? item?.updatedAt ?? item?.createdAt ?? null;
+  }
+
+  function eventCandidateId(item) {
+    return String(item?.eventCandidateId ?? item?.id ?? item?.eventId ?? item?.candidateId ?? [eventSymbol(item), eventAt(item), eventPeriod(item)].join(":"));
+  }
+
+  function eventSymbol(item) {
+    return normalizeSymbol(item?.symbol ?? item?.ticker ?? item?.security?.symbol);
+  }
+
+  function eventAt(item) {
+    const value = item?.eventAt ?? item?.scheduledAt ?? item?.reportAt ?? item?.announceAt ?? item?.dateTime ?? item?.date;
+    return timestamp(value) ? new Date(timestamp(value)).toISOString() : null;
+  }
+
+  function eventPeriod(item) {
+    return String(item?.fiscalQuarter ?? item?.fiscalPeriod ?? item?.reportPeriod ?? item?.quarter ?? item?.period ?? "待确认季度");
+  }
+
+  function eventSession(item) {
+    return String(item?.eventSession ?? item?.session ?? item?.timing ?? "unknown").toLowerCase();
+  }
+
+  function eventSessionLabel(item) {
+    const value = eventSession(item);
+    if (["bmo", "before_open", "pre_market"].includes(value)) return "盘前";
+    if (["amc", "after_close", "post_market"].includes(value)) return "盘后";
+    if (value === "intraday") return "盘中";
+    return "时段待确认";
+  }
+
+  function eventDistanceMs(candidate, records) {
+    const times = records.map((item) => timestamp(brokerRecordAt(item))).filter(Boolean).sort((a, b) => a - b);
+    if (!times.length) return Number.POSITIVE_INFINITY;
+    const middle = times[Math.floor(times.length / 2)];
+    return timestamp(eventAt(candidate)) - middle;
+  }
+
+  function closestEventCandidate(candidates, records) {
+    return candidates.reduce((best, candidate) => {
+      if (!best) return candidate;
+      return Math.abs(eventDistanceMs(candidate, records)) < Math.abs(eventDistanceMs(best, records)) ? candidate : best;
+    }, null);
+  }
+
+  function eventDistanceLabel(candidate, records) {
+    const distance = eventDistanceMs(candidate, records);
+    if (!Number.isFinite(distance)) return "与订单距离待计算";
+    const days = Math.round(Math.abs(distance) / (24 * 60 * 60 * 1000));
+    return distance >= 0 ? `所选交易后 ${days} 天公布` : `所选交易发生在公布后约 ${days} 天`;
+  }
+
+  function reviewCaseIdFromResult(result) {
+    return String(
+      result?.caseId
+      ?? result?.case?.id
+      ?? result?.reviewCase?.id
+      ?? result?.data?.caseId
+      ?? result?.data?.reviewCase?.id
+      ?? "",
+    );
+  }
+
+  function formatShortDateTime(value) {
+    const time = timestamp(value);
+    if (!time) return "—";
+    return new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(time);
+  }
+
+  function formatDateRange(values) {
+    const times = values.map(timestamp).filter(Boolean).sort((a, b) => a - b);
+    if (!times.length) return "—";
+    if (times.length === 1) return formatShortDateTime(times[0]);
+    return `${formatShortDateTime(times[0])} → ${formatShortDateTime(times.at(-1))}`;
   }
 
   function caseId(item) {
@@ -986,11 +1826,6 @@
     return values.find(Array.isArray) ?? [];
   }
 
-  function normalizeTags(value) {
-    const values = Array.isArray(value) ? value : String(value ?? "").split(/[,，]/);
-    return [...new Set(values.map((item) => String(item).trim()).filter(Boolean))].slice(0, 30);
-  }
-
   function normalizeSymbol(value) {
     return String(value ?? "").trim().toUpperCase().replace(/[^A-Z0-9._:-]/g, "").slice(0, 32);
   }
@@ -1009,6 +1844,17 @@
       if (value != null && Number.isFinite(Number(value))) return Number(value);
     }
     return 0;
+  }
+
+  function nonNegativeInteger(value, fallback = 0) {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric >= 0 ? numeric : fallback;
+  }
+
+  function nullableNonNegativeInteger(value) {
+    if (value == null || value === "") return null;
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric >= 0 ? numeric : null;
   }
 
   function formatNumber(value, digits = 2) {

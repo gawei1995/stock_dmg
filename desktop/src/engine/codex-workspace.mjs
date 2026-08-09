@@ -75,6 +75,20 @@ const OFFICIAL_LONGBRIDGE_HOSTS = new Set([
   "mcp.longbridge.com",
   "mcp.longbridge.cn",
 ]);
+const LONGBRIDGE_READ_ONLY_TOOLS = new Set([
+  "account_balance",
+  "candlesticks",
+  "exchange_rate",
+  "finance_calendar",
+  "history_executions",
+  "history_orders",
+  "order_detail",
+  "option_quote",
+  "quote",
+  "stock_positions",
+  "today_executions",
+  "today_orders",
+]);
 
 export class CodexWorkspaceService {
   constructor({
@@ -2402,7 +2416,7 @@ export async function resolveCodexExecutable({
 }
 
 export function buildCodexEvidence({ portfolio, run, task }) {
-  const scope = ["position", "candidate", "portfolio"].includes(run?.context?.scope)
+  const scope = ["position", "candidate", "portfolio", "review"].includes(run?.context?.scope)
     ? run.context.scope
     : "position";
   const position = scope === "position"
@@ -2428,7 +2442,7 @@ export function buildCodexEvidence({ portfolio, run, task }) {
     project: {
       mode: "persistent_codex_workspace",
       workspace: "trading-agent-workspace",
-      portfolioBaseCurrency: portfolio.account?.baseCurrency ?? "USD",
+      portfolioBaseCurrency: portfolio?.account?.baseCurrency ?? "USD",
     },
     analysisScope: scope,
     context: run.context,
@@ -2440,10 +2454,10 @@ export function buildCodexEvidence({ portfolio, run, task }) {
       isHeld: Boolean(run?.context?.isHeld),
     } : null,
     portfolioRisk: {
-      baseCurrency: portfolio.account?.baseCurrency ?? "USD",
-      cashRatioPercent: finiteOrNull(portfolio.totals?.cashRatio),
-      top1WeightPercent: finiteOrNull(portfolio.totals?.top1Weight),
-      top5WeightPercent: finiteOrNull(portfolio.totals?.top5Weight),
+      baseCurrency: portfolio?.account?.baseCurrency ?? "USD",
+      cashRatioPercent: finiteOrNull(portfolio?.totals?.cashRatio),
+      top1WeightPercent: finiteOrNull(portfolio?.totals?.top1Weight),
+      top5WeightPercent: finiteOrNull(portfolio?.totals?.top5Weight),
       selectedGroupWeightPercent: finiteOrNull(run.risk?.groupWeight),
       riskBudgetPercent: finiteOrNull(run.risk?.riskBudgetPercent),
       referenceLabel: run.risk?.referenceLabel ?? null,
@@ -2454,14 +2468,14 @@ export function buildCodexEvidence({ portfolio, run, task }) {
     // Full holdings exist once, inside scopedContext.positions, and only for a
     // portfolio-wide review. Position/candidate turns receive one target plus
     // aggregate risk context, keeping the active thread focused and smaller.
-    technical: scope === "portfolio" ? null : run.technical,
+    technical: ["portfolio", "review"].includes(scope) ? null : run.technical,
     locallyVerifiedConditionalPlan: run.plan,
     dataQuality: {
-      portfolioStatus: portfolio.status,
-      valuationComplete: portfolio.dataQuality?.valuationComplete !== false,
-      fxStatus: portfolio.dataQuality?.fxStatus ?? "unknown",
-      fxProvider: portfolio.fx?.provider ?? null,
-      fxAsOf: portfolio.fx?.asOf ?? null,
+      portfolioStatus: portfolio?.status ?? "not_required_for_review",
+      valuationComplete: portfolio?.dataQuality?.valuationComplete !== false,
+      fxStatus: portfolio?.dataQuality?.fxStatus ?? "unknown",
+      fxProvider: portfolio?.fx?.provider ?? null,
+      fxAsOf: portfolio?.fx?.asOf ?? null,
       marketDataAsOf: run.context?.marketDataAsOf ?? null,
     },
     localEvidenceTrace: run.evidence,
@@ -2473,7 +2487,9 @@ export function buildWorkspacePrompt(evidence) {
     ? "本轮是候选买入分析：目标可能完全未持有，不得把候选标的写成现有仓位。你负责结合叙事/技术 Skills、priceBars 与可用只读 MCP，独立判断 Stage、失效依据、初始新增仓位和最大总仓位。证据框架是开放的：优先交叉核对价格/成交量、趋势与动量、相对强弱、板块和同行、成本或筹码分布、AVWAP、波动率/期权、催化剂后的价格反应；EMA 与 Fib 只是可选证据，不能机械使用，也不要求每轮输出。如果确有共振再提交 fibReview；不适用时填 null。Fib 覆盖锚点只能引用 priceBars 中真实存在的 barId 与 high/low 字段；失效依据可引用真实 bar、可用 EMA、20 日区间或经选择的 Fib。仓位数字由你提出，宿主只会按最新快照、购买力、现金、集中度、组合毛暴露 150% 硬上限、风险预算、保证金和数据完整性做硬性验证/裁剪。leverageDecision 只有在明确接受融资且投影毛暴露不超过 150% 时选择 margin_within_cap；否则选择 cash_only 或 disabled。candidateGroupKey 可使用已有主题的精确 key，也可在高/中置信度下给出明确的新主题；无法可靠分类时填 null，且不得给出可执行仓位。analysisMarkdown 保持适合深色界面的清晰 Markdown；其中的仓位数字必须称为“LLM 建议”，不得预先声称已被宿主接受，最终有效值以后续 HOST ACCEPTED 卡片为准。"
     : evidence.analysisScope === "portfolio"
       ? "本轮是全组合分析：必须评价集中度、主题/币种重复暴露、现金、保证金、估值缺口和最大的组合级失败模式；不要逐只虚构技术结论。"
-      : "本轮是已持仓分析：围绕选中真实仓位、技术结构以及它对组合的边际风险给出条件计划。";
+      : evidence.analysisScope === "review"
+        ? "本轮是订单驱动的财报交易复盘：必须调用 review-earnings-decisions Skill。先核对用户选中的订单/成交与财报事件关联，再区分券商事实、事件事实、用户事前输入、派生指标和 Agent 推断。单案例只能提出候选规则；季度/跨季度分析必须披露样本漏斗、缺失、选择偏差、主要窗口、胜率、赔率、净期望与尾部风险，且任何规则晋级都要等待人工 Review。不要从订单日期猜财季，不要用当前持仓反推历史成交。"
+        : "本轮是已持仓分析：围绕选中真实仓位、技术结构以及它对组合的边际风险给出条件计划。";
   return [
     "你是交易驾驶舱中的 Codex Agent。当前窗口对应一个独立的持久 Codex thread；只延续该 thread 的对话上下文，不要自动混入其他会话。",
     "你可以自由使用本机 Codex 已配置的 Skills、MCP、Apps、网页、文件、Shell 和其他工具来补充或核验分析；不要把自己限制为下方 JSON 的摘要器。",
@@ -3453,9 +3469,11 @@ export function findRequestedSkills(text, skills) {
 
 function analysisSkillsForScope(text, skills, scope) {
   const explicit = findRequestedSkills(text, skills);
-  const automaticNames = scope === "portfolio"
-    ? new Set(["analyze-market-narratives"])
-    : new Set(["analyze-market-narratives", "analyze-technical-structure"]);
+  const automaticNames = scope === "review"
+    ? new Set(["review-earnings-decisions", "analyze-market-narratives"])
+    : scope === "portfolio"
+      ? new Set(["analyze-market-narratives"])
+      : new Set(["analyze-market-narratives", "analyze-technical-structure"]);
   const automatic = skills.filter((skill) => automaticNames.has(skill.name));
   return [...new Map([...explicit, ...automatic].map((skill) => [skill.name, skill])).values()];
 }
@@ -3648,7 +3666,21 @@ function addGuardedServerAliases(target, name) {
 }
 
 function isBrokerageWriteToolName(name) {
-  return BROKERAGE_WRITE_TOOLS.has(canonicalIdentifier(name));
+  const identifier = canonicalIdentifier(name);
+  if (BROKERAGE_WRITE_TOOLS.has(identifier)) return true;
+  const tokens = new Set(identifier.split("_").filter(Boolean));
+  const writeVerb = [
+    "submit", "place", "send", "execute", "transmit", "replace", "modify",
+    "amend", "update", "withdraw", "cancel", "close", "liquidate",
+    "exercise", "create", "delete", "pause", "resume", "enable", "disable",
+  ].some((token) => tokens.has(token));
+  const brokerageObject = ["order", "orders", "position", "positions", "option", "dca"]
+    .some((token) => tokens.has(token));
+  return writeVerb && brokerageObject;
+}
+
+function isVerifiedLongbridgeReadTool(tool) {
+  return LONGBRIDGE_READ_ONLY_TOOLS.has(canonicalIdentifier(tool?.name));
 }
 
 function serverIsGuarded(server, guardedServerNames) {
@@ -3671,9 +3703,12 @@ function visibleBrokerageWriteTools(servers, guardedServerNames) {
   const guarded = new Set(guardedServerNames);
   const residual = [];
   for (const server of servers) {
-    if (!isLongbridgeInventoryServer(server) || serverIsGuarded(server, guarded)) continue;
+    if (!isLongbridgeInventoryServer(server)) continue;
+    const configuredGuard = serverIsGuarded(server, guarded);
     for (const tool of server.tools) {
-      if (isBrokerageWriteToolName(tool.name)) {
+      const identifier = canonicalIdentifier(tool.name);
+      const coveredByConfiguredDenyList = configuredGuard && BROKERAGE_WRITE_TOOLS.has(identifier);
+      if (!coveredByConfiguredDenyList && !isVerifiedLongbridgeReadTool(tool)) {
         residual.push({ server: server.name, tool: tool.name });
       }
     }
