@@ -339,6 +339,14 @@ body.resizing-panes * { cursor: col-resize !important; }
 .save-plan { width: 100%; height: 30px; margin-top: 8px; border: 1px solid rgba(96,201,151,.3); border-radius: 5px; background: var(--green-soft); color: var(--green); cursor: pointer; font-size: 10px; }
 .save-plan.saved { opacity: .65; }
 .save-plan:disabled { border-color: var(--line); background: #11171b; color: var(--faint); cursor: not-allowed; }
+
+.learning-proposal-card { border-color: rgba(91, 192, 222, .34); }
+.learning-proposal-card .agent-card-head strong { color: var(--cyan); }
+.learning-proposal-card .agent-card-body > p { white-space: pre-wrap; }
+.learning-proposal-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.learning-proposal-summary span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font: 9px/1 var(--mono); }
+.learning-proposal-caveat { color: var(--faint) !important; font-size: 10px; }
+.learning-proposal-open { border-color: rgba(91, 192, 222, .34); background: rgba(91, 192, 222, .08); color: var(--cyan); }
 .structured-evidence { margin: 8px 0 10px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: #0c1216; user-select: text; }
 .structured-evidence > summary { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; color: var(--muted); cursor: pointer; list-style: none; }
 .structured-evidence > summary::-webkit-details-marker { display: none; }

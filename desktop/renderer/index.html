@@ -6,6 +6,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <title>交易驾驶舱</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./review.css" />
   </head>
   <body>
     <header class="topbar">
@@ -14,6 +15,10 @@
         <div><strong>交易驾驶舱</strong><span>TRADING COCKPIT / DESKTOP</span></div>
       </div>
       <div class="system-strip" aria-live="polite">
+        <nav class="workspace-switch" aria-label="工作区切换">
+          <button id="workspace-cockpit" type="button" data-workspace-mode="cockpit" aria-pressed="true">驾驶舱</button>
+          <button id="workspace-review" type="button" data-workspace-mode="review" aria-pressed="false">复盘</button>
+        </nav>
         <span class="status-chip" id="longbridge-chip"><i></i>长桥未连接</span>
         <span class="status-chip tv" id="tv-chip"><i></i>TradingView 启动中</span>
         <span class="status-chip readonly"><i></i>READ ONLY</span>
@@ -155,7 +160,7 @@
             </label>
           </div>
           <div class="quick-actions" aria-label="快捷 Agent 任务">
-            <button type="button" data-scope="position" data-task="分析当前持仓的技术结构与仓位风险">持仓分析</button>
+            <button type="button" data-scope="position" data-task="综合价格量能、相对强弱、筹码或成本结构、板块联动、波动与仓位风险分析当前持仓；EMA/Fib仅在适用时采用">持仓分析</button>
             <button type="button" data-scope="portfolio" data-task="检查全部持仓的集中度、主题重复暴露、风险预算与组合健康度">组合体检</button>
             <button type="button" data-scope="candidate" data-task="为未持有标的生成候选买入计划，包括触发、失效与仓位预算">候选买入</button>
           </div>
@@ -176,7 +181,452 @@
       </aside>
     </main>
 
+    <main class="review-workspace" id="review-workspace" aria-label="复盘与规则实验室" hidden>
+      <header class="review-overview">
+        <div>
+          <span class="review-kicker">DECISION LEARNING SYSTEM</span>
+          <h1>复盘与规则实验室</h1>
+          <p>按“记录判断 → 关联事实 → AI 复盘与验证草案 → 人工确认”沉淀可验证准则。AI 主导整理与测试设计，规则迁移仍由你确认。</p>
+        </div>
+        <div class="review-summary" id="review-summary" aria-live="polite">
+          <div><span>周期</span><strong>0</strong></div>
+          <div><span>案例</span><strong>0</strong></div>
+          <div><span>测试中</span><strong>0</strong></div>
+          <div><span>有效规则</span><strong>0</strong></div>
+          <div><span>待Review</span><strong>0</strong></div>
+        </div>
+        <div class="review-overview-actions">
+          <span class="review-snapshot-ledger-status" id="review-snapshot-ledger-status" title="应用保持运行且长桥已连接时，会保存版本化的常规收盘重估；证券使用 16:00 ET regular mark，数量与现金来自收盘后抓取，因此是 partial，不能作为确定性收益端点。">组合历史尚未开始 · 等待下一次收盘重估</span>
+          <button class="review-button secondary" id="review-capture-snapshot" type="button">保存组合快照</button>
+          <button class="review-button secondary" id="review-sync-history" type="button">同步长桥历史</button>
+          <button class="review-button secondary" id="review-batch-analyze" type="button" disabled>复盘所选案例</button>
+          <button class="review-button primary" id="review-new-cycle" type="button">新建复盘周期</button>
+          <button class="review-button primary" id="review-new-case" type="button">从订单建立案例</button>
+        </div>
+      </header>
+
+      <nav class="review-tabs" role="tablist" aria-label="复盘流程">
+        <button id="review-tab-cycles" type="button" role="tab" data-review-tab="cycles" aria-controls="review-panel-cycles" aria-selected="true">复盘周期 <span id="review-cycle-count">0</span></button>
+        <button id="review-tab-cases" type="button" role="tab" data-review-tab="cases" aria-controls="review-panel-cases" aria-selected="false">案例复盘 <span id="review-case-count">0</span></button>
+        <button id="review-tab-tests" type="button" role="tab" data-review-tab="tests" aria-controls="review-panel-tests" aria-selected="false">验证中心 <span id="review-test-count">0</span></button>
+        <button id="review-tab-rules" type="button" role="tab" data-review-tab="rules" aria-controls="review-panel-rules" aria-selected="false" hidden>候选规则 <span id="review-rule-count">0</span></button>
+        <button id="review-tab-governance" type="button" role="tab" data-review-tab="governance" aria-controls="review-panel-governance" aria-selected="false" hidden>人工确认 <span id="review-due-count">0</span></button>
+      </nav>
+
+      <div class="review-notice" id="review-notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="review-panel review-cycle-panel" id="review-panel-cycles" role="tabpanel" aria-labelledby="review-tab-cycles">
+        <aside class="review-cycle-list-pane">
+          <div class="review-cycle-list-heading">
+            <div><span>DECISION CYCLES</span><strong>复盘周期</strong></div>
+            <button class="review-button primary" id="review-cycle-create-open" type="button">＋ 新建</button>
+          </div>
+          <p class="review-cycle-list-note">默认从真实订单直接事后复盘；需要事前预判时，再选择时间防火墙与严谨两阶段。</p>
+          <div class="review-cycle-list" id="review-cycle-list" aria-live="polite"></div>
+        </aside>
+
+        <div class="review-cycle-content">
+          <section class="review-cycle-welcome" id="review-cycle-welcome">
+            <span class="review-kicker">ORDER-FIRST REVIEW</span>
+            <h2>先从真实订单开始，选择你要复盘的范围</h2>
+            <p>默认不要求填模板、封存或逐条关联。直接事后复盘会明确标为 retrospective；需要防止事后偏差时，再进入严谨两阶段。</p>
+            <div class="review-order-first-grid">
+              <form class="review-order-first-card featured" id="review-quick-month-form">
+                <span>MONTHLY PORTFOLIO</span><h3>整月组合复盘</h3>
+                <p>选择月份后，系统扫描该自然月长桥历史；主复盘只关联真实成交及已成交父订单，其余进入排除审计。</p>
+                <label><span>复盘月份</span><input id="review-quick-month" type="month" required /></label>
+                <label><span>组合基准</span><input id="review-quick-month-benchmark" type="text" maxlength="32" value="QQQ.US" /></label>
+                <div class="review-order-first-actions">
+                  <button class="review-button primary" id="review-quick-month-retrospective" type="submit">直接事后复盘</button>
+                  <button class="review-button secondary" id="review-quick-month-rigorous" type="button">建立严谨预判</button>
+                </div>
+              </form>
+              <section class="review-order-first-card">
+                <span>SINGLE-SYMBOL TRADE</span><h3>单标的交易复盘</h3>
+                <p>在“案例复盘”勾选同一标的的订单或成交；系统自动补齐父订单与同单成交，并以实际活动时间生成交易区间。</p>
+                <strong id="review-quick-single-selection">尚未选择订单</strong>
+                <button class="review-button primary" id="review-quick-single-create" type="button" disabled>从所选订单直接复盘</button>
+              </section>
+            </div>
+            <details class="review-rigorous-entry">
+              <summary>需要事前预判、检查点与时间防火墙？进入严谨模式</summary>
+            <div class="review-cycle-type-cards">
+              <button type="button" data-cycle-create-type="catalyst"><strong>财报 / 催化剂周期</strong><span>围绕财报、FOMC、产品发布或监管结果建立事件窗口。</span></button>
+              <button type="button" data-cycle-create-type="position_lifecycle"><strong>单一持仓生命周期</strong><span>从首次建仓、加减仓与保护，一直追踪到退出或当前状态。</span></button>
+              <button type="button" data-cycle-create-type="monthly_portfolio"><strong>月度组合周期</strong><span>覆盖整月组合的仓位、暴露、决策检查点与风险路径。</span></button>
+            </div>
+            </details>
+          </section>
+
+          <form class="review-form review-cycle-create" id="review-cycle-form" hidden>
+            <div class="review-section-heading">
+              <div><span>NEW DECISION CYCLE</span><h2>新建复盘周期</h2></div>
+              <button class="review-button secondary" id="review-cycle-create-cancel" type="button">取消</button>
+            </div>
+            <div class="review-form-grid compact review-cycle-basics">
+              <label><span>周期类型</span><select id="review-cycle-type" required><option value="catalyst">财报 / 催化剂周期</option><option value="position_lifecycle">单一持仓生命周期</option><option value="monthly_portfolio">月度组合周期</option><option value="trade_window">单标的订单区间</option></select></label>
+              <label><span>周期名称</span><input id="review-cycle-title" type="text" maxlength="180" required placeholder="例如：NVDA FY2027 Q1 财报决策" /></label>
+              <label data-cycle-types="catalyst,position_lifecycle,trade_window"><span>标的</span><input id="review-cycle-symbol" type="text" maxlength="32" placeholder="例如 NVDA.US" autocomplete="off" /></label>
+              <label data-cycle-types="catalyst"><span>事件类型</span><select id="review-cycle-event-kind"><option value="earnings">财报</option><option value="fomc">FOMC</option><option value="product">产品发布</option><option value="regulatory">监管决定</option><option value="other">其他催化剂</option></select></label>
+              <label data-cycle-types="catalyst"><span>事件时间</span><input id="review-cycle-event-at" type="datetime-local" /></label>
+              <label data-cycle-types="catalyst,position_lifecycle,trade_window"><span>周期起点 / 建仓时间</span><input id="review-cycle-start-at" type="datetime-local" /></label>
+              <label data-cycle-types="catalyst,position_lifecycle,trade_window"><span>周期终点 / 退出时间</span><input id="review-cycle-end-at" type="datetime-local" /></label>
+              <label data-cycle-types="monthly_portfolio"><span>复盘月份</span><input id="review-cycle-month" type="month" /></label>
+              <label data-cycle-types="monthly_portfolio"><span>组合基准</span><input id="review-cycle-benchmark" type="text" maxlength="32" value="QQQ.US" placeholder="例如 QQQ.US" /></label>
+            </div>
+            <div class="review-form-grid narrative review-cycle-boundaries">
+              <label data-cycle-types="position_lifecycle"><span>开始条件</span><textarea id="review-cycle-start-condition" rows="2" maxlength="1800" placeholder="首次建仓、突破确认或叙事进入某个 Stage。"></textarea></label>
+              <label data-cycle-types="position_lifecycle"><span>结束条件</span><textarea id="review-cycle-end-condition" rows="2" maxlength="1800" placeholder="清仓、逻辑失效，或作为开放持仓持续跟踪。"></textarea></label>
+            </div>
+            <p class="review-human-note"><strong>时间防火墙：</strong>下面四项保存你的原话。AI 可以在封存前协助结构化，但封存后不能用财报结果、后续价格或事后新闻覆盖当时判断。</p>
+            <div class="review-form-grid narrative">
+              <label><span>我的判断</span><textarea id="review-cycle-thesis" rows="4" maxlength="4000" placeholder="当时认为基本面、技术面或预期差由什么驱动？"></textarea></label>
+              <label><span>市场当时相信什么</span><textarea id="review-cycle-market-belief" rows="4" maxlength="4000" placeholder="当时价格、共识、筹码与消息反应隐含了什么？"></textarea></label>
+              <label><span>计划动作</span><textarea id="review-cycle-action" rows="3" maxlength="2400" placeholder="触发后加仓、持有、减仓、保护或退出，包括规模。"></textarea></label>
+              <label><span>失效条件</span><textarea id="review-cycle-invalidation" rows="3" maxlength="2400" placeholder="事前可观察、可验证；基本面和技术面均可。"></textarea></label>
+              <label><span>当时基本面证据（可选）</span><textarea id="review-cycle-fundamental" rows="3" maxlength="4000" placeholder="只写封存前已经公开或已经观察到的事实；保留来源和日期。"></textarea></label>
+              <label><span>当时技术面证据（可选）</span><textarea id="review-cycle-technical" rows="3" maxlength="4000" placeholder="记录当时价格、量能、相对强弱、筹码或其他适用指标；EMA/Fib不是强制。"></textarea></label>
+            </div>
+            <div class="review-form-actions"><span>创建后仍是草稿；只有你主动封存才会锁定事前版本。</span><button class="review-button primary" type="submit">创建周期</button></div>
+          </form>
+
+          <section class="review-cycle-detail" id="review-cycle-detail" hidden>
+            <header class="review-cycle-detail-head">
+              <div><span class="review-kicker" id="review-cycle-detail-type">DECISION CYCLE</span><h2 id="review-cycle-detail-title">复盘周期</h2><p id="review-cycle-detail-range">—</p></div>
+              <span class="review-state-badge hypothesis" id="review-cycle-detail-status">DRAFT</span>
+            </header>
+            <div class="review-cycle-metrics" id="review-cycle-metrics">
+              <div><span>订单</span><strong>0</strong></div><div><span>成交</span><strong>0</strong></div><div><span>检查点</span><strong>0</strong></div><div><span>阶段一</span><strong>待开始</strong></div><div><span>阶段二</span><strong>锁定</strong></div>
+            </div>
+            <p class="review-cycle-coverage" id="review-cycle-portfolio-coverage">组合历史覆盖将在这里显示；缺少起点或终点快照时，系统不会计算完整月度收益。</p>
+
+            <section class="review-trade-path" id="review-cycle-trade-path" aria-labelledby="review-cycle-trade-path-heading" hidden>
+              <div class="review-card-heading">
+                <div><span>SELECTED BUY → SELL</span><h3 id="review-cycle-trade-path-heading">框选交易价格路径</h3></div>
+                <strong id="review-cycle-trade-path-status">等待结果</strong>
+              </div>
+              <p class="review-card-note">只有你当前框选的订单或成交能定义起止锚点；系统为完整性补齐的父订单与同单成交不会自行扩张窗口。超过 3 个已覆盖交易日时按 3 / 3 / … 分段。</p>
+              <div class="review-trade-path-anchors" id="review-cycle-trade-path-anchors"></div>
+              <dl class="review-trade-path-summary" id="review-cycle-trade-path-summary"></dl>
+              <div class="review-trade-path-segments" id="review-cycle-trade-path-segments"></div>
+            </section>
+
+            <form class="review-form review-cycle-reflection" id="review-cycle-retrospective-form" hidden>
+              <div class="review-section-heading">
+                <div><span>YOUR NOTE · RETROSPECTIVE</span><h2>先留下你的判断，再交给 AI 复盘</h2></div>
+                <span id="review-cycle-retrospective-version">尚未保存</span>
+              </div>
+              <p class="review-card-note">三项都只需一两句话。第一项是事后回忆，不会伪装成事前证据；第三项从保存时刻起才算未来预判，可在下一批交易中验证。</p>
+              <div class="review-form-grid narrative review-retrospective-note-grid">
+                <label><span>当时我是怎么判断的（事后回忆）</span><textarea id="review-cycle-recalled-judgment" rows="3" maxlength="6000" required placeholder="例如：当时把突破后的回踩理解为强势承接，因此买入；这是现在对当时想法的回忆。"></textarea></label>
+                <label><span>这次最重要的感悟</span><textarea id="review-cycle-lesson" rows="3" maxlength="6000" required placeholder="例如：方向判断未必错，但盘前流动性与减仓节奏没有纳入计划。"></textarea></label>
+                <label><span>从现在起要验证的未来预判</span><textarea id="review-cycle-forward-hypothesis" rows="3" maxlength="6000" required placeholder="例如：下一次同类形态只有在量价确认后再加仓，预期能降低 MAE；这不是本周期的事前证据。"></textarea></label>
+              </div>
+              <div class="review-form-actions">
+                <span>保存会生成新版本；重新运行复盘不会覆盖旧记录。</span>
+                <button class="review-button primary" id="review-cycle-save-retrospective" type="submit">保存我的记录</button>
+              </div>
+            </form>
+
+            <form class="review-cycle-close" id="review-cycle-close-form" hidden>
+              <div><span>POSITION LIFECYCLE</span><strong>确认持仓周期已经结束</strong><p>只有真实退出或你明确终止跟踪后填写；结束时间一经确认不可改写，阶段二也不会在此之前解锁。</p></div>
+              <label><span>实际结束时间</span><input id="review-cycle-close-at" type="datetime-local" required /></label>
+              <button class="review-button secondary" type="submit">确认周期结束</button>
+            </form>
+
+            <form class="review-form review-cycle-ex-ante" id="review-cycle-ex-ante-form">
+              <div class="review-section-heading"><div><span>EX-ANTE · USER ORIGINAL</span><h2>事前四字段</h2></div><span id="review-cycle-seal-time">尚未封存</span></div>
+              <p class="review-card-note">简短并不可怕；缺失才不可审计。保留你的原话与时间戳，任何事后重建必须单独标注，不能伪装成当时记录。</p>
+              <div class="review-form-grid narrative">
+                <label><span>我的判断</span><textarea id="review-cycle-detail-thesis" rows="4" maxlength="4000"></textarea></label>
+                <label><span>市场当时相信什么</span><textarea id="review-cycle-detail-market-belief" rows="4" maxlength="4000"></textarea></label>
+                <label><span>计划动作</span><textarea id="review-cycle-detail-action" rows="3" maxlength="2400"></textarea></label>
+                <label><span>失效条件</span><textarea id="review-cycle-detail-invalidation" rows="3" maxlength="2400"></textarea></label>
+                <label><span>当时基本面证据（可选）</span><textarea id="review-cycle-detail-fundamental" rows="3" maxlength="4000"></textarea></label>
+                <label><span>当时技术面证据（可选）</span><textarea id="review-cycle-detail-technical" rows="3" maxlength="4000"></textarea></label>
+              </div>
+              <div class="review-form-actions"><span id="review-cycle-freeze-note">草稿可更新；封存后事前字段只读。</span><button class="review-button secondary" id="review-cycle-seal" type="button">封存事前记录</button><button class="review-button primary" id="review-cycle-update" type="submit">保存四字段</button></div>
+            </form>
+
+            <div class="review-cycle-detail-grid">
+              <section class="review-card review-cycle-record-card">
+                <div class="review-card-heading"><div><span>BROKER EVIDENCE</span><h3>关联真实订单与成交</h3></div><strong id="review-cycle-record-count">0 条</strong></div>
+                <p class="review-card-note">可先在“案例复盘 → 待关联订单”精确选择；也可不选，让系统按周期时间与标的自动关联。月度组合扫描整月账户历史，但未成交和不可核验记录只进入排除审计。系统只复制只读证据，不会修改券商订单。</p>
+                <div class="review-record-list" id="review-cycle-records"></div>
+                <div class="review-card-actions"><span id="review-cycle-link-hint">当前没有待关联的选中记录</span><button class="review-button secondary" id="review-cycle-link-records" type="button" disabled>关联当前选择</button></div>
+              </section>
+
+              <section class="review-card review-cycle-checkpoint-card">
+                <div class="review-card-heading"><div><span>DECISION TIMELINE</span><h3>动作检查点</h3></div><strong id="review-cycle-checkpoint-count">0 个</strong></div>
+                <p class="review-card-note">每次显著买入、卖出、保护或逻辑变化都形成检查点。盲态重放到某一节点时，只读取该节点以前的信息。</p>
+                <div class="review-checkpoints" id="review-cycle-checkpoints"></div>
+                <form class="review-cycle-checkpoint-form" id="review-cycle-checkpoint-form">
+                  <label><span>时间</span><input id="review-cycle-checkpoint-at" type="datetime-local" required /></label>
+                  <label><span>动作类型</span><select id="review-cycle-checkpoint-kind"><option value="position_change">仓位变化</option><option value="risk_change">保护 / 风险变化</option><option value="thesis_update">判断更新</option><option value="market_expectation">市场预期变化</option><option value="technical_signal">技术信号</option><option value="invalidation">失效触发</option><option value="catalyst">催化剂更新</option><option value="review_note">复盘备注</option><option value="other">其他</option></select></label>
+                  <label><span>当时动作与理由</span><input id="review-cycle-checkpoint-action" type="text" maxlength="1200" required placeholder="发生了什么，为什么这样做？" /></label>
+                  <label><span>当时基本面证据（可选）</span><textarea id="review-cycle-checkpoint-fundamental" rows="2" maxlength="2400" placeholder="仅记录这个时点已经可得的事实。"></textarea></label>
+                  <label><span>当时技术面证据（可选）</span><textarea id="review-cycle-checkpoint-technical" rows="2" maxlength="2400" placeholder="价格、量能、相对强弱、筹码或其他适用证据。"></textarea></label>
+                  <button class="review-button secondary" type="submit">添加检查点</button>
+                </form>
+              </section>
+            </div>
+
+            <section class="review-card review-cycle-phases" aria-labelledby="review-cycle-phase-heading">
+              <div class="review-card-heading"><div><span>REVIEW PATH</span><h3 id="review-cycle-phase-heading">选择与现有证据匹配的复盘路径</h3></div><strong>订单优先 / 严谨两阶段</strong></div>
+              <div class="review-cycle-phase-grid">
+                <article data-cycle-phase="retrospective"><span>ORDER-FIRST · RETROSPECTIVE</span><h4>记录 → 关联 → AI 复盘</h4><p>使用上方你的三段记录与真实订单/成交，分析基本面、技术面、仓位和执行；事后回忆与未来预判会严格分开。</p><button class="review-button primary" id="review-cycle-analyze-retrospective" type="button">保存并开始复盘</button></article>
+                <article data-cycle-phase="blind"><span>阶段一 · BLIND</span><h4>盲态决策重放</h4><p>仅使用每个决策点当时已经公开并已封存的信息，分别审计基本面、技术面、市场预期、仓位与动作一致性。</p><button class="review-button primary" id="review-cycle-analyze-blind" type="button">开始阶段一</button></article>
+                <article data-cycle-phase="outcome"><span>阶段二 · OUTCOME</span><h4>结果揭示与归因</h4><p>阶段一完成后才读取后续价格路径、订单执行与基本面变化；P&amp;L、MAE/MFE和相对收益仅在关联成交与周期内行情足以计算时展示，并区分判断、时点、仓位、执行和运气。</p><button class="review-button primary" id="review-cycle-analyze-outcome" type="button" disabled title="请先完成阶段一盲态复盘">阶段二尚未解锁</button></article>
+              </div>
+              <p class="review-cycle-phase-gate" id="review-cycle-phase-gate">先封存事前记录并完成阶段一；在此之前，阶段二不会把未来结果暴露给分析。</p>
+            </section>
+          </section>
+        </div>
+      </section>
+
+      <section class="review-panel review-case-panel" id="review-panel-cases" role="tabpanel" aria-labelledby="review-tab-cases" hidden>
+        <aside class="review-list-pane">
+          <div class="review-list-switch" role="group" aria-label="复盘资料">
+            <button id="review-show-intake" type="button" aria-pressed="true">待关联订单 <span id="review-intake-count">0</span></button>
+            <button id="review-show-cases" type="button" aria-pressed="false">已有案例 <span id="review-list-case-count">0</span></button>
+          </div>
+          <div class="review-list-toolbar">
+            <label class="sr-only" for="review-case-search">筛选</label>
+            <input id="review-case-search" type="search" maxlength="120" placeholder="代码、季度或订单状态" autocomplete="off" />
+            <select id="review-quarter-filter" aria-label="按公司财季筛选案例"><option value="">全部公司财季</option></select>
+          </div>
+          <section class="review-batch-scope" id="review-batch-scope" aria-labelledby="review-batch-scope-heading" hidden>
+            <div class="review-batch-scope-heading">
+              <div><strong id="review-batch-scope-heading">所选案例组合</strong><span id="review-batch-selection-status">尚未选择案例</span></div>
+              <div>
+                <button id="review-batch-select-visible" type="button">加入当前列表</button>
+                <button id="review-batch-clear" type="button" disabled>清空</button>
+              </div>
+            </div>
+            <p>只分析你勾选的案例，以及每个案例已确认关联的订单和成交；不会自动纳入同期间账户里的其他订单。</p>
+          </section>
+          <div class="review-case-list" id="review-case-list"></div>
+        </aside>
+
+        <div class="review-detail-pane">
+          <section class="review-intake" id="review-intake-panel" aria-labelledby="review-intake-heading">
+            <div class="review-stepper" aria-label="财报复盘流程">
+              <span class="active"><b>1</b>同步并选择订单</span>
+              <span><b>2</b>确认财报事件</span>
+              <span><b>3</b>补充当时判断</span>
+              <span><b>4</b>交给 Agent 复盘</span>
+            </div>
+
+            <section class="review-card review-intake-card">
+              <div class="review-card-heading">
+                <div><span>LONG BRIDGE · READ ONLY</span><h3 id="review-intake-heading">先从真实订单与成交开始</h3></div>
+                <strong id="review-intake-status">尚未同步</strong>
+              </div>
+              <p class="review-card-note">订单提供计划与执行状态，成交提供真实数量和价格。先从左侧选择标的，系统会在后台预取近 240 天、最多 3 次财报；再选择同一财报决策相关的记录，不会因为时间接近就自动断定你的交易动机。</p>
+              <p class="review-data-coverage" id="review-intake-coverage">历史覆盖状态将在同步后显示。</p>
+              <div class="review-intake-toolbar">
+                <label><span>历史范围</span><select id="review-intake-range"><option value="90">近 90 天</option><option value="180" selected>近 180 天</option><option value="365">近 1 年</option><option value="730">近 2 年</option></select></label>
+                <label><span>记录类型</span><select id="review-intake-kind"><option value="">订单 + 成交</option><option value="order">仅已成交订单</option><option value="execution">仅可核验成交</option><option value="audit_record">审计：已排除记录</option></select></label>
+                <label class="review-intake-search"><span>筛选记录</span><input id="review-intake-search" type="search" maxlength="100" placeholder="代码、方向、状态" autocomplete="off" /></label>
+                <button class="review-button secondary" id="review-intake-sync" type="button">同步历史</button>
+              </div>
+              <div class="review-intake-table-head" aria-hidden="true"><span></span><span>时间 / 类型</span><span>标的</span><span>方向 / 状态</span><span>数量</span><span>价格</span></div>
+              <div class="review-record-list review-intake-records" id="review-intake-records"></div>
+              <div class="review-intake-pagination" id="review-intake-pagination">
+                <span id="review-intake-page-status">尚未加载历史记录</span>
+                <button class="review-button secondary" id="review-intake-load-more" type="button" hidden>加载更多</button>
+              </div>
+              <div class="review-intake-selection">
+                <span id="review-intake-selected-count">尚未选择记录</span>
+                <div><button class="review-button primary" id="review-intake-trade-review" type="button" disabled>复盘所选交易</button><button class="review-button secondary" id="review-intake-cancel-link-edit" type="button" hidden>取消修改</button><button class="review-button secondary" id="review-intake-clear" type="button" disabled>清除选择</button></div>
+              </div>
+            </section>
+
+            <section class="review-card review-event-card">
+              <div class="review-card-heading">
+                <div><span>EARNINGS ASSOCIATION</span><h3>确认财报事件，而不是手填日期</h3></div>
+                <strong id="review-event-match-status">等待选择订单</strong>
+              </div>
+              <p class="review-card-note">财报日期、盘前/盘后与财报季度来自只读事件数据。系统给出候选，你负责确认这些订单是否确实属于该财报决策。</p>
+              <div class="review-event-candidates" id="review-event-candidates"></div>
+              <div class="review-derived-context" id="review-derived-context"></div>
+              <div class="review-form-actions review-intake-actions">
+                <span>选择订单会联带其全部逐笔成交；选择成交会联带父订单与同单成交。系统会在确认后显示补齐数量，且不会修改或提交任何券商订单。</span>
+                <button class="review-button primary" id="review-create-from-records" type="button" disabled>建立财报复盘案例</button>
+              </div>
+            </section>
+          </section>
+
+          <section class="review-case-detail" id="review-case-detail" hidden>
+          <form class="review-form" id="review-case-form">
+            <div class="review-section-heading">
+              <div><span>HUMAN CONTEXT · EX-ANTE RECORD</span><h2 id="review-case-heading">财报案例</h2></div>
+              <span class="review-state-badge draft" id="review-case-status">DRAFT</span>
+            </div>
+            <input id="review-case-id" type="hidden" />
+            <div class="review-source-context">
+              <label><span>标的 · 来自订单</span><input id="review-case-symbol" name="symbol" type="text" maxlength="32" required readonly /></label>
+              <label><span>财报季度 · 来自事件</span><input id="review-case-period" name="fiscalPeriod" type="text" maxlength="40" required readonly /></label>
+              <label><span>财报时间 · 来自事件</span><input id="review-case-event-at" name="eventAt" type="datetime-local" required readonly /></label>
+              <div><span>已关联记录</span><strong id="review-case-linked-count">0 条</strong></div>
+            </div>
+            <p class="review-human-note">下面四项由你保留当时的主观信息。Agent 会区分“当时可知事实、你的原始判断、事后结果”，不会用结果倒推一个看似完美的理由。</p>
+            <div class="review-form-grid narrative">
+              <label><span>我的判断</span><textarea id="review-case-thesis" name="thesis" rows="4" maxlength="4000" placeholder="当时认为价值由什么驱动，预期差在哪里？"></textarea></label>
+              <label><span>市场当时相信什么</span><textarea id="review-case-market-belief" name="marketBelief" rows="4" maxlength="4000" placeholder="价格、预期、定位与消息反应隐含了什么？"></textarea></label>
+              <label><span>计划动作</span><textarea id="review-case-action" name="plannedAction" rows="3" maxlength="2400" placeholder="加仓、持有、减仓或保护；包括规模与触发。"></textarea></label>
+              <label><span>失效条件</span><textarea id="review-case-invalidation" name="invalidation" rows="3" maxlength="2400" placeholder="可观察、可验证，不限定为某一种技术指标。"></textarea></label>
+            </div>
+            <details class="review-optional-fields">
+              <summary>评价设置与当时环境（可选）</summary>
+              <div class="review-form-grid compact">
+                <label><span>策略类型</span><select id="review-case-strategy" name="strategyType"><option value="pre_hold">财报前持有</option><option value="pre_add">财报前加仓</option><option value="pre_reduce">财报前减仓</option><option value="pre_hedge">财报前保护</option><option value="post_confirm_entry">财报后确认买入</option><option value="post_reversal_exit">财报后退出</option><option value="other">其他</option></select></label>
+                <label><span>主评价窗口</span><select id="review-case-window" name="primaryHorizon"><option value="t1">T+1</option><option value="t3">T+3</option><option value="t5" selected>T+5</option><option value="t20">T+20</option><option value="next_quarter">下次财报</option></select></label>
+                <label><span>风险预算 / R</span><input id="review-case-risk-budget" name="riskBudgetR" type="number" min="0.01" step="0.01" placeholder="例如 1.0" /></label>
+                <label><span>叙事Stage</span><input id="review-case-stage" name="stage" type="text" maxlength="24" placeholder="2 / 3 / 4P / 4E / 4F" /></label>
+                <label><span>市场温度 / 10</span><input id="review-case-temperature" name="temperature" type="number" min="0" max="10" step="0.5" placeholder="6" /></label>
+              </div>
+            </details>
+            <div class="review-form-actions">
+              <span id="review-freeze-note">草稿可编辑；封存后只能追加事后记录。</span>
+              <button class="review-button secondary" id="review-link-records" type="button" disabled hidden>确认关联成交</button>
+              <button class="review-button secondary" id="review-case-analyze" type="button">用复盘 Skill 分析</button>
+              <button class="review-button secondary" id="review-freeze-case" type="button" disabled>封存财报前判断</button>
+              <button class="review-button primary" id="review-save-case" type="submit">保存案例</button>
+            </div>
+          </form>
+
+          <section class="review-card broker-match-card" aria-labelledby="review-broker-match-heading">
+            <div class="review-card-heading"><div><span>BROKER EVIDENCE</span><h3 id="review-broker-match-heading">已确认关联的长桥订单与成交</h3></div><div class="review-card-heading-actions"><strong id="review-broker-match-count">0 条</strong><button class="review-button secondary" id="review-edit-broker-links" type="button">重新选择订单</button></div></div>
+            <p class="review-card-note" id="review-broker-link-note">这些记录构成事实层。选错或漏选时可重新增删；每次修改都会保留关联版本，重新复盘使用最新版本。</p>
+            <div class="review-record-list" id="review-broker-matches"></div>
+          </section>
+
+          <section class="review-card" aria-labelledby="review-checkpoint-heading">
+            <div class="review-card-heading"><div><span>OUTCOME PATH</span><h3 id="review-checkpoint-heading">结果检查点</h3></div><strong>主窗口预先冻结</strong></div>
+            <div class="review-checkpoints" id="review-checkpoints"></div>
+          </section>
+          </section>
+        </div>
+      </section>
+
+      <section class="review-panel" id="review-panel-tests" role="tabpanel" aria-labelledby="review-tab-tests" hidden>
+        <section class="review-validation-journey" aria-label="验证流程">
+          <strong>一条验证路径</strong>
+          <span>1 · AI 生成草案</span><span>2 · 你确认开始观察</span><span>3 · 复盘自动成为候选</span><span>4 · 你确认纳入</span><span>5 · 达标后由你决策</span>
+        </section>
+        <section class="review-card review-learning-proposal" id="review-learning-proposal" hidden>
+          <div class="review-card-heading"><div><span>AI PREFILL · HUMAN EDIT</span><h3>检查并微调验证草案</h3></div><strong id="review-learning-confidence">—</strong></div>
+          <p class="review-card-note">AI 已预填主要内容。你可以直接确认，也可以只改不符合本意的部分；它仍是事后形成的待验证假设，不会回写原周期。</p>
+          <div class="review-learning-editor">
+            <label class="wide"><span>可证伪假设</span><textarea id="review-learning-hypothesis" rows="3" maxlength="4000"></textarea></label>
+            <label class="wide"><span>证据与限制</span><textarea id="review-learning-evidence" rows="3" maxlength="6000"></textarea></label>
+            <label><span>主指标</span><input id="review-learning-metric" maxlength="500" /></label>
+            <label><span>观察窗口</span><input id="review-learning-window" maxlength="500" /></label>
+            <label><span>首轮样本门槛</span><input id="review-learning-min-cases" type="number" min="1" max="10000" /></label>
+            <label class="wide"><span>纳入条件</span><textarea id="review-learning-inclusion" rows="2" maxlength="3000"></textarea></label>
+            <label class="wide"><span>排除条件</span><textarea id="review-learning-exclusion" rows="2" maxlength="2000"></textarea></label>
+            <label class="wide"><span>成功标准</span><textarea id="review-learning-success" rows="2" maxlength="2000"></textarea></label>
+            <label><span>规则名称</span><input id="review-learning-rule-title" maxlength="160" /></label>
+            <label class="wide"><span>动作</span><textarea id="review-learning-rule-action" rows="2" maxlength="2000"></textarea></label>
+            <label class="wide"><span>失效与反证</span><textarea id="review-learning-rule-invalidation" rows="2" maxlength="2000"></textarea></label>
+            <label class="wide"><span>适用范围</span><textarea id="review-learning-rule-scope" rows="2" maxlength="1000"></textarea></label>
+          </div>
+          <div class="review-form-actions"><span>确认后立即进入观察；任何候选样本仍需你逐条确认。</span><button class="review-button secondary" id="review-learning-dismiss" type="button">暂不开始</button><button class="review-button primary" id="review-learning-accept" type="button">开始观察</button></div>
+        </section>
+        <div class="review-validation-list-heading"><div><span>ACTIVE VALIDATIONS</span><h2>正在观察与待决策</h2></div><p>系统寻找后续已完成复盘；你确认是否纳入。达到门槛只会进入“待你决策”，绝不自动晋级。</p></div>
+        <div class="review-flow-list review-validation-list" id="review-test-list"></div>
+        <details class="review-validation-archive" id="review-validation-archive" hidden>
+          <summary>已停止的观察 <span id="review-archived-test-count">0</span></summary>
+          <p class="review-card-note">停止观察不会删除假设、来源、样本或操作记录；这里只作为审计档案保留。</p>
+          <div class="review-flow-list review-validation-list archived" id="review-archived-test-list"></div>
+        </details>
+        <details class="review-validation-advanced">
+          <summary>高级工具 · 手动登记独立测试</summary>
+        <div class="review-flow-grid">
+          <details class="review-manual-entry">
+            <summary>高级：手动登记测试</summary>
+          <form class="review-form review-flow-form" id="review-test-form">
+            <div class="review-section-heading"><div><span>REGISTERED TEST</span><h2>登记测试</h2></div><span class="review-state-badge testing">PRE-REGISTER</span></div>
+            <label><span>可证伪假设</span><textarea id="review-test-hypothesis" rows="4" maxlength="4000" required placeholder="例如：Stage 3且财报前出现好消息不涨时，减仓策略能改善净期望并降低尾部亏损。"></textarea></label>
+            <div class="review-form-grid compact">
+              <label><span>关联案例</span><select id="review-test-case"><option value="">不限定单一案例</option></select></label>
+              <label><span>关联规则</span><select id="review-test-rule"><option value="">暂不关联规则</option></select></label>
+              <label><span>策略族</span><input id="review-test-strategy" type="text" maxlength="120" required placeholder="pre_earnings_reduce" /></label>
+              <label><span>主指标</span><select id="review-test-metric"><option value="net_r">净R</option><option value="expectancy_r">净期望R</option><option value="win_rate">胜率</option><option value="payoff_ratio">赔率</option><option value="relative_return">相对基准收益</option><option value="mae_r">MAE / R</option><option value="mfe_r">MFE / R</option><option value="action_adherence">动作遵守度</option><option value="invalidation_latency">失效执行延迟</option><option value="peak_gross_exposure">峰值毛敞口</option><option value="drawdown">最大回撤</option><option value="hedge_value">对冲价值</option></select></label>
+              <label><span>评价窗口</span><select id="review-test-window"><option value="t1">T+1</option><option value="t3">T+3</option><option value="t5" selected>T+5</option><option value="t20">T+20</option></select></label>
+              <label><span>最少案例</span><input id="review-test-min-cases" type="number" min="1" max="10000" step="1" value="20" /></label>
+            </div>
+            <label><span>样本纳入条件</span><textarea id="review-test-cohort" rows="3" maxlength="3000" placeholder="财报事件、市场环境、Stage、波动率等；未交易但满足条件的案例也应纳入。"></textarea></label>
+            <label><span>排除条件</span><textarea id="review-test-exclusions" rows="2" maxlength="2000" placeholder="必须在读取结果前登记。"></textarea></label>
+            <label><span>成功标准</span><textarea id="review-test-success-criteria" rows="2" maxlength="2000" required placeholder="例如：至少 20 个独立案例后，中位 MAE 改善 ≥ 0.2R，且净期望不下降。"></textarea></label>
+            <div class="review-form-actions"><span>人工结果只会追加为观察样本，不会完成或核验整个协议；正式晋级等待确定性结果引擎。</span><button class="review-button primary" type="submit">登记测试</button></div>
+          </form>
+          </details>
+        </div>
+        </details>
+      </section>
+
+      <section class="review-panel" id="review-panel-rules" role="tabpanel" aria-labelledby="review-tab-rules" hidden>
+        <div class="review-flow-grid">
+          <details class="review-manual-entry">
+            <summary>高级：手动建立候选规则</summary>
+          <form class="review-form review-flow-form" id="review-rule-form">
+            <div class="review-section-heading"><div><span>VERSIONED RULE</span><h2>建立候选规则</h2></div><span class="review-state-badge hypothesis">HYPOTHESIS</span></div>
+            <label><span>规则名称</span><input id="review-rule-title" type="text" maxlength="160" required placeholder="财报前好消息不涨的减仓纪律" /></label>
+            <label><span>观察条件</span><textarea id="review-rule-condition" rows="3" maxlength="3000" required placeholder="必须是事前可观察的条件。"></textarea></label>
+            <label><span>对应动作</span><textarea id="review-rule-action" rows="3" maxlength="3000" required placeholder="触发后执行什么，仓位或保护如何变化？"></textarea></label>
+            <label><span>失效与反证</span><textarea id="review-rule-invalidation" rows="3" maxlength="3000" required placeholder="什么证据出现时，这条规则应停止使用？"></textarea></label>
+            <label><span>适用范围</span><input id="review-rule-scope" type="text" maxlength="500" placeholder="标的、行业、Stage、市场环境" /></label>
+            <div class="review-form-actions"><span>新规则从假设开始，不因单次盈亏直接晋升。</span><button class="review-button primary" type="submit">建立规则</button></div>
+          </form>
+          </details>
+          <div class="review-flow-list" id="review-rule-list"></div>
+        </div>
+      </section>
+
+      <section class="review-panel" id="review-panel-governance" role="tabpanel" aria-labelledby="review-tab-governance" hidden>
+        <div class="review-flow-grid governance">
+          <details class="review-manual-entry">
+            <summary>人工裁决一条规则</summary>
+          <form class="review-form review-flow-form" id="review-governance-form">
+            <div class="review-section-heading"><div><span>RULE GOVERNANCE</span><h2>记录规则Review</h2></div><span class="review-state-badge review">KEEP / CHANGE PROPOSAL / RETIRE</span></div>
+            <label><span>规则</span><select id="review-governance-rule" required><option value="">请选择规则</option></select></label>
+            <label><span>Keep</span><textarea id="review-governance-keep" rows="3" maxlength="3000" required placeholder="哪些行为或规则部分得到支持？"></textarea></label>
+            <label><span>Change</span><textarea id="review-governance-change" rows="3" maxlength="3000" required placeholder="需要怎样做出可观察、可测试的调整？"></textarea></label>
+            <label><span>Next trigger</span><textarea id="review-governance-next" rows="3" maxlength="3000" required placeholder="什么条件触发下次动作或重新审查？"></textarea></label>
+            <label><span>Review 结论</span><select id="review-governance-verdict"><option value="KEEP">KEEP</option><option value="MODIFY">提出修改（仅记录，待另行生成新版本）</option><option value="RETIRE">RETIRE（确认后立即退役）</option></select></label>
+            <div class="review-form-actions"><span>KEEP 只追加记录；提出修改不会伪装成已改版；RETIRE 会原子记录 Review 并迁移规则状态。</span><button class="review-button primary" type="submit">保存Review</button></div>
+          </form>
+          </details>
+          <div class="review-flow-list" id="review-governance-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <dialog class="review-note-dialog" id="review-order-first-note-dialog">
+      <form class="review-note-dialog-card" id="review-order-first-note-form">
+        <div class="review-section-heading">
+          <div><span>YOUR NOTE · BEFORE LINKING</span><h2>先记录，再关联真实订单</h2></div>
+          <button class="review-dialog-close" id="review-order-first-note-cancel" type="button" aria-label="取消">×</button>
+        </div>
+        <p class="review-card-note" id="review-order-first-note-scope">—</p>
+        <p class="review-card-note">交互上先写记录；确认时三段原话、周期与订单关联会原子保存，任何一步失败都不会留下半成品。AI 不会替你补写，也不会把事后回忆伪装成事前证据。</p>
+        <div class="review-form-grid narrative review-retrospective-note-grid">
+          <label><span>当时我是怎么判断的（事后回忆）</span><textarea id="review-order-first-recalled-judgment" rows="3" maxlength="6000" required placeholder="用一两句话写下你现在回忆的当时判断。"></textarea></label>
+          <label><span>这次最重要的感悟</span><textarea id="review-order-first-lesson" rows="3" maxlength="6000" required placeholder="这次做对、做错或仍不确定的关键点。"></textarea></label>
+          <label><span>从现在起要验证的未来预判</span><textarea id="review-order-first-forward-hypothesis" rows="3" maxlength="6000" required placeholder="只从保存时点起生效，不用于评价之前的交易。"></textarea></label>
+        </div>
+        <div class="review-form-actions">
+          <span>确认后在同一次原子操作中保存记录、建立周期并关联券商事实。</span>
+          <button class="review-button secondary" id="review-order-first-note-back" type="button">返回修改范围</button>
+          <button class="review-button primary" id="review-order-first-note-submit" type="submit">保存记录并关联</button>
+        </div>
+      </form>
+    </dialog>
+
     <script src="./markdown.js"></script>
     <script src="./renderer.js"></script>
+    <script src="./review.js"></script>
   </body>
 </html>

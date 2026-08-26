@@ -4,7 +4,10 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   applyCodexWorkspaceAnalysis,
+  buildCodexEvidence,
   buildReadOnlyToolGuard,
+  buildWorkspaceAdditionalContext,
+  buildWorkspacePrompt,
   CodexAppServerRpc,
   CodexWorkspaceService,
   expandAgentCommand,
@@ -12,6 +15,521 @@ import {
   findRequestedApps,
   findRequestedSkills,
 } from "../src/engine/codex-workspace.mjs";
+
+test("review evidence works without a live portfolio and enforces the order-first skill boundary", () => {
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-earnings-decisions 复盘所选财报交易",
+    run: {
+      context: {
+        scope: "review",
+        reviewCaseIds: ["case-1"],
+        snapshotAt: "2026-08-10T00:00:00.000Z",
+      },
+      analysisContext: {
+        scope: "review",
+        cases: [{ id: "case-1", symbol: "NVDA.US", fiscalQuarter: "FY2027 Q2" }],
+        brokerRecords: [{ kind: "execution", recordId: "trade-1" }],
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+  const prompt = buildWorkspacePrompt(evidence);
+
+  assert.equal(evidence.analysisScope, "review");
+  assert.equal(evidence.dataQuality.portfolioStatus, "not_required_for_review");
+  assert.equal(evidence.technical, null);
+  assert.match(prompt, /review-earnings-decisions/);
+  assert.match(prompt, /不要从订单日期猜财季/);
+});
+
+test("large review evidence keeps linked broker facts in valid bounded application blocks", () => {
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-earnings-decisions 复盘 AAOI 财报交易",
+    run: {
+      context: { scope: "review", reviewCaseIds: ["case-aaoi"] },
+      analysisContext: {
+        scope: "review",
+        cases: [{
+          id: "case-aaoi",
+          symbol: "AAOI.US",
+          fiscalQuarter: "FY2026 Q2",
+          event: { eventAt: "2026-08-06T00:00:00.000Z", session: "amc" },
+          brokerAssociation: { linkedOrderCount: 2, linkedExecutionCount: 0 },
+          orders: [
+            { kind: "order", recordRef: "order-1", side: "Buy", quantity: 100, executedQuantity: 100, executedPrice: 124, submittedAt: "2026-08-06T13:54:46Z" },
+            { kind: "order", recordRef: "order-2", side: "Sell", quantity: 20, executedQuantity: 20, executedPrice: 140, submittedAt: "2026-08-07T11:20:27Z" },
+          ],
+          executions: [],
+          exAnteDraft: { myView: "A".repeat(7_000), invalidation: "-5%" },
+          exAnteVersions: [],
+          outcome: null,
+          review: null,
+          ruleIds: [],
+        }],
+        tests: [],
+        rules: [],
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+  const contexts = buildWorkspaceAdditionalContext(evidence, "复盘指令");
+  const reviewBlocks = Object.entries(contexts)
+    .filter(([key]) => key.startsWith("trading-cockpit-review-"));
+  const brokerText = reviewBlocks
+    .filter(([key]) => key.includes("-broker-"))
+    .map(([, value]) => value.value)
+    .join("\n");
+
+  assert.match(brokerText, /"side":"Buy"/);
+  assert.match(brokerText, /"quantity":100/);
+  assert.match(brokerText, /"executedPrice":124/);
+  assert.match(brokerText, /"side":"Sell"/);
+  assert.match(brokerText, /"executedPrice":140/);
+  for (const [, block] of reviewBlocks) {
+    assert.equal(block.kind, "application");
+    assert.equal(block.value.length <= 3_000, true);
+    assert.doesNotThrow(() => JSON.parse(block.value));
+    assert.doesNotMatch(block.value, /tokens truncated/);
+  }
+});
+
+test("decision-cycle blind evidence is semantically chunked, bounded, and keeps the time firewall explicit", () => {
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-decision-cycles 阶段一盲态重放",
+    run: {
+      context: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        reviewCycleId: "cycle-1",
+        reviewPhase: "blind",
+      },
+      analysisContext: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        phase: "blind",
+        timeFirewall: {
+          cutoffAt: "2026-08-10T00:00:00.000Z",
+          futureEvidencePhysicallyExcluded: true,
+        },
+        pointInTimeTechnical: {
+          status: "complete",
+          asOf: "2026-08-10T00:00:00.000Z",
+          cutoffPolicy: "截止日整根 K 线排除",
+          requestedSymbols: ["NVDA.US", "QQQ.US"],
+          omittedSymbols: [],
+          warnings: [],
+          snapshots: [{ symbol: "NVDA.US", ema: { 21: 170 }, shortStructure: "交错 / 过渡" }],
+        },
+        cycle: {
+          id: "cycle-1",
+          type: "position_lifecycle",
+          evidenceGrade: "prospective",
+          sealedExAnte: { userOriginal: { myView: "A".repeat(7_000) } },
+          orders: [{ side: "Buy", quantity: 100, executedPrice: 124 }],
+          executions: [{ side: "Buy", quantity: 100, price: 124 }],
+          checkpoints: [{ id: "cp-1", action: "首次建仓" }],
+          outcome: null,
+          blindAssessment: null,
+        },
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+  const contexts = buildWorkspaceAdditionalContext(evidence, "盲态复盘指令");
+  const values = Object.values(contexts).map((item) => item.value);
+  assert.equal(Object.keys(contexts).some((key) => key.includes("review-cycle-sealed")), true);
+  assert.equal(Object.keys(contexts).some((key) => key.includes("review-cycle-broker")), true);
+  assert.equal(Object.keys(contexts).some((key) => key.includes("review-cycle-checkpoints")), true);
+  assert.equal(Object.keys(contexts).some((key) => key.includes("review-cycle-technical")), true);
+  assert.equal(Object.keys(contexts).some((key) => key.includes("review-cycle-outcome")), false);
+  assert.match(values.join("\n"), /futureEvidencePhysicallyExcluded/);
+  assert.match(values.join("\n"), /"side":"Buy"/);
+  assert.match(values.join("\n"), /"21":170/);
+  for (const [key, block] of Object.entries(contexts)) {
+    assert.equal(block.kind, "application");
+    assert.equal(block.value.length <= 3_000, true);
+    if (key !== "trading-cockpit-instructions") assert.doesNotThrow(() => JSON.parse(block.value));
+    assert.doesNotMatch(block.value, /tokens truncated/);
+  }
+  const prompt = buildWorkspacePrompt(evidence);
+  assert.match(prompt, /review-decision-cycles/);
+  assert.match(prompt, /不得调用网页、MCP、近期历史/);
+});
+
+test("decision timeline is delivered as ordered bounded node capsules without backflow", () => {
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-decision-cycles 按节点盲态重放",
+    run: {
+      context: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        reviewCycleId: "cycle-timeline",
+        reviewPhase: "blind",
+      },
+      analysisContext: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        phase: "blind",
+        timeFirewall: { futureEvidencePhysicallyExcluded: true },
+        pointInTimeTechnical: { status: "complete", nodes: [] },
+        cycle: {
+          id: "cycle-timeline",
+          type: "position_lifecycle",
+          sealedExAnte: { userOriginal: { myView: "初始判断" } },
+          orders: [],
+          executions: [],
+          checkpoints: [],
+          decisionTimeline: [
+            {
+              nodeId: "initial",
+              timelineIndex: 0,
+              knowledgeCutoffAt: "2026-08-02T00:00:00.000Z",
+              action: "初始建仓",
+              brokerFactsIntroduced: {
+                records: [{ recordRef: "order:early", side: "Buy", quantity: 100, submittedPrice: 100 }],
+                missingRecordIds: [],
+              },
+              pointInTimeTechnical: {
+                asOf: "2026-08-02T00:00:00.000Z",
+                snapshots: [{ symbol: "NVDA.US", lastPrice: 100 }],
+              },
+            },
+            {
+              nodeId: "checkpoint-1",
+              timelineIndex: 1,
+              knowledgeCutoffAt: "2026-08-05T00:00:00.000Z",
+              action: "后续减仓",
+              brokerFactsIntroduced: {
+                records: [{ recordRef: "execution:later", side: "Sell", quantity: 20, price: 112 }],
+                missingRecordIds: [],
+              },
+              pointInTimeTechnical: {
+                asOf: "2026-08-05T00:00:00.000Z",
+                snapshots: [{ symbol: "NVDA.US", lastPrice: 111 }],
+              },
+            },
+          ],
+          outcome: null,
+          blindAssessment: null,
+        },
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+  const contexts = buildWorkspaceAdditionalContext(evidence, "按时间线复盘");
+  const earlyBlocks = Object.entries(contexts)
+    .filter(([key]) => key.includes("timeline-node-001"))
+    .map(([, value]) => value.value)
+    .join("\n");
+  const laterBlocks = Object.entries(contexts)
+    .filter(([key]) => key.includes("timeline-node-002"))
+    .map(([, value]) => value.value)
+    .join("\n");
+  assert.match(earlyBlocks, /初始建仓/);
+  assert.match(earlyBlocks, /order:early/);
+  assert.match(earlyBlocks, /"lastPrice":100/);
+  assert.doesNotMatch(earlyBlocks, /后续减仓|execution:later|"lastPrice":111/);
+  assert.match(laterBlocks, /后续减仓/);
+  assert.match(laterBlocks, /execution:later/);
+  assert.match(laterBlocks, /"lastPrice":111/);
+  assert.equal(Object.keys(contexts).some((key) => key.includes("review-cycle-checkpoints")), false);
+  assert.equal(Object.keys(contexts).some((key) => key.includes("review-cycle-technical")), false);
+  for (const [key, block] of Object.entries(contexts)) {
+    assert.equal(block.value.length <= 3_000, true);
+    if (key !== "trading-cockpit-instructions") assert.doesNotThrow(() => JSON.parse(block.value));
+  }
+  const prompt = buildWorkspacePrompt(evidence);
+  assert.match(prompt, /节点证据胶囊/);
+  assert.match(prompt, /不得声称模型在物理上看不到后续胶囊/);
+  assert.match(prompt, /严禁把晚节点行动、券商事实或技术快照倒灌到早节点/);
+});
+
+test("fragmented decision node contexts reconstruct byte-for-byte without silent loss", () => {
+  const longAction = `ACTION-BEGIN-${"节点证据".repeat(2_000)}-ACTION-END`;
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-decision-cycles 校验大节点",
+    run: {
+      context: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        reviewCycleId: "cycle-large-node",
+        reviewPhase: "blind",
+      },
+      analysisContext: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        phase: "blind",
+        timeFirewall: { futureEvidencePhysicallyExcluded: true },
+        pointInTimeTechnical: { status: "unavailable", nodes: [] },
+        cycle: {
+          id: "cycle-large-node",
+          type: "position_lifecycle",
+          sealedExAnte: { userOriginal: { myView: "初始" } },
+          orders: [],
+          executions: [],
+          checkpoints: [],
+          decisionTimeline: [{
+            nodeId: "large-node",
+            timelineIndex: 0,
+            knowledgeCutoffAt: "2026-08-02T00:00:00.000Z",
+            action: longAction,
+            brokerFactsIntroduced: { records: [], missingRecordIds: [] },
+            pointInTimeTechnical: { status: "unavailable", snapshots: [] },
+          }],
+        },
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+  const contexts = buildWorkspaceAdditionalContext(evidence, "大节点校验");
+  const fragments = Object.entries(contexts)
+    .filter(([key]) => key.startsWith("trading-cockpit-review-cycle-timeline-node-001"))
+    .map(([, block]) => JSON.parse(block.value))
+    .sort((left, right) => left.part - right.part);
+  assert.equal(fragments.length > 1, true);
+  assert.equal(fragments.every((item) => item.encoding === "json-fragment"), true);
+  assert.deepEqual(fragments.map((item) => item.part), Array.from({ length: fragments.length }, (_, index) => index + 1));
+  assert.equal(fragments.every((item) => item.parts === fragments.length), true);
+  const reconstructed = JSON.parse(fragments.map((item) => item.fragment).join(""));
+  assert.equal(reconstructed.node.action, longAction);
+  assert.equal(reconstructed.node.nodeId, "large-node");
+});
+
+test("decision-cycle outcome evidence carries the frozen blind assessment in a separate block", () => {
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-decision-cycles 阶段二结果归因",
+    run: {
+      context: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        reviewCycleId: "cycle-2",
+        reviewPhase: "outcome",
+      },
+      analysisContext: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        phase: "outcome",
+        deterministicOutcomeMetrics: {
+          status: "partial",
+          executionPnl: {
+            linkedRoundTripGrossPnl: 320,
+            accountRealizedGrossPnl: null,
+            reason: "starting_inventory_not_proven_zero_linked_round_trip_only",
+          },
+          pricePath: {
+            symbols: [{ symbol: "AAOI.US", periodReturnPercent: 8 }],
+            benchmarkMetrics: { symbol: "QQQ.US", periodReturnPercent: 3 },
+            excessReturns: [{ symbol: "AAOI.US", valuePercent: 5 }],
+          },
+          coverage: { reasons: [] },
+          provenance: { deterministicHostCalculation: true, modelLookupAllowedAsMetricSubstitute: false },
+        },
+        cycle: {
+          id: "cycle-2",
+          orders: [],
+          executions: [],
+          checkpoints: [],
+          blindAssessment: { assessmentId: "blind-1", summary: "当时判断冻结", frozen: true },
+          outcome: { pnl: 320 },
+        },
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+  const contexts = buildWorkspaceAdditionalContext(evidence, "结果复盘指令");
+  const outcome = Object.entries(contexts).find(([key]) => key.includes("review-cycle-outcome") && !key.includes("outcome-metrics"));
+  assert.ok(outcome);
+  assert.match(outcome[1].value, /当时判断冻结/);
+  assert.match(outcome[1].value, /"pnl":320/);
+  const metrics = Object.entries(contexts).find(([key]) => key.includes("review-cycle-outcome-metrics"));
+  assert.ok(metrics);
+  assert.match(metrics[1].value, /linkedRoundTripGrossPnl/);
+  assert.match(metrics[1].value, /modelLookupAllowedAsMetricSubstitute/);
+  assert.match(buildWorkspacePrompt(evidence), /先原样引用已冻结的 blindAssessment/);
+  assert.match(buildWorkspacePrompt(evidence), /禁止用网页、MCP 临时查询或当前持仓补成确定性指标/);
+});
+
+test("explicit Buy-to-Sell trade paths reach Codex as bounded semantic blocks without duplicating long segments", () => {
+  const segments = Array.from({ length: 220 }, (_, index) => ({
+    index: index + 1,
+    startTradeDate: `2026-06-${String((index % 28) + 1).padStart(2, "0")}`,
+    endTradeDate: `2026-06-${String((index % 28) + 1).padStart(2, "0")}`,
+    tradingDayCount: 3,
+    firstClose: 100 + index,
+    lastClose: 101 + index,
+    closeReturnPercent: 1,
+    direction: "up",
+  }));
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-decision-cycles 复盘框选交易价格路径",
+    run: {
+      context: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        reviewCycleId: "cycle-trade-path",
+        reviewPhase: "retrospective",
+      },
+      analysisContext: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        phase: "retrospective",
+        deterministicOutcomeMetrics: {
+          status: "partial",
+          executionPnl: { status: "partial", linkedRoundTripGrossPnl: 120 },
+          tradePricePath: {
+            schemaVersion: 1,
+            status: "partial",
+            reason: "selected_position_remains_open",
+            symbol: "AAOI.US",
+            positionStatus: "partially_closed",
+            window: {
+              startAt: "2026-06-01T14:00:00.000Z",
+              endAt: "2026-08-01T21:00:00.000Z",
+              boundaryPolicy: "earliest_selected_buy_to_latest_selected_sell",
+            },
+            activities: [
+              { id: "execution:buy", side: "buy", quantity: 100, price: 100, at: "2026-06-01T14:00:00.000Z" },
+              { id: "execution:sell", side: "sell", quantity: 20, price: 106, at: "2026-08-01T21:00:00.000Z" },
+            ],
+            lots: [{ id: "lot-1", originalQuantity: 100, matchedQuantity: 20, openQuantity: 80 }],
+            cycles: [{ id: "cycle-1", quantity: 20, grossPnl: 120, pricePath: { status: "available", trend: { segments } } }],
+            metrics: { realizedQuantity: 20, openQuantity: 80, linkedSelectionGrossPnl: 120 },
+            pricePath: {
+              status: "available",
+              periodReturnPercent: 6,
+              trend: { granularity: "3_trading_days", segmentTradingDays: 3, segmentCount: segments.length, segments },
+            },
+            coverage: { selectedOnly: true, timezone: "America/New_York" },
+          },
+          coverage: { reasons: [] },
+        },
+        cycle: {
+          id: "cycle-trade-path",
+          type: "trade_window",
+          evidenceRevision: 3,
+          brokerAssociation: { evidenceRevision: 3 },
+          orders: [],
+          executions: [],
+          checkpoints: [],
+        },
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+
+  const contexts = buildWorkspaceAdditionalContext(evidence, buildWorkspacePrompt(evidence));
+  const segmentBlocks = Object.entries(contexts)
+    .filter(([key]) => key.startsWith("trading-cockpit-review-cycle-trade-path-segments-"))
+    .map(([, block]) => JSON.parse(block.value))
+    .sort((left, right) => left.part - right.part);
+  assert.equal(segmentBlocks.length > 1, true);
+  const deliveredSegments = segmentBlocks.flatMap((item) => item.segments);
+  assert.equal(deliveredSegments.length, 180);
+  assert.deepEqual(deliveredSegments.slice(0, 90), segments.slice(0, 90));
+  assert.deepEqual(deliveredSegments.slice(-90), segments.slice(-90));
+  assert.equal(segmentBlocks.every((item) => item.sourceCount === 220), true);
+  assert.equal(segmentBlocks.every((item) => item.deliveredCount === 180), true);
+  assert.equal(segmentBlocks.every((item) => item.omittedCount === 40), true);
+  assert.equal(segmentBlocks.every((item) => item.deliveryPolicy === "bounded_head_and_tail_preserving_window_boundaries"), true);
+  assert.equal(segmentBlocks.every((item) => item.segmentTradingDays === 3), true);
+  const fifoSegmentBlocks = Object.entries(contexts)
+    .filter(([key]) => key.startsWith("trading-cockpit-review-cycle-trade-path-fifo-cycle-segments-"))
+    .map(([, block]) => JSON.parse(block.value))
+    .sort((left, right) => left.part - right.part);
+  assert.equal(fifoSegmentBlocks.length > 1, true);
+  assert.deepEqual(
+    fifoSegmentBlocks.flatMap((item) => item.cycleSegments).map((item) => item.segment),
+    segments,
+  );
+  assert.equal(fifoSegmentBlocks.every((item) => item.cycleSegments.every((segment) => segment.fifoCycleId === "cycle-1")), true);
+  const meta = Object.entries(contexts).find(([key]) => key === "trading-cockpit-review-cycle-trade-path-meta");
+  assert.ok(meta);
+  assert.match(meta[1].value, /earliest_selected_buy_to_latest_selected_sell/);
+  assert.match(meta[1].value, /"omittedCount":40/);
+  assert.doesNotMatch(meta[1].value, /"segments"/);
+  const outcomeMetricText = Object.entries(contexts)
+    .filter(([key]) => key.startsWith("trading-cockpit-review-cycle-outcome-metrics"))
+    .map(([, block]) => block.value)
+    .join("\n");
+  assert.doesNotMatch(outcomeMetricText, /tradePricePath|"segments"/);
+  for (const [key, block] of Object.entries(contexts)) {
+    assert.equal(block.value.length <= 3_000, true, key);
+    if (key !== "trading-cockpit-instructions") assert.doesNotThrow(() => JSON.parse(block.value), key);
+  }
+  const prompt = buildWorkspacePrompt(evidence);
+  assert.match(prompt, /明确框选订单\/成交所定义 Buy→Sell 窗口/);
+  assert.match(prompt, /系统补充的父订单或同单成交不得扩窗/);
+  assert.match(prompt, /连续 3 交易日分段/);
+  assert.match(prompt, /禁止另查历史首笔交易或替代窗口/);
+});
+
+test("order-first retrospective evidence exposes metrics without claiming a blind cutoff or baseline", () => {
+  const evidence = buildCodexEvidence({
+    portfolio: null,
+    task: "$review-decision-cycles 直接事后复盘",
+    run: {
+      context: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        reviewCycleId: "cycle-retro",
+        reviewPhase: "retrospective",
+      },
+      analysisContext: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        phase: "retrospective",
+        timeFirewall: {
+          cutoffAt: null,
+          cycleEvidenceEndAt: "2026-08-10T23:59:59.000Z",
+          retrospectiveHasNoKnowledgeCutoff: true,
+        },
+        deterministicOutcomeMetrics: {
+          status: "available",
+          executionPnl: { linkedRoundTripGrossPnl: 200 },
+          coverage: { loadedSymbols: [{ symbol: "NVDA.US" }] },
+        },
+        cycle: {
+          id: "cycle-retro",
+          type: "trade_window",
+          reviewMode: "lightweight",
+          evidenceGrade: "retrospective",
+          sealedExAnte: null,
+          blindAssessment: null,
+          orders: [{ side: "Buy", quantity: 100, submittedAt: "2026-08-01T12:00:00Z" }],
+          executions: [{ side: "Buy", quantity: 100, price: 100, doneAt: "2026-08-01T12:01:00Z" }],
+          checkpoints: [],
+          outcome: null,
+        },
+      },
+      evidence: [],
+      plan: { available: false },
+    },
+  });
+  const contexts = buildWorkspaceAdditionalContext(evidence, "订单优先复盘");
+  const all = Object.values(contexts).map((item) => item.value).join("\n");
+  assert.match(all, /cycleEvidenceEndAt/);
+  assert.match(all, /linkedRoundTripGrossPnl/);
+  assert.match(all, /"evidenceGrade":"retrospective"/);
+  assert.doesNotMatch(all, /"cutoffAt":"2026-08-10/);
+  const prompt = buildWorkspacePrompt(evidence);
+  assert.match(prompt, /订单优先的直接事后复盘/);
+  assert.match(prompt, /没有 knowledge cutoff、冻结事前基线或 blindAssessment/);
+  assert.match(prompt, /不得把事后解释改写成当时判断/);
+});
 
 test("history exposes one aggregated assistant answer and hides commentary segments", () => {
   const transcript = extractThreadTranscript([{ items: [
@@ -188,6 +706,49 @@ test("analyze fails closed only when an unguarded Longbridge write tool remains 
   }), /尚未被线程配置禁用的长桥交易写能力/);
   assert.equal(service.rpc.calls.some((call) => call.method === "turn/start"), false);
   service.dispose();
+});
+
+test("a newly named Longbridge order-write tool fails closed even on a configured guarded server", async () => {
+  const service = new CodexWorkspaceService({
+    codexPath: "/fake/codex",
+    workspaceDirectory: "/tmp/stock-agent-workspace",
+    store: new MemoryStore(),
+    rpcFactory: (options) => new GuardedNovelWriteRpc(options),
+  });
+  await service.prepare();
+
+  assert.equal(service.status().readOnlyGuardReady, false);
+  assert.deepEqual(service.capabilities().readOnlyGuard.residualTools, [{
+    server: "broker_data",
+    tool: "submit_bracket_order",
+  }]);
+  await assert.rejects(service.analyze({
+    portfolio: portfolioFixture(),
+    run: runFixture(),
+    task: "只读分析",
+  }), /尚未被线程配置禁用的长桥交易写能力/);
+  service.dispose();
+});
+
+test("an unknown Longbridge tool fails closed even when the server labels it read-only", async () => {
+  const blocked = new CodexWorkspaceService({
+    codexPath: "/fake/codex",
+    workspaceDirectory: "/tmp/stock-agent-workspace",
+    store: new MemoryStore(),
+    rpcFactory: (options) => new GuardedUnknownToolRpc(options),
+  });
+  await blocked.prepare();
+  assert.equal(blocked.status().readOnlyGuardReady, false);
+  assert.deepEqual(blocked.capabilities().readOnlyGuard.residualTools, [{
+    server: "broker_data",
+    tool: "buy_stock",
+  }]);
+  await assert.rejects(blocked.analyze({
+    portfolio: portfolioFixture(),
+    run: runFixture(),
+    task: "只读分析",
+  }), /尚未被线程配置禁用的长桥交易写能力/);
+  blocked.dispose();
 });
 
 test("Codex workspace resumes the saved project thread after an app restart", async () => {
@@ -535,6 +1096,55 @@ test("candidate LLM sizing is accepted subject only to validated risk envelopes"
   assert.match(enriched.plan.scenarios[0].then, /初始新增 1%/);
 });
 
+test("explicit margin_within_cap can use buying power but never exceed 150 percent gross", () => {
+  const run = candidateRunFixture();
+  run.risk.cashConstrainedWeightPercent = 0;
+  run.risk.hardMaxAdditionalWeightPercent = 1;
+  run.risk.hardMaxTotalWeightPercent = 1;
+  run.risk.portfolioConstraints.grossExposurePercent = 149;
+  run.risk.portfolioConstraints.groupExposure.push({ key: "新主题", weight: 0 });
+  const enriched = applyCodexWorkspaceAnalysis(
+    run,
+    candidateWorkspaceAnalysis({
+      candidateGroupKey: "新主题",
+      recommendedInitialAdditionalWeightPercent: 2,
+      recommendedMaxTotalWeightPercent: 5,
+      leverageDecision: "margin_within_cap",
+    }),
+  );
+
+  assert.equal(enriched.risk.sizingReview.status, "bounded");
+  assert.equal(enriched.risk.recommendedInitialAdditionalWeightPercent, 1);
+  assert.equal(enriched.risk.recommendedMaxWeightPercent, 1);
+  assert.equal(enriched.risk.leverage.decision, "margin_within_cap");
+  assert.equal(enriched.risk.leverage.additionalLeverageAllowed, true);
+  assert.equal(enriched.risk.leverage.maxAdditionalBorrowedWeightPercent, 1);
+  assert.equal(enriched.risk.leverage.projectedGrossAtMaxPercent, 150);
+  assert.ok(enriched.risk.sizingReview.limitBindings.includes("gross_exposure"));
+});
+
+test("margin_within_cap fails closed when buying power is not verifiable", () => {
+  const run = candidateRunFixture();
+  run.risk.cashConstrainedWeightPercent = 0;
+  run.risk.buyPowerValid = false;
+  run.risk.buyPowerWeightPercent = null;
+  run.risk.leverage.marginEligible = false;
+  run.risk.portfolioConstraints.groupExposure.push({ key: "新主题", weight: 0 });
+  const enriched = applyCodexWorkspaceAnalysis(
+    run,
+    candidateWorkspaceAnalysis({
+      candidateGroupKey: "新主题",
+      recommendedInitialAdditionalWeightPercent: 2,
+      recommendedMaxTotalWeightPercent: 5,
+      leverageDecision: "margin_within_cap",
+    }),
+  );
+
+  assert.equal(enriched.risk.sizingReview.status, "blocked");
+  assert.equal(enriched.risk.leverage.additionalLeverageAllowed, false);
+  assert.match(enriched.risk.sizingReview.rationale, /购买力/);
+});
+
 test("unmatched candidate themes use the worst existing theme exposure instead of zero", () => {
   const enriched = applyCodexWorkspaceAnalysis(
     candidateRunFixture(),
@@ -865,12 +1475,16 @@ test("candidate turns request structured Markdown plus a bounded sizing review",
   assert.equal(turn.params.outputSchema.properties.analysisMarkdown.type, "string");
   assert.deepEqual(
     turn.params.outputSchema.properties.candidateSizing.properties.leverageDecision.enum,
-    ["cash_only", "disabled"],
+    ["cash_only", "margin_within_cap", "disabled"],
   );
   assert.deepEqual(
     turn.params.outputSchema.properties.candidateSizing.properties.fibReview
-      .properties.decision.enum,
+      .anyOf[0].properties.decision.enum,
     ["use_auto", "override", "ignore", "insufficient_evidence"],
+  );
+  assert.equal(
+    turn.params.outputSchema.properties.candidateSizing.properties.fibReview.anyOf[1].type,
+    "null",
   );
   assert.equal(turn.params.input.some((item) => item.type === "skill"
     && item.name === "analyze-market-narratives"), true);
@@ -879,12 +1493,216 @@ test("candidate turns request structured Markdown plus a bounded sizing review",
   service.dispose();
 });
 
+test("review turns automatically attach the project review and narrative skills", async () => {
+  const store = new MemoryStore();
+  const rpcInstances = [];
+  const service = createService({ store, rpcInstances });
+  await service.prepare();
+  await service.analyze({
+    portfolio: null,
+    task: "复盘已选择的财报订单",
+    run: {
+      id: "review-run-1",
+      state: "REVIEW_READY",
+      context: { scope: "review", reviewCaseIds: ["case-1"] },
+      analysisContext: {
+        scope: "review",
+        cases: [{ id: "case-1", symbol: "NVDA.US" }],
+        brokerRecords: [{ kind: "execution", recordId: "trade-1" }],
+      },
+      evidence: [],
+      safeguards: { orderWrite: false },
+      capabilities: {},
+      plan: { available: false },
+      sections: ["conclusion", "evidence"],
+    },
+  });
+  const turn = rpcInstances[0].calls.find((call) => call.method === "turn/start");
+  assert.equal(turn.params.outputSchema, undefined);
+  assert.equal(turn.params.input.some((item) => item.type === "skill"
+    && item.name === "review-earnings-decisions"), true);
+  assert.equal(turn.params.input.some((item) => item.type === "skill"
+    && item.name === "analyze-market-narratives"), true);
+  assert.equal(turn.params.input.some((item) => item.type === "skill"
+    && item.name === "analyze-technical-structure"), false);
+  service.dispose();
+});
+
+test("decision-cycle turns automatically attach the cycle review skill instead of the legacy earnings skill", async () => {
+  const store = new MemoryStore();
+  const rpcInstances = [];
+  const service = createService({ store, rpcInstances });
+  await service.prepare();
+  await service.analyze({
+    portfolio: null,
+    task: "继续盲态复盘",
+    run: {
+      id: "cycle-run-1",
+      state: "REVIEW_CYCLE_BLIND_READY",
+      context: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        reviewCycleId: "cycle-1",
+        reviewPhase: "blind",
+      },
+      analysisContext: {
+        scope: "review",
+        reviewProtocol: "decision_cycle",
+        phase: "blind",
+        cycle: { id: "cycle-1", orders: [], executions: [], checkpoints: [] },
+      },
+      evidence: [],
+      safeguards: { orderWrite: false },
+      capabilities: {},
+      plan: { available: false },
+      sections: ["conclusion", "evidence"],
+    },
+  });
+  const turn = rpcInstances[0].calls.find((call) => call.method === "turn/start");
+  assert.equal(turn.params.input.some((item) => item.type === "skill"
+    && item.name === "review-decision-cycles"), true);
+  assert.equal(turn.params.input.some((item) => item.type === "skill"
+    && item.name === "review-earnings-decisions"), false);
+  service.dispose();
+});
+
+test("retrospective and outcome review turns request an optional structured learning proposal while blind stays unstructured", async () => {
+  for (const phase of ["retrospective", "outcome", "blind"]) {
+    const store = new MemoryStore();
+    const rpcInstances = [];
+    const service = createService({ store, rpcInstances });
+    await service.prepare();
+    const analysis = await service.analyze({
+      portfolio: null,
+      task: `${phase} 复盘`,
+      run: decisionCycleRunFixture(phase),
+    });
+    const turn = rpcInstances[0].calls.find((call) => call.method === "turn/start");
+    if (phase === "blind") {
+      assert.equal(turn.params.outputSchema, undefined);
+    } else {
+      const schema = turn.params.outputSchema;
+      assert.equal(schema.properties.analysisMarkdown.type, "string");
+      assert.deepEqual(schema.required, ["analysisMarkdown", "learningProposal"]);
+      const proposal = schema.properties.learningProposal.anyOf[0];
+      assert.deepEqual(proposal.required, [
+        "hypothesis",
+        "evidenceSummary",
+        "testDesign",
+        "candidateRule",
+        "confidence",
+        "caveats",
+        "evidencePosture",
+      ]);
+      assert.deepEqual(proposal.properties.testDesign.required, [
+        "metric", "window", "minCases", "inclusion", "exclusion", "successCriteria",
+      ]);
+      assert.deepEqual(proposal.properties.candidateRule.required, [
+        "title", "action", "invalidation", "scope",
+      ]);
+      assert.deepEqual(proposal.properties.evidencePosture.enum, ["retrospective_not_ex_ante"]);
+      assert.match(turn.params.additionalContext["trading-cockpit-instructions"].value, /learningProposal/);
+      assert.match(turn.params.additionalContext["trading-cockpit-instructions"].value, /不能冒充或回写为事前判断/);
+      assert.equal(analysis.learningProposal, null, "plain Markdown remains a backward-compatible response");
+    }
+    service.dispose();
+  }
+});
+
+test("structured review learning proposals are normalized and remain explicitly retrospective", async () => {
+  const response = JSON.stringify({
+    analysisMarkdown: "# 复盘结论\n\n动作需要通过更多样本验证。",
+    learningProposal: {
+      hypothesis: "财报后首日不追高可改善赔率",
+      evidenceSummary: "当前案例的追高仓位出现较大不利路径。",
+      testDesign: {
+        metric: "T+5 超额收益与 MAE",
+        window: "财报后 T+1 至 T+5",
+        minCases: 12,
+        inclusion: "存在已关联订单和完整日线的财报交易",
+        exclusion: "停牌或行情覆盖不完整",
+        successCriteria: "中位超额收益提高且 MAE 下降",
+      },
+      candidateRule: {
+        title: "财报首日追高冷静期",
+        action: "首日不新增战术仓",
+        invalidation: "次日放量站稳事件高点",
+        scope: "美股财报催化交易",
+      },
+      confidence: "medium",
+      caveats: ["当前仅有单案例"],
+      evidencePosture: "prospective",
+    },
+  });
+  const service = new CodexWorkspaceService({
+    codexPath: "/fake/codex",
+    workspaceDirectory: "/tmp/stock-agent-workspace",
+    store: new MemoryStore(),
+    rpcFactory: (options) => new StructuredReviewRpc(options, response),
+  });
+  await service.prepare();
+  const run = decisionCycleRunFixture("retrospective");
+  const analysis = await service.analyze({ portfolio: null, run, task: "直接事后复盘" });
+  assert.match(analysis.text, /动作需要通过更多样本验证/);
+  assert.equal(analysis.learningProposal.testDesign.minCases, 12);
+  assert.equal(analysis.learningProposal.evidencePosture, "retrospective_not_ex_ante");
+  assert.match(analysis.learningProposal.caveats.at(-1), /不得冒充、覆盖或回写为事前判断/);
+
+  const enriched = applyCodexWorkspaceAnalysis(run, analysis);
+  assert.equal(enriched.learningProposal.candidateRule.title, "财报首日追高冷静期");
+  assert.equal(enriched.learningProposal.evidencePosture, "retrospective_not_ex_ante");
+  assert.equal(enriched.conclusion.headline, "复盘结论");
+
+  const blind = applyCodexWorkspaceAnalysis(decisionCycleRunFixture("blind"), analysis);
+  assert.equal(Object.hasOwn(blind, "learningProposal"), false, "blind review cannot receive retrospective learning output");
+  const malformed = applyCodexWorkspaceAnalysis(run, {
+    ...analysis,
+    learningProposal: {
+      ...analysis.learningProposal,
+      testDesign: { ...analysis.learningProposal.testDesign, minCases: 0 },
+    },
+  });
+  assert.equal(Object.hasOwn(malformed, "learningProposal"), false, "invalid test design is rejected instead of silently repaired");
+  service.dispose();
+});
+
+function decisionCycleRunFixture(phase) {
+  return {
+    id: `cycle-${phase}`,
+    state: `REVIEW_CYCLE_${phase.toUpperCase()}_READY`,
+    context: {
+      scope: "review",
+      reviewProtocol: "decision_cycle",
+      reviewCycleId: `cycle-${phase}`,
+      reviewPhase: phase,
+    },
+    analysisContext: {
+      scope: "review",
+      reviewProtocol: "decision_cycle",
+      phase,
+      cycle: {
+        id: `cycle-${phase}`,
+        evidenceGrade: phase === "retrospective" ? "retrospective" : "prospective",
+        orders: [],
+        executions: [],
+        checkpoints: [],
+        blindAssessment: phase === "outcome" ? { summary: "冻结判断", frozen: true } : null,
+      },
+    },
+    evidence: [],
+    safeguards: { orderWrite: false },
+    capabilities: {},
+    plan: { available: false },
+    sections: ["conclusion", "evidence"],
+  };
+}
+
 test("composer markers map only to discovered Skills and accessible Apps", () => {
   const skills = [{ name: "risk", path: "/skills/risk/SKILL.md" }];
   const apps = [{ id: "research-app", name: "Research" }];
   assert.deepEqual(findRequestedSkills("$risk $missing", skills), [skills[0]]);
   assert.deepEqual(findRequestedApps("$research-app $missing", apps), [apps[0]]);
-  assert.match(expandAgentCommand("/technical 看日线"), /EMA 3\/5\/8\/13\/21/);
+  assert.match(expandAgentCommand("/technical 看日线"), /相对强弱|筹码/);
 });
 
 test("remaining context below two percent triggers persistent thread compaction", async () => {
@@ -1432,7 +2250,10 @@ test("a late turn/start response cannot cancel stable-final settlement", async (
       task: "迟到 start 响应也要交付 final",
       operationId: "operation-late-start-final",
     }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("late start stable final timed out")), 7_000)),
+    // The reconciliation contract itself is five seconds. Keep enough headroom
+    // for the full parallel desktop suite, where timer callbacks can be delayed
+    // by CPU-heavy store and crypto tests without changing service behaviour.
+    new Promise((_, reject) => setTimeout(() => reject(new Error("late start stable final timed out")), 15_000)),
   ]);
   assert.equal(analysis.text, "late start stable final");
   service.dispose();
@@ -1643,6 +2464,20 @@ class FakeRpc {
           enabled: true,
           scope: "user",
         },
+        {
+          name: "review-earnings-decisions",
+          path: "/skills/review-earnings-decisions/SKILL.md",
+          description: "Review selected earnings orders and validate rules",
+          enabled: true,
+          scope: "repo",
+        },
+        {
+          name: "review-decision-cycles",
+          path: "/skills/review-decision-cycles/SKILL.md",
+          description: "Review catalyst, position lifecycle, and monthly decision cycles",
+          enabled: true,
+          scope: "repo",
+        },
       ] }] };
     }
     if (method === "mcpServerStatus/list") {
@@ -1693,6 +2528,37 @@ class FakeRpc {
   respondError() {}
   dispose() {
     this.ready = false;
+  }
+}
+
+class StructuredReviewRpc extends FakeRpc {
+  constructor(options, response) {
+    super(options);
+    this.response = response;
+  }
+  async request(method, params) {
+    if (method !== "turn/start") return super.request(method, params);
+    this.calls.push({ method, params });
+    setImmediate(() => {
+      const item = {
+        type: "agentMessage",
+        id: "structured-review-message",
+        phase: "final_answer",
+        text: this.response,
+      };
+      this.options.onNotification({
+        method: "item/completed",
+        params: { threadId: "thr-persistent-1", turnId: "structured-review-turn", item },
+      });
+      this.options.onNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thr-persistent-1",
+          turn: { id: "structured-review-turn", status: "completed", items: [item] },
+        },
+      });
+    });
+    return { turn: { id: "structured-review-turn", status: "inProgress", items: [] } };
   }
 }
 
@@ -1768,6 +2634,35 @@ class UnguardedLongbridgeRpc extends FakeRpc {
       }] };
     }
     return super.request(method, params);
+  }
+}
+
+class GuardedNovelWriteRpc extends GuardedLongbridgeRpc {
+  async request(method, params) {
+    const result = await super.request(method, params);
+    if (method === "mcpServerStatus/list") {
+      result.data[0].tools.submit_bracket_order = {
+        name: "submit_bracket_order",
+        title: "Submit bracket order",
+        description: "Place a bracket order",
+      };
+    }
+    return result;
+  }
+}
+
+class GuardedUnknownToolRpc extends GuardedLongbridgeRpc {
+  async request(method, params) {
+    const result = await super.request(method, params);
+    if (method === "mcpServerStatus/list") {
+      result.data[0].tools.buy_stock = {
+        name: "buy_stock",
+        title: "Buy stock",
+        description: "Buy a stock",
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      };
+    }
+    return result;
   }
 }
 
@@ -2501,6 +3396,9 @@ function candidateRunFixture() {
       candidateGroupKnown: false,
       baseCurrency: "USD",
       riskBudgetPercent: 0.8,
+      cashConstrainedWeightPercent: 20,
+      buyPowerValid: true,
+      buyPowerWeightPercent: 200,
       hardMaxAdditionalWeightPercent: 10,
       hardMaxTotalWeightPercent: 10,
       recommendedInitialAdditionalWeightPercent: null,
@@ -2515,11 +3413,18 @@ function candidateRunFixture() {
         decision: "cash_only",
         additionalLeverageAllowed: false,
         maxAdditionalBorrowedWeightPercent: 0,
+        maxLeverageMultiple: 1.5,
+        marginEligible: true,
         disabledReasons: [],
       },
       portfolioConstraints: {
         groupExposure: [{ key: "半导体", weight: 29 }],
-        policyThresholds: { groupWarningPercent: 30 },
+        grossExposurePercent: 32,
+        policyThresholds: {
+          groupWarningPercent: 30,
+          grossWarningPercent: 120,
+          grossHardMaxPercent: 150,
+        },
       },
     },
     plan: {

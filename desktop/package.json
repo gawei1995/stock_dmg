@@ -1,6 +1,6 @@
 {
   "name": "trading-cockpit-desktop",
-  "version": "0.10.1",
+  "version": "0.18.1",
   "private": true,
   "description": "Local-first TradingView + Longbridge + trading agent cockpit",
   "author": "Gawei",

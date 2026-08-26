@@ -1,5 +1,19 @@
 import { calculateTechnical, round } from "./technical.mjs";
 
+const PORTFOLIO_RISK_POLICY = Object.freeze({
+  top1WarningPercent: 20,
+  top1CriticalPercent: 30,
+  top5WarningPercent: 60,
+  top5CriticalPercent: 80,
+  groupWarningPercent: 30,
+  groupCriticalPercent: 45,
+  grossWarningPercent: 120,
+  grossHardMaxPercent: 150,
+  grossCriticalPercent: 150,
+  maxLeverageMultiple: 1.5,
+  lowCashWarningPercent: 5,
+});
+
 // This module is a deterministic evidence builder, not a conversational
 // harness. Codex App Server owns the only Agent/thread/tool lifecycle.
 export async function buildAnalysisEvidence(options = {}) {
@@ -112,7 +126,7 @@ async function buildPositionEvidence({
         "candlesticks",
         technical.asOf ?? null,
         technical.calculationBarCount,
-        technical.capabilities?.fastEma ? "succeeded" : "degraded",
+        technical.capabilities?.officialBar ? "succeeded" : "degraded",
         `1D · OHLCV · 前复权 · 常规交易时段 · 最新输入 ${technical.lastBar?.status ?? "UNKNOWN"}${technical.provisional?.available ? "（未计入正式指标）" : ""}`,
       ),
     );
@@ -124,7 +138,7 @@ async function buildPositionEvidence({
     );
   }
 
-  notifyStage(onStage, "risk_plan", "正在计算 EMA、Fib、组合风险与条件计划");
+  notifyStage(onStage, "risk_plan", "正在整理市场证据、组合风险与条件计划");
   throwIfCancelled(signal);
 
   evidence.push(
@@ -164,8 +178,8 @@ async function buildPositionEvidence({
 
   const plan = buildConditionalPlan(position, technical, risk);
   const conclusion = buildConclusion(position, technical, risk, task, intent);
-  const hasUsableShortStructure = technical.ema?.[21] != null;
-  const state = !hasUsableShortStructure
+  const hasUsableMarketEvidence = candidateMarketEvidenceReady(technical);
+  const state = !hasUsableMarketEvidence
     ? "DEGRADED"
     : technical.status === "complete" && risk.supported && risk.portfolioValuationComplete
       ? "REVIEW_READY"
@@ -270,7 +284,7 @@ async function buildCandidateEvidence({
         "candlesticks",
         technical.asOf ?? null,
         technical.calculationBarCount,
-        technical.capabilities?.fastEma ? "succeeded" : "degraded",
+        technical.capabilities?.officialBar ? "succeeded" : "degraded",
         `1D · OHLCV · 前复权 · 常规交易时段 · 最新输入 ${technical.lastBar?.status ?? "UNKNOWN"}${technical.provisional?.available ? "（未计入正式指标）" : ""}`,
       ),
     );
@@ -282,7 +296,7 @@ async function buildCandidateEvidence({
     );
   }
 
-  notifyStage(onStage, "risk_plan", "正在计算候选 EMA、组合安全边界，并准备交给 Codex 评估 Fib 与仓位");
+  notifyStage(onStage, "risk_plan", "正在整理候选市场证据与组合安全边界，并交给 Codex 独立评估");
   throwIfCancelled(signal);
   appendTechnicalEvidence(evidence, technical);
 
@@ -313,13 +327,13 @@ async function buildCandidateEvidence({
       1,
       risk.supported ? "succeeded" : "degraded",
       risk.supported
-        ? `本地仅给出硬安全上限 ${formatPercent(risk.hardMaxTotalWeightPercent)}；Fib、失效位与建议仓位由 Codex 评估`
+        ? `本地仅给出硬安全上限 ${formatPercent(risk.hardMaxTotalWeightPercent)}；证据权重、失效位与建议仓位由 Codex 评估`
         : risk.limitation,
     ),
   );
 
-  const hasUsableShortStructure = technical.ema?.[21] != null;
-  const state = !hasUsableShortStructure
+  const hasUsableMarketEvidence = candidateMarketEvidenceReady(technical);
+  const state = !hasUsableMarketEvidence
     ? "DEGRADED"
     : technical.status === "complete" && risk.supported
       ? "REVIEW_READY"
@@ -487,8 +501,13 @@ export function calculateCandidateRisk(
   const lastPrice = finiteOrNull(technical.lastPrice ?? target.lastPrice);
   const normalizedBudget = round(Number(riskBudgetPercent), 2);
   const cashRatio = finiteOrNull(portfolio.totals?.cashRatio);
-  const cashRatioValid = cashRatio != null && cashRatio >= 0;
-  const technicalPlanReady = candidateTechnicalPlanReady(technical);
+  const cashRatioValid = cashRatio != null;
+  const buyPower = finiteOrNull(portfolio.account?.buyPower);
+  const buyPowerValid = buyPower != null && buyPower >= 0;
+  const buyPowerWeight = buyPowerValid && netAssets > 0
+    ? (buyPower / netAssets) * 100
+    : null;
+  const technicalPlanReady = candidateMarketEvidenceReady(technical);
   const snapshotFresh = portfolio.freshness?.freshForSizing === true;
   const snapshotAtMs = Date.parse(String(portfolio.syncedAt ?? ""));
   const sizingValidUntil = snapshotFresh && Number.isFinite(snapshotAtMs)
@@ -517,10 +536,11 @@ export function calculateCandidateRisk(
       ? positiveHeadroom(thresholds.groupWarningPercent, groupWeight)
       : null,
     grossExposurePercent: positiveHeadroom(
-      thresholds.grossWarningPercent,
+      thresholds.grossHardMaxPercent,
       portfolioRisk.grossExposurePercent,
     ),
     cashFundedPercent: conservativeCashWeight,
+    brokerBuyPowerPercent: buyPowerWeight,
   };
   const inputSupported =
     target.instrumentType !== "option"
@@ -529,10 +549,11 @@ export function calculateCandidateRisk(
     && netAssets > 0
     && portfolioValuationComplete
     && cashRatioValid
+    && buyPowerValid
     && portfolioRisk.derivativeExposureComplete
     && snapshotFresh;
   const hardPortfolioBlockers = [
-    ...candidatePortfolioBlockers(portfolioRisk, cashRatio),
+    ...candidatePortfolioBlockers(portfolioRisk),
     ...(!snapshotFresh ? ["持仓快照已过期或来自缓存；可继续分析，但禁止输出可执行仓位"] : []),
   ];
   const safetyCeilings = [
@@ -545,9 +566,9 @@ export function calculateCandidateRisk(
     concentrationHeadroom.grossExposurePercent == null
       ? null
       : existingWeight + concentrationHeadroom.grossExposurePercent,
-    concentrationHeadroom.cashFundedPercent == null
+    concentrationHeadroom.brokerBuyPowerPercent == null
       ? null
-      : existingWeight + concentrationHeadroom.cashFundedPercent,
+      : existingWeight + concentrationHeadroom.brokerBuyPowerPercent,
     concentrationHeadroom.groupPercent == null
       ? null
       : existingWeight + concentrationHeadroom.groupPercent,
@@ -597,11 +618,12 @@ export function calculateCandidateRisk(
       lastPrice,
       technicalPlanReady,
       cashRatio,
+      buyPower,
       snapshotFresh,
       derivativeExposureComplete: portfolioRisk.derivativeExposureComplete,
     })] : []),
     ...(inputSupported && hardMaxAdditionalWeight === 0 && hardPortfolioBlockers.length === 0
-      ? ["现金、集中度或组合总暴露安全边界已没有新增仓位空间"]
+      ? ["购买力、集中度或组合毛暴露安全边界已没有新增仓位空间"]
       : []),
   ].filter(Boolean);
 
@@ -614,6 +636,7 @@ export function calculateCandidateRisk(
     snapshotAt: portfolio.syncedAt ?? null,
     sizingValidUntil,
     cashRatioValid,
+    buyPowerValid,
     derivativeExposureComplete: portfolioRisk.derivativeExposureComplete,
     instrumentType: target.instrumentType ?? "equity",
     limitation: supported ? null : entryBlockReasons[0] ?? "候选仓位评估证据不足。",
@@ -645,6 +668,8 @@ export function calculateCandidateRisk(
     cashConstrainedWeightPercent: conservativeCashWeight == null
       ? null
       : round(conservativeCashWeight, 2),
+    buyPowerValueBase: buyPower == null ? null : round(buyPower, 2),
+    buyPowerWeightPercent: buyPowerWeight == null ? null : round(buyPowerWeight, 2),
     cashBufferFloorPercent,
     hardMaxAdditionalWeightPercent: supported && hardMaxAdditionalWeight != null
       ? round(hardMaxAdditionalWeight, 2)
@@ -666,7 +691,7 @@ export function calculateCandidateRisk(
     concentrationHeadroom: roundedObject(concentrationHeadroom),
     portfolioConstraints: candidatePortfolioConstraints(portfolioRisk),
     leverage,
-    sizingNote: "本地引擎不再写死 2%/4% 或自动采用 Fib。Codex 依据叙事、技术 Skill 与可用 MCP 选择失效依据和建议仓位；本地只验证新鲜度、估值、现金、集中度、总暴露、风险预算与保证金硬边界。",
+    sizingNote: "本地引擎不写死指标权重、2%/4% 或 Fib/EMA 策略。Codex 可综合价格与成交量、相对强弱、成本/筹码结构、波动率、期权、板块与事件反应等证据选择失效依据和建议仓位；本地只验证新鲜度、估值、现金、集中度、总暴露、风险预算与保证金硬边界。",
   };
 }
 
@@ -677,6 +702,7 @@ function candidateInputLimitation({
   lastPrice,
   technicalPlanReady,
   cashRatio,
+  buyPower,
   snapshotFresh,
   derivativeExposureComplete,
 }) {
@@ -689,18 +715,20 @@ function candidateInputLimitation({
   if (!snapshotFresh) return "持仓快照已过期或来自缓存；可以继续研究，但不能给出可执行仓位。";
   if (!(netAssets > 0)) return "缺少可靠净资产，不能把风险预算换算为候选仓位上限。";
   if (cashRatio == null) return "缺少可靠现金比例；候选仓位与杠杆计算已关闭。";
-  if (cashRatio < 0) return "现金比例为负；候选仓位与杠杆计算已关闭。";
+  if (buyPower == null || buyPower < 0) {
+    return "缺少可靠购买力；候选仓位与杠杆计算已关闭。";
+  }
   if (!derivativeExposureComplete) {
     return "组合含期权，但当前快照缺少或尚未纳入 Delta/标的名义敞口；候选仓位与杠杆计算已关闭。";
   }
   if (!technicalPlanReady) {
-    return "候选日线证据未达到计划标准（至少需要有效 EMA21、最新收盘与时间戳）；不能给出仓位上限。";
+    return "候选市场证据未达到计划标准（需要足够的已收盘日线、最新收盘与可靠时间戳）；不能给出仓位上限。";
   }
   if (!(lastPrice > 0)) return "候选 K 线缺少可靠最新收盘价。";
   return null;
 }
 
-function candidatePortfolioBlockers(portfolioRisk, cashRatio) {
+function candidatePortfolioBlockers(portfolioRisk) {
   const blockers = [];
   if (!portfolioRisk.portfolioValuationComplete) blockers.push("组合估值不完整，暂停新增风险");
   if (!portfolioRisk.derivativeExposureComplete) {
@@ -709,10 +737,9 @@ function candidatePortfolioBlockers(portfolioRisk, cashRatio) {
   if (portfolioRisk.alerts.some((item) => item.code === "margin_call")) {
     blockers.push("账户存在追加保证金要求，禁止新增仓位或杠杆");
   }
-  if (cashRatio != null && cashRatio < 0) blockers.push("现金比例为负，禁止新增仓位或杠杆");
   if (portfolioRisk.grossExposurePercent != null
-    && portfolioRisk.grossExposurePercent >= portfolioRisk.policyThresholds.grossCriticalPercent) {
-    blockers.push("组合毛暴露已达到关键阈值，先降总风险再评估候选");
+    && portfolioRisk.grossExposurePercent >= portfolioRisk.policyThresholds.grossHardMaxPercent) {
+    blockers.push(`组合毛暴露已达到 ${portfolioRisk.policyThresholds.grossHardMaxPercent}% 硬上限，先降总风险再评估候选`);
   }
   const remainingCritical = portfolioRisk.alerts.filter((item) =>
     item.severity === "critical"
@@ -743,27 +770,48 @@ function buildCandidateLeverageAssessment({
     : currentGross + maxAdditionalWeight;
   const reasons = [
     ...hardPortfolioBlockers,
-    "新增融资仍需 Codex 明确评估；本地安全层不会凭购买力自动放大仓位",
   ];
   if (!candidateGroupKnown) reasons.push("候选主题尚未映射，不能验证与现有主题暴露的重叠程度");
   if (!inputSupported) reasons.push("仓位风险输入不完整，无法支持融资风险估算");
   if (!portfolioRisk.derivativeExposureComplete) {
     reasons.push("组合期权的 Delta/标的名义敞口未完整纳入组合风险，禁止新增杠杆");
   }
-  if (cashRatio != null && cashRatio < 5) reasons.push("现金缓冲低于 5%，不应使用新增杠杆");
-  if (currentGross != null && currentGross > 100) reasons.push("组合当前毛暴露已高于 100%，不得继续增加融资暴露");
+  if (cashRatio != null && cashRatio < 5) reasons.push("现金缓冲低于 5%，新增仓位需要显式融资复核");
+  if (awaitingModelReview && inputSupported && hardPortfolioBlockers.length === 0) {
+    reasons.push("融资只能由 Codex 显式选择 margin_within_cap，并由宿主按购买力与 150% 毛敞口硬上限裁剪");
+  }
+  const marginEligible = inputSupported
+    && hardPortfolioBlockers.length === 0
+    && currentGross != null
+    && currentGross < portfolioRisk.policyThresholds.grossHardMaxPercent
+    && finiteOrNull(maxAdditionalWeight) > 0;
+  const cashHeadroom = Math.max(0, finiteOrNull(cashRatio) ?? 0);
+  const potentialMaxAdditionalBorrowed = maxAdditionalWeight == null
+    ? null
+    : Math.max(
+        0,
+        maxAdditionalWeight
+          - Math.max(0, cashHeadroom - portfolioRisk.policyThresholds.lowCashWarningPercent),
+      );
 
   return {
     additionalLeverageAllowed: false,
     decision: entryAllowed ? "cash_only" : awaitingModelReview ? "model_review_required" : "disabled",
     maxAdditionalBorrowedWeightPercent: 0,
-    maxLeverageMultiple: 1,
-    recommendedGrossExposureCeilingPercent: 100,
+    potentialMaxAdditionalBorrowedWeightPercent: finiteRound(
+      potentialMaxAdditionalBorrowed,
+      2,
+    ),
+    maxLeverageMultiple: portfolioRisk.policyThresholds.maxLeverageMultiple,
+    recommendedGrossExposureCeilingPercent: portfolioRisk.policyThresholds.grossHardMaxPercent,
     reviewGrossExposureThresholdPercent: portfolioRisk.policyThresholds.grossWarningPercent,
+    marginEligible,
+    buyPowerValueBase: portfolioRisk.buyPower,
+    buyPowerWeightPercent: portfolioRisk.buyPowerWeightPercent,
     currentGrossExposurePercent: finiteRound(currentGross, 2),
     projectedGrossAtInitialPercent: finiteRound(projectedInitialGross, 2),
     projectedGrossAtMaxPercent: finiteRound(projectedMaxGross, 2),
-    brokerBuyPowerExcluded: true,
+    brokerBuyPowerExcluded: false,
     disabledReasons: [...new Set(reasons)],
     reconsiderationRequirements: [
       "由叙事 Skill 独立确认 Stage 2/3 与最大主题暴露",
@@ -782,6 +830,8 @@ function candidatePortfolioConstraints(portfolioRisk) {
     derivativeExposureLimitation: portfolioRisk.derivativeExposureLimitation,
     grossExposurePercent: portfolioRisk.grossExposurePercent,
     netExposurePercent: portfolioRisk.netExposurePercent,
+    buyPowerValueBase: portfolioRisk.buyPower,
+    buyPowerWeightPercent: portfolioRisk.buyPowerWeightPercent,
     top1WeightPercent: portfolioRisk.top1Weight,
     top5WeightPercent: portfolioRisk.top5Weight,
     cashRatioPercent: portfolioRisk.cashRatio,
@@ -797,19 +847,15 @@ function candidatePortfolioConstraints(portfolioRisk) {
   };
 }
 
-function candidateTechnicalPlanReady(technical) {
+function candidateMarketEvidenceReady(technical) {
   const candleCount = finiteOrNull(technical?.calculationBarCount);
   const lastPrice = finiteOrNull(technical?.lastPrice);
-  const ema21 = finiteOrNull(technical?.ema?.[21]);
   const asOfMs = Date.parse(String(technical?.asOf ?? ""));
-  return technical?.status !== "degraded"
-    && technical?.capabilities?.fastEma === true
-    && technical?.capabilities?.officialBar === true
+  return technical?.capabilities?.officialBar === true
     && technical?.lastBar?.status === "CLOSED"
     && technical?.timeframe === "1D"
-    && candleCount >= 21
+    && candleCount >= 20
     && lastPrice > 0
-    && ema21 > 0
     && Number.isFinite(asOfMs);
 }
 
@@ -863,6 +909,7 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
   const positions = portfolio.positions;
   const derivativeExposure = derivativeExposureCoverage(portfolio);
   const netAssets = finiteOrNull(portfolio.account?.netAssets);
+  const buyPower = finiteOrNull(portfolio.account?.buyPower);
   const valuationComplete = portfolio.dataQuality?.valuationComplete !== false;
   const grossExposurePercent = netAssets > 0
     && Number.isFinite(portfolio.totals?.positionsGrossMarketValueBase)
@@ -924,23 +971,44 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
     portfolio.totals?.unpricedPositionCount ?? null,
     0,
   ));
-  addThresholdAlert(alerts, "top1_concentration", "单一持仓集中度", top1Weight, 20, 30);
-  addThresholdAlert(alerts, "top5_concentration", "Top5 集中度", top5Weight, 60, 80);
+  addThresholdAlert(
+    alerts,
+    "top1_concentration",
+    "单一持仓集中度",
+    top1Weight,
+    PORTFOLIO_RISK_POLICY.top1WarningPercent,
+    PORTFOLIO_RISK_POLICY.top1CriticalPercent,
+  );
+  addThresholdAlert(
+    alerts,
+    "top5_concentration",
+    "Top5 集中度",
+    top5Weight,
+    PORTFOLIO_RISK_POLICY.top5WarningPercent,
+    PORTFOLIO_RISK_POLICY.top5CriticalPercent,
+  );
   addThresholdAlert(
     alerts,
     "group_concentration",
     `最大主题 ${groupExposure[0]?.key ?? "—"} 集中度`,
     groupExposure[0]?.weight,
-    30,
-    45,
+    PORTFOLIO_RISK_POLICY.groupWarningPercent,
+    PORTFOLIO_RISK_POLICY.groupCriticalPercent,
   );
-  addThresholdAlert(alerts, "gross_exposure", "组合总暴露", grossExposurePercent, 120, 160);
+  addThresholdAlert(
+    alerts,
+    "gross_exposure",
+    "组合总暴露",
+    grossExposurePercent,
+    PORTFOLIO_RISK_POLICY.grossWarningPercent,
+    PORTFOLIO_RISK_POLICY.grossHardMaxPercent,
+  );
   addAlert(
     cashRatio != null && cashRatio < 0,
-    riskAlert("negative_cash", "critical", "现金比例为负", cashRatio, 0),
+    riskAlert("negative_cash", "warning", "现金比例为负，组合正在使用融资", cashRatio, 0),
   );
   addAlert(
-    cashRatio != null && cashRatio >= 0 && cashRatio < 5,
+    cashRatio != null && cashRatio >= 0 && cashRatio < PORTFOLIO_RISK_POLICY.lowCashWarningPercent,
     riskAlert("low_cash", "warning", "现金缓冲低于 5%", cashRatio, 5),
   );
   addAlert(
@@ -978,6 +1046,10 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
       : "缺少持仓或可靠净资产，不能完成组合健康评估。",
     baseCurrency: portfolio.account?.baseCurrency ?? "USD",
     netAssets: netAssets == null ? null : round(netAssets, 2),
+    buyPower: buyPower == null ? null : round(buyPower, 2),
+    buyPowerWeightPercent: buyPower != null && buyPower >= 0 && netAssets > 0
+      ? round((buyPower / netAssets) * 100, 2)
+      : null,
     riskBudgetPercent: round(Number(riskBudgetPercent), 2),
     positionCount: positions.length,
     equityCount: positions.filter((item) => item.instrumentType !== "option").length,
@@ -1005,17 +1077,7 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
     currencyExposureNote: "币种暴露按已定价持仓的组合毛权重汇总；各币种现金保留原币金额单列，不把未知汇率强行换算。",
     largestPositions: sortedPositions.slice(0, 10).map(contextPosition),
     alerts,
-    policyThresholds: {
-      top1WarningPercent: 20,
-      top1CriticalPercent: 30,
-      top5WarningPercent: 60,
-      top5CriticalPercent: 80,
-      groupWarningPercent: 30,
-      groupCriticalPercent: 45,
-      grossWarningPercent: 120,
-      grossCriticalPercent: 160,
-      lowCashWarningPercent: 5,
-    },
+    policyThresholds: { ...PORTFOLIO_RISK_POLICY },
   };
 }
 
@@ -1040,6 +1102,7 @@ export function buildScopedAnalysisContext({
     sourceStatus: portfolio.status ?? "unknown",
     baseCurrency: portfolio.account?.baseCurrency ?? "USD",
     netAssets: finiteOrNull(portfolio.account?.netAssets),
+    buyPower: finiteOrNull(portfolio.account?.buyPower),
     cashRatioPercent: finiteOrNull(portfolio.totals?.cashRatio),
     top1WeightPercent: finiteOrNull(portfolio.totals?.top1Weight),
     top5WeightPercent: finiteOrNull(portfolio.totals?.top5Weight),
@@ -1292,21 +1355,7 @@ export function buildCandidatePlan(target, technical, risk) {
     };
   }
 
-  const ema = technical.ema;
-  const lastPrice = technical.lastPrice ?? target.lastPrice;
-  const overhead = [8, 13, 21]
-    .map((period) => ({ label: `EMA${period}`, level: ema[period] }))
-    .filter((item) => Number.isFinite(item.level) && item.level > lastPrice)
-    .sort((a, b) => a.level - b.level)[0];
-  const support = [8, 13, 21, 144, 169]
-    .map((period) => ({ label: `EMA${period}`, level: ema[period] }))
-    .filter((item) => Number.isFinite(item.level) && item.level < lastPrice)
-    .sort((a, b) => b.level - a.level)[0];
-  const baseLow = Math.min(ema[13] ?? ema[21], ema[21]);
-  const baseHigh = Math.max(ema[13] ?? ema[21], ema[21]);
-  const entryTrigger = overhead
-    ? `日线收盘站上 ${overhead.label} ${formatNumber(overhead.level)}，随后首次回踩不破`
-    : `回踩 ${support?.label ?? "EMA8"} ${formatNumber(support?.level ?? ema[8])} 附近止跌，EMA3/5 保持正斜率`;
+  const entryTrigger = "等待 Codex 综合价格/成交量、相对强弱、成本或筹码结构、波动与事件反应，选择可验证的入场触发";
   const invalidation = risk.referenceLevel != null
     ? `日线有效跌破 ${risk.referenceLabel} ${formatNumber(risk.referenceLevel)}`
     : "等待 Codex 基于技术/叙事证据选择失效依据；本地自动 Fib 不会单独充当止损位";
@@ -1339,7 +1388,7 @@ export function buildCandidatePlan(target, technical, risk) {
           name: "允许试探",
           tone: "bull",
           if: entryTrigger,
-          then: `等待 Codex 结合叙事、技术 Skill 与可用 MCP 给出建议仓位；本地硬安全总上限为 ${formatPercent(risk.hardMaxTotalWeightPercent)}`,
+          then: `等待 Codex 结合叙事、开放技术证据与可用 MCP 给出建议仓位；本地硬安全总上限为 ${formatPercent(risk.hardMaxTotalWeightPercent)}`,
           invalidation,
           impact: "LLM 尚未选择失效位，暂不计算风险预算仓位",
           status: "awaiting_model",
@@ -1347,9 +1396,9 @@ export function buildCandidatePlan(target, technical, risk) {
         {
           name: "等待",
           tone: "base",
-          if: `价格在 EMA13–EMA21 区域 ${formatNumber(baseLow)}–${formatNumber(baseHigh)} 内交错`,
-          then: "保持观察名单状态，不在区间中部追价",
-          invalidation: "快线重新有序，或日线收盘脱离区间",
+          if: "价格、量能、相对强弱、筹码/成本与事件反应尚未形成一致方向",
+          then: "保持观察名单状态；不因单一指标触发而追价",
+          invalidation: "至少两个独立证据族形成可复核的同向变化",
           impact: "未持有时组合影响为 0；已有仓位则冻结新增风险",
           status: "snapshot_only",
         },
@@ -1450,8 +1499,8 @@ export function buildPortfolioPlan(risk) {
       {
         name: "防守",
         tone: "bear",
-        if: "存在追加保证金、负现金、估值缺口或关键行情不可用",
-        then: "暂停新增风险，先恢复账户与估值完整性；所有操作由用户在长桥端确认",
+        if: "存在追加保证金、组合毛暴露达到 150% 硬上限、估值缺口或关键行情不可用",
+        then: "暂停新增风险，先恢复毛敞口、保证金与估值安全空间；所有操作由用户在长桥端确认",
         invalidation: "保证金与估值问题已消除，并重新同步完整快照",
         impact: risk.limitation ?? "优先保护组合可持续性",
         status: "snapshot_only",
@@ -1481,10 +1530,10 @@ function buildConclusion(position, technical, risk, task, intent) {
       posture: "映射正股与 Greeks 后再评估",
     };
   }
-  if (technical.ema?.[21] == null) {
+  if (!candidateMarketEvidenceReady(technical)) {
     return {
       headline: `${position.ticker} 仅完成仓位风险检查`,
-      body: `长桥仓位权重 ${formatPercent(risk.positionWeight)}；由于 K 线不足或请求失败，不编造 EMA、Fib 或交易触发。`,
+      body: `长桥仓位权重 ${formatPercent(risk.positionWeight)}；由于正式日线不足或请求失败，不编造技术指标或交易触发。`,
       posture: "等待完整证据",
     };
   }
@@ -1533,7 +1582,7 @@ function buildCandidateConclusion(target, technical, risk, task) {
   if (!risk.technicalPlanReady) {
     return {
       headline: `${target.ticker}：候选计划暂不可用`,
-      body: `${task}。日线证据未达到计划标准，未编造 EMA、Fib、入场位或仓位上限。${risk.limitation ? ` ${risk.limitation}` : ""}`,
+      body: `${task}。市场证据未达到计划标准，未编造技术指标、入场位或仓位上限。${risk.limitation ? ` ${risk.limitation}` : ""}`,
       posture: "保留观察，不建立仓位",
     };
   }
@@ -1541,7 +1590,7 @@ function buildCandidateConclusion(target, technical, risk, task) {
     ? `当前已有 ${formatPercent(risk.existingPositionWeight)} 持仓，本计划只针对新增风险。`
     : "当前未持有，触发前组合暴露为 0。";
   const sizingNote = risk.awaitingModelReview
-    ? `本地已验证账户与组合硬安全边界，最大总仓位不得超过 ${formatPercent(risk.hardMaxTotalWeightPercent)}；具体 Fib、失效位与建议仓位等待 Codex 判断。`
+    ? `本地已验证账户与组合硬安全边界，最大总仓位不得超过 ${formatPercent(risk.hardMaxTotalWeightPercent)}；具体证据权重、失效位与建议仓位等待 Codex 判断。`
     : risk.supported
       ? `当前新增风险被安全边界阻止：${risk.entryBlockReasons.join("；")}。`
       : risk.limitation;

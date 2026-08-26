@@ -28,6 +28,18 @@ const MAX_HISTORY_TEXT_BYTES = 60_000;
 const MAX_HISTORY_INDEX_TEXT_BYTES = 500_000;
 const MAX_HISTORY_TURNS_PER_THREAD = 240;
 const MAX_HISTORY_ENTRY_BYTES = 12_000;
+// Codex App Server may middle-truncate one large application context value.
+// Keep every review block comfortably below that boundary so broker facts and
+// user-authored decision evidence arrive as valid, independently parseable JSON.
+const MAX_APPLICATION_CONTEXT_CHARS = 3_000;
+// Price-path calculations remain complete in the host result. The model gets
+// a bounded, auditable head/tail projection so a long selection cannot turn
+// one review into an unbounded application-context payload.
+const MAX_TRADE_PATH_ACTIVITIES = 160;
+const MAX_TRADE_PATH_LOTS = 120;
+const MAX_TRADE_PATH_CYCLES = 120;
+const MAX_TRADE_PATH_SEGMENTS = 180;
+const MAX_TRADE_PATH_FIFO_SEGMENTS = 240;
 const TOOL_ITEM_TYPES = new Set([
   "commandExecution",
   "fileChange",
@@ -74,6 +86,20 @@ const BROKERAGE_WRITE_TOOLS = new Set([
 const OFFICIAL_LONGBRIDGE_HOSTS = new Set([
   "mcp.longbridge.com",
   "mcp.longbridge.cn",
+]);
+const LONGBRIDGE_READ_ONLY_TOOLS = new Set([
+  "account_balance",
+  "candlesticks",
+  "exchange_rate",
+  "finance_calendar",
+  "history_executions",
+  "history_orders",
+  "order_detail",
+  "option_quote",
+  "quote",
+  "stock_positions",
+  "today_executions",
+  "today_orders",
 ]);
 
 export class CodexWorkspaceService {
@@ -1284,7 +1310,12 @@ export class CodexWorkspaceService {
     const expandedTask = expandAgentCommand(task);
     const evidence = buildCodexEvidence({ portfolio, run, task: expandedTask });
     const prompt = buildWorkspacePrompt(evidence);
-    const requestedSkills = analysisSkillsForScope(task, this.skills, evidence.analysisScope);
+    const requestedSkills = analysisSkillsForScope(
+      task,
+      this.skills,
+      evidence.analysisScope,
+      evidence?.context?.reviewProtocol,
+    );
     const requestedApps = findRequestedApps(task, this.apps);
     const input = [
       // Keep the persisted user message clean so native history and title
@@ -1345,17 +1376,10 @@ export class CodexWorkspaceService {
         input,
         ...(evidence.analysisScope === "candidate"
           ? { outputSchema: candidateWorkspaceOutputSchema() }
-          : {}),
-        additionalContext: {
-          "trading-cockpit-instructions": {
-            kind: "application",
-            value: prompt,
-          },
-          "trading-cockpit-evidence": {
-            kind: "application",
-            value: JSON.stringify(evidence),
-          },
-        },
+          : supportsReviewLearningProposal(evidence)
+            ? { outputSchema: reviewLearningWorkspaceOutputSchema() }
+            : {}),
+        additionalContext: buildWorkspaceAdditionalContext(evidence, prompt),
       });
       const startOutcome = await Promise.race([
         startRequest.then(
@@ -1505,6 +1529,9 @@ export class CodexWorkspaceService {
       text: responseText,
       candidateSizing: evidence.analysisScope === "candidate"
         ? parsedResponse.candidateSizing
+        : null,
+      learningProposal: supportsReviewLearningProposal(evidence)
+        ? parsedResponse.learningProposal
         : null,
       provider: "Codex App Server",
       elapsedMs: Date.now() - startedAt,
@@ -2402,7 +2429,7 @@ export async function resolveCodexExecutable({
 }
 
 export function buildCodexEvidence({ portfolio, run, task }) {
-  const scope = ["position", "candidate", "portfolio"].includes(run?.context?.scope)
+  const scope = ["position", "candidate", "portfolio", "review"].includes(run?.context?.scope)
     ? run.context.scope
     : "position";
   const position = scope === "position"
@@ -2428,7 +2455,7 @@ export function buildCodexEvidence({ portfolio, run, task }) {
     project: {
       mode: "persistent_codex_workspace",
       workspace: "trading-agent-workspace",
-      portfolioBaseCurrency: portfolio.account?.baseCurrency ?? "USD",
+      portfolioBaseCurrency: portfolio?.account?.baseCurrency ?? "USD",
     },
     analysisScope: scope,
     context: run.context,
@@ -2440,10 +2467,10 @@ export function buildCodexEvidence({ portfolio, run, task }) {
       isHeld: Boolean(run?.context?.isHeld),
     } : null,
     portfolioRisk: {
-      baseCurrency: portfolio.account?.baseCurrency ?? "USD",
-      cashRatioPercent: finiteOrNull(portfolio.totals?.cashRatio),
-      top1WeightPercent: finiteOrNull(portfolio.totals?.top1Weight),
-      top5WeightPercent: finiteOrNull(portfolio.totals?.top5Weight),
+      baseCurrency: portfolio?.account?.baseCurrency ?? "USD",
+      cashRatioPercent: finiteOrNull(portfolio?.totals?.cashRatio),
+      top1WeightPercent: finiteOrNull(portfolio?.totals?.top1Weight),
+      top5WeightPercent: finiteOrNull(portfolio?.totals?.top5Weight),
       selectedGroupWeightPercent: finiteOrNull(run.risk?.groupWeight),
       riskBudgetPercent: finiteOrNull(run.risk?.riskBudgetPercent),
       referenceLabel: run.risk?.referenceLabel ?? null,
@@ -2454,31 +2481,482 @@ export function buildCodexEvidence({ portfolio, run, task }) {
     // Full holdings exist once, inside scopedContext.positions, and only for a
     // portfolio-wide review. Position/candidate turns receive one target plus
     // aggregate risk context, keeping the active thread focused and smaller.
-    technical: scope === "portfolio" ? null : run.technical,
+    technical: ["portfolio", "review"].includes(scope) ? null : run.technical,
     locallyVerifiedConditionalPlan: run.plan,
     dataQuality: {
-      portfolioStatus: portfolio.status,
-      valuationComplete: portfolio.dataQuality?.valuationComplete !== false,
-      fxStatus: portfolio.dataQuality?.fxStatus ?? "unknown",
-      fxProvider: portfolio.fx?.provider ?? null,
-      fxAsOf: portfolio.fx?.asOf ?? null,
+      portfolioStatus: portfolio?.status ?? "not_required_for_review",
+      valuationComplete: portfolio?.dataQuality?.valuationComplete !== false,
+      fxStatus: portfolio?.dataQuality?.fxStatus ?? "unknown",
+      fxProvider: portfolio?.fx?.provider ?? null,
+      fxAsOf: portfolio?.fx?.asOf ?? null,
       marketDataAsOf: run.context?.marketDataAsOf ?? null,
     },
     localEvidenceTrace: run.evidence,
   };
 }
 
+export function buildWorkspaceAdditionalContext(evidence, prompt) {
+  const contexts = {
+    "trading-cockpit-instructions": applicationContext(prompt),
+  };
+  if (evidence?.analysisScope !== "review") {
+    contexts["trading-cockpit-evidence"] = applicationContext(JSON.stringify(evidence));
+    return contexts;
+  }
+
+  const scoped = evidence?.scopedContext ?? {};
+  if (scoped.reviewProtocol === "decision_cycle") {
+    const cycle = scoped?.cycle ?? {};
+    const orders = Array.isArray(cycle.orders) ? cycle.orders : [];
+    const executions = Array.isArray(cycle.executions) ? cycle.executions : [];
+    const checkpoints = Array.isArray(cycle.checkpoints) ? cycle.checkpoints : [];
+    const decisionTimeline = Array.isArray(cycle.decisionTimeline) ? cycle.decisionTimeline : [];
+    const overview = {
+      ...evidence,
+      scopedContext: {
+        ...scoped,
+        pointInTimeTechnical: undefined,
+        cycle: {
+          ...cycle,
+          orders: undefined,
+          executions: undefined,
+          checkpoints: undefined,
+          decisionTimeline: undefined,
+          sealedExAnte: undefined,
+          blindAssessment: undefined,
+          outcome: undefined,
+          startingPortfolio: undefined,
+          endingPortfolio: undefined,
+          currentPortfolioContext: undefined,
+          portfolioCoverage: undefined,
+        },
+        deterministicOutcomeMetrics: undefined,
+      },
+      evidenceDelivery: {
+        format: "semantic_application_blocks",
+        protocol: "review-decision-cycles",
+        phase: scoped.phase,
+        note: scoped.phase === "blind" && decisionTimeline.length
+          ? "All blocks are valid JSON. The model receives all chronological node evidence capsules in this request, but each capsule contains only facts strictly earlier than that node's own knowledgeCutoffAt; cycle outcomes and facts after the last delivered node remain excluded."
+          : "All blocks are valid JSON. Blind blocks have already had post-cutoff facts physically removed by the host.",
+      },
+    };
+    addChunkedJsonContext(contexts, "trading-cockpit-evidence", overview);
+    addChunkedJsonContext(contexts, "trading-cockpit-review-cycle-sealed", {
+      cycleId: cycle.id ?? null,
+      phase: scoped.phase ?? null,
+      timeFirewall: scoped.timeFirewall ?? null,
+      sealedExAnte: cycle.sealedExAnte ?? null,
+      evidenceGrade: cycle.evidenceGrade ?? null,
+      startingPortfolio: cycle.startingPortfolio ?? null,
+    });
+    addChunkedArrayContext(
+      contexts,
+      "trading-cockpit-review-cycle-broker",
+      { cycleId: cycle.id ?? null, phase: scoped.phase ?? null },
+      "records",
+      [...orders, ...executions],
+    );
+    if (scoped.phase === "blind" && decisionTimeline.length) {
+      decisionTimeline
+        .slice()
+        .sort((left, right) => Number(left?.timelineIndex ?? 0) - Number(right?.timelineIndex ?? 0))
+        .forEach((node, index) => {
+          addChunkedJsonContext(
+            contexts,
+            `trading-cockpit-review-cycle-timeline-node-${String(index + 1).padStart(3, "0")}`,
+            {
+              capsuleKind: "decision_timeline_node",
+              sequence: index + 1,
+              totalNodes: decisionTimeline.length,
+              cycleId: cycle.id ?? null,
+              phase: "blind",
+              instruction: "只用本节点胶囊内、严格早于本节点 knowledgeCutoffAt 的事实评价该时点决策；完成并冻结本节点评价后，才处理下一节点。",
+              node,
+            },
+          );
+        });
+    } else {
+      addChunkedArrayContext(
+        contexts,
+        "trading-cockpit-review-cycle-checkpoints",
+        { cycleId: cycle.id ?? null, phase: scoped.phase ?? null },
+        "checkpoints",
+        checkpoints,
+      );
+      addChunkedArrayContext(
+        contexts,
+        "trading-cockpit-review-cycle-technical",
+        {
+          cycleId: cycle.id ?? null,
+          phase: scoped.phase ?? null,
+          status: scoped?.pointInTimeTechnical?.status ?? "unavailable",
+          asOf: scoped?.pointInTimeTechnical?.asOf ?? null,
+          cutoffPolicy: scoped?.pointInTimeTechnical?.cutoffPolicy ?? null,
+          requestedSymbols: scoped?.pointInTimeTechnical?.requestedSymbols ?? [],
+          omittedSymbols: scoped?.pointInTimeTechnical?.omittedSymbols ?? [],
+          warnings: scoped?.pointInTimeTechnical?.warnings ?? [],
+        },
+        "snapshots",
+        scoped?.pointInTimeTechnical?.snapshots ?? [],
+      );
+    }
+    if (["outcome", "retrospective"].includes(scoped.phase)) {
+      const deterministicOutcomeMetrics = scoped?.deterministicOutcomeMetrics ?? {
+        status: "unavailable",
+        coverage: { reasons: ["host_metrics_not_provided"] },
+        provenance: {
+          deterministicHostCalculation: true,
+          modelLookupAllowedAsMetricSubstitute: false,
+        },
+      };
+      const tradePricePath = deterministicOutcomeMetrics?.tradePricePath ?? null;
+      const outcomeMetricsWithoutTradePath = tradePricePath
+        ? { ...deterministicOutcomeMetrics, tradePricePath: undefined }
+        : deterministicOutcomeMetrics;
+      addChunkedJsonContext(contexts, "trading-cockpit-review-cycle-outcome-metrics", {
+        cycleId: cycle.id ?? null,
+        metrics: outcomeMetricsWithoutTradePath,
+      });
+      if (tradePricePath) {
+        const activities = boundedSemanticSequence(
+          tradePricePath.activities,
+          MAX_TRADE_PATH_ACTIVITIES,
+        );
+        const lots = boundedSemanticSequence(tradePricePath.lots, MAX_TRADE_PATH_LOTS);
+        const segments = boundedSemanticSequence(
+          Array.isArray(tradePricePath?.pricePath?.trend?.segments)
+          ? tradePricePath.pricePath.trend.segments
+          : [],
+          MAX_TRADE_PATH_SEGMENTS,
+        );
+        const rawCycles = Array.isArray(tradePricePath.cycles) ? tradePricePath.cycles : [];
+        const boundedRawCycles = boundedSemanticSequence(rawCycles, MAX_TRADE_PATH_CYCLES);
+        const cycleSegments = boundedSemanticSequence(boundedRawCycles.items.flatMap((item) => (
+          Array.isArray(item?.pricePath?.trend?.segments)
+            ? item.pricePath.trend.segments.map((segment) => ({
+              fifoCycleId: item.id ?? null,
+              buyActivityId: item.buyActivityId ?? null,
+              sellActivityId: item.sellActivityId ?? null,
+              segment,
+            }))
+            : []
+        )), MAX_TRADE_PATH_FIFO_SEGMENTS);
+        const cycles = boundedRawCycles.items.map((item) => ({
+          ...item,
+          pricePath: item?.pricePath ? {
+            ...item.pricePath,
+            trend: item?.pricePath?.trend ? {
+              ...item.pricePath.trend,
+              segments: undefined,
+            } : null,
+          } : null,
+        }));
+        addChunkedJsonContext(contexts, "trading-cockpit-review-cycle-trade-path-meta", {
+          cycleId: cycle.id ?? null,
+          phase: scoped.phase,
+          evidenceRevision: cycle?.brokerAssociation?.evidenceRevision ?? cycle?.evidenceRevision ?? null,
+          instruction: "Only the explicitly selected order/fill anchors define this Buy-to-Sell window. Supplemental parent or sibling records never expand it. Analyze the supplied daily or three-trading-session trend without substituting another historical window. If an agent-context sequence reports omittedCount, do not infer the omitted rows; use the complete host summary and explicitly disclose that row-level evidence was bounded.",
+          agentContextProjection: {
+            activities: semanticSequenceCoverage(activities),
+            lots: semanticSequenceCoverage(lots),
+            fifoCycles: semanticSequenceCoverage(boundedRawCycles),
+            overallSegments: semanticSequenceCoverage(segments),
+            fifoCycleSegments: semanticSequenceCoverage(cycleSegments),
+          },
+          tradePricePath: {
+            ...tradePricePath,
+            activities: undefined,
+            lots: undefined,
+            cycles: undefined,
+            pricePath: tradePricePath?.pricePath ? {
+              ...tradePricePath.pricePath,
+              trend: tradePricePath?.pricePath?.trend ? {
+                ...tradePricePath.pricePath.trend,
+                segments: undefined,
+              } : null,
+            } : null,
+          },
+        });
+        addChunkedArrayContext(
+          contexts,
+          "trading-cockpit-review-cycle-trade-path-activities",
+          {
+            cycleId: cycle.id ?? null,
+            phase: scoped.phase,
+            ...semanticSequenceCoverage(activities),
+          },
+          "activities",
+          activities.items,
+        );
+        addChunkedArrayContext(
+          contexts,
+          "trading-cockpit-review-cycle-trade-path-lots",
+          {
+            cycleId: cycle.id ?? null,
+            phase: scoped.phase,
+            ...semanticSequenceCoverage(lots),
+          },
+          "lots",
+          lots.items,
+        );
+        addChunkedArrayContext(
+          contexts,
+          "trading-cockpit-review-cycle-trade-path-cycles",
+          {
+            cycleId: cycle.id ?? null,
+            phase: scoped.phase,
+            ...semanticSequenceCoverage(boundedRawCycles),
+          },
+          "cycles",
+          cycles,
+        );
+        addChunkedArrayContext(
+          contexts,
+          "trading-cockpit-review-cycle-trade-path-segments",
+          {
+            cycleId: cycle.id ?? null,
+            phase: scoped.phase,
+            granularity: tradePricePath?.pricePath?.trend?.granularity ?? null,
+            segmentTradingDays: tradePricePath?.pricePath?.trend?.segmentTradingDays ?? null,
+            ...semanticSequenceCoverage(segments),
+          },
+          "segments",
+          segments.items,
+        );
+        addChunkedArrayContext(
+          contexts,
+          "trading-cockpit-review-cycle-trade-path-fifo-cycle-segments",
+          {
+            cycleId: cycle.id ?? null,
+            phase: scoped.phase,
+            ...semanticSequenceCoverage(cycleSegments),
+          },
+          "cycleSegments",
+          cycleSegments.items,
+        );
+      }
+      addChunkedJsonContext(contexts, "trading-cockpit-review-cycle-outcome", {
+        cycleId: cycle.id ?? null,
+        blindAssessment: cycle.blindAssessment ?? null,
+        outcome: cycle.outcome ?? null,
+        endingPortfolio: cycle.endingPortfolio ?? null,
+        currentPortfolioContext: cycle.currentPortfolioContext ?? null,
+        portfolioCoverage: cycle.portfolioCoverage ?? null,
+      });
+    }
+    return contexts;
+  }
+  const cases = Array.isArray(scoped.cases) ? scoped.cases : [];
+  const tests = Array.isArray(scoped.tests) ? scoped.tests : [];
+  const rules = Array.isArray(scoped.rules) ? scoped.rules : [];
+  const overview = {
+    ...evidence,
+    scopedContext: {
+      ...scoped,
+      cases: undefined,
+      tests: undefined,
+      rules: undefined,
+      caseIndex: cases.map((item, index) => ({
+        caseRef: `case-${index + 1}`,
+        id: item?.id ?? null,
+        symbol: item?.symbol ?? null,
+        fiscalQuarter: item?.fiscalQuarter ?? null,
+        orderCount: Array.isArray(item?.orders) ? item.orders.length : 0,
+        executionCount: Array.isArray(item?.executions) ? item.executions.length : 0,
+      })),
+    },
+    evidenceDelivery: {
+      format: "semantic_application_blocks",
+      brokerFacts: "trading-cockpit-review-case-*-broker-*",
+      decisionEvidence: "trading-cockpit-review-case-*-decision-*",
+      note: "Each block is valid JSON; combine blocks with the same caseRef before judging evidence completeness.",
+    },
+  };
+  addChunkedJsonContext(contexts, "trading-cockpit-evidence", overview);
+
+  cases.forEach((item, index) => {
+    const caseRef = `case-${index + 1}`;
+    const brokerCore = {
+      caseRef,
+      id: item?.id ?? null,
+      symbol: item?.symbol ?? null,
+      fiscalQuarter: item?.fiscalQuarter ?? null,
+      event: item?.event ?? null,
+      brokerAssociation: item?.brokerAssociation ?? null,
+    };
+    const brokerRecords = [
+      ...(Array.isArray(item?.orders) ? item.orders : []),
+      ...(Array.isArray(item?.executions) ? item.executions : []),
+    ];
+    addChunkedArrayContext(
+      contexts,
+      `trading-cockpit-review-${caseRef}-broker`,
+      brokerCore,
+      "records",
+      brokerRecords,
+    );
+    addChunkedJsonContext(contexts, `trading-cockpit-review-${caseRef}-decision`, {
+      caseRef,
+      id: item?.id ?? null,
+      symbol: item?.symbol ?? null,
+      strategyType: item?.strategyType ?? null,
+      benchmark: item?.benchmark ?? null,
+      primaryHorizon: item?.primaryHorizon ?? null,
+      status: item?.status ?? null,
+      createdAt: item?.createdAt ?? null,
+      updatedAt: item?.updatedAt ?? null,
+      exAnteDraft: item?.exAnteDraft ?? null,
+      exAnteVersions: item?.exAnteVersions ?? [],
+      outcome: item?.outcome ?? null,
+      review: item?.review ?? null,
+      ruleIds: item?.ruleIds ?? [],
+    });
+  });
+  addChunkedArrayContext(contexts, "trading-cockpit-review-tests", {}, "tests", tests);
+  addChunkedArrayContext(contexts, "trading-cockpit-review-rules", {}, "rules", rules);
+  return contexts;
+}
+
+function applicationContext(value) {
+  return { kind: "application", value: String(value ?? "") };
+}
+
+function boundedSemanticSequence(values, maximum) {
+  const source = Array.isArray(values) ? values : [];
+  const limit = Math.max(1, Math.floor(Number(maximum) || 1));
+  if (source.length <= limit) {
+    return {
+      items: source,
+      sourceCount: source.length,
+      deliveredCount: source.length,
+      omittedCount: 0,
+      deliveryPolicy: "complete",
+    };
+  }
+  const headCount = Math.ceil(limit / 2);
+  const tailCount = limit - headCount;
+  return {
+    items: [
+      ...source.slice(0, headCount),
+      ...(tailCount ? source.slice(-tailCount) : []),
+    ],
+    sourceCount: source.length,
+    deliveredCount: limit,
+    omittedCount: source.length - limit,
+    // The first Buy and latest Sell / final segment live at the boundaries.
+    // Preserve both ends instead of silently truncating the exit evidence.
+    deliveryPolicy: "bounded_head_and_tail_preserving_window_boundaries",
+  };
+}
+
+function semanticSequenceCoverage(value) {
+  return {
+    sourceCount: value.sourceCount,
+    deliveredCount: value.deliveredCount,
+    omittedCount: value.omittedCount,
+    deliveryPolicy: value.deliveryPolicy,
+  };
+}
+
+function addChunkedArrayContext(contexts, prefix, metadata, field, items) {
+  const values = Array.isArray(items) ? items : [];
+  if (!values.length) {
+    addChunkedJsonContext(contexts, prefix, { ...metadata, [field]: [] });
+    return;
+  }
+  const chunks = [];
+  let current = [];
+  for (const item of values) {
+    const candidate = [...current, item];
+    if (current.length && JSON.stringify({
+      ...metadata,
+      part: 999,
+      parts: 999,
+      [field]: candidate,
+    }).length > MAX_APPLICATION_CONTEXT_CHARS) {
+      chunks.push(current);
+      current = [item];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length) chunks.push(current);
+  chunks.forEach((chunk, index) => addChunkedJsonContext(
+    contexts,
+    `${prefix}-${index + 1}`,
+    { ...metadata, part: index + 1, parts: chunks.length, [field]: chunk },
+  ));
+}
+
+function addChunkedJsonContext(contexts, prefix, value) {
+  const serialized = JSON.stringify(value);
+  if (serialized.length <= MAX_APPLICATION_CONTEXT_CHARS) {
+    contexts[prefix] = applicationContext(serialized);
+    return;
+  }
+  const fragments = splitSerializedContext(serialized);
+  fragments.forEach((fragment, index) => {
+    contexts[`${prefix}-${index + 1}`] = applicationContext(JSON.stringify({
+      encoding: "json-fragment",
+      part: index + 1,
+      parts: fragments.length,
+      fragment,
+    }));
+  });
+}
+
+function splitSerializedContext(serialized) {
+  const fragments = [];
+  let cursor = 0;
+  while (cursor < serialized.length) {
+    let low = cursor + 1;
+    let high = serialized.length;
+    let best = low;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const candidate = JSON.stringify({
+        encoding: "json-fragment",
+        part: 999,
+        parts: 999,
+        fragment: serialized.slice(cursor, middle),
+      });
+      if (candidate.length <= MAX_APPLICATION_CONTEXT_CHARS) {
+        best = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    fragments.push(serialized.slice(cursor, best));
+    cursor = best;
+  }
+  return fragments;
+}
+
 export function buildWorkspacePrompt(evidence) {
+  const reviewProtocol = evidence?.context?.reviewProtocol
+    ?? evidence?.scopedContext?.reviewProtocol;
+  const reviewPhase = evidence?.context?.reviewPhase
+    ?? evidence?.scopedContext?.phase;
   const scopeInstruction = evidence.analysisScope === "candidate"
-    ? "本轮是候选买入分析：目标可能完全未持有，不得把候选标的写成现有仓位。你负责结合叙事/技术 Skills、priceBars 与可用只读 MCP，独立判断 Stage、Fib 是否采用及其 A/B/C 锚点、失效依据、初始新增仓位和最大总仓位；本地自动 Fib 只是 AUTO/ADVISORY 候选，可以采用、覆盖或忽略，不能因它存在就机械使用。candidateSizing 必须返回结构化判断：Fib 覆盖锚点只能引用 priceBars 中真实存在的 barId 与 high/low 字段，不能自行填写价格；失效依据也只能引用已有 bar、EMA、20 日区间或经你选择的 Fib。仓位数字由你提出，宿主只会按最新快照、现金、集中度、总暴露、风险预算、保证金和数据完整性做硬性验证/裁剪。candidateGroupKey 可使用已有主题的精确 key，也可在高/中置信度下给出明确的新主题；无法可靠分类时填 null，且不得给出可执行仓位。analysisMarkdown 保持适合深色界面的清晰 Markdown；其中的仓位数字必须称为“LLM 建议”，不得预先声称已被宿主接受，最终有效值以后续 HOST ACCEPTED 卡片为准。"
+    ? "本轮是候选买入分析：目标可能完全未持有，不得把候选标的写成现有仓位。你负责结合叙事/技术 Skills、priceBars 与可用只读 MCP，独立判断 Stage、失效依据、初始新增仓位和最大总仓位。证据框架是开放的：优先交叉核对价格/成交量、趋势与动量、相对强弱、板块和同行、成本或筹码分布、AVWAP、波动率/期权、催化剂后的价格反应；EMA 与 Fib 只是可选证据，不能机械使用，也不要求每轮输出。如果确有共振再提交 fibReview；不适用时填 null。Fib 覆盖锚点只能引用 priceBars 中真实存在的 barId 与 high/low 字段；失效依据可引用真实 bar、可用 EMA、20 日区间或经选择的 Fib。仓位数字由你提出，宿主只会按最新快照、购买力、现金、集中度、组合毛暴露 150% 硬上限、风险预算、保证金和数据完整性做硬性验证/裁剪。leverageDecision 只有在明确接受融资且投影毛暴露不超过 150% 时选择 margin_within_cap；否则选择 cash_only 或 disabled。candidateGroupKey 可使用已有主题的精确 key，也可在高/中置信度下给出明确的新主题；无法可靠分类时填 null，且不得给出可执行仓位。analysisMarkdown 保持适合深色界面的清晰 Markdown；其中的仓位数字必须称为“LLM 建议”，不得预先声称已被宿主接受，最终有效值以后续 HOST ACCEPTED 卡片为准。"
     : evidence.analysisScope === "portfolio"
       ? "本轮是全组合分析：必须评价集中度、主题/币种重复暴露、现金、保证金、估值缺口和最大的组合级失败模式；不要逐只虚构技术结论。"
-      : "本轮是已持仓分析：围绕选中真实仓位、技术结构以及它对组合的边际风险给出条件计划。";
+      : evidence.analysisScope === "review"
+        ? reviewProtocol === "decision_cycle"
+          ? reviewPhase === "outcome"
+            ? "本轮是决策周期阶段二结果复盘：必须调用 review-decision-cycles Skill。先原样引用已冻结的 blindAssessment，再揭示后续券商事实、市场路径和组合快照；分别评价判断、技术时点、仓位、执行与运气。trading-cockpit-review-cycle-outcome-metrics 是宿主截至 endAt 用关联成交与长桥日线计算的确定性事实：可用项必须优先引用，不可用项必须保留 null 和 reason，禁止用网页、MCP 临时查询或当前持仓补成确定性指标。若存在 trading-cockpit-review-cycle-trade-path-*，它是用户明确框选订单/成交所定义 Buy→Sell 窗口的唯一宿主路径：系统补充的父订单或同单成交不得扩窗；跨度超过 3 个交易日时，必须按已提供的连续 3 交易日分段分析，禁止另查历史首笔交易或替代窗口。不得覆盖或润色阶段一判断，不得把回顾性记录升级为事前证据。EMA/Fib 只是可选证据，叙事 Stage 与技术温度必须独立。规则只能成为候选或已登记测试，任何晋级等待人工 Review。如证据足以形成可检验学习，可额外返回 learningProposal 验证草案；其 evidencePosture 必须是 retrospective_not_ex_ante，且必须声明它不能冒充或回写为事前判断。"
+            : reviewPhase === "retrospective"
+              ? "本轮是订单优先的直接事后复盘：必须调用 review-decision-cycles Skill。以关联长桥订单与成交为事实起点，结合 cycleEvidenceEndAt 以前的确定性市场路径、适用的基本面、技术面、筹码、仓位与执行证据完成归因。若存在 trading-cockpit-review-cycle-trade-path-*，它是用户明确框选订单/成交所定义 Buy→Sell 窗口的唯一宿主路径：系统补充的父订单或同单成交不得扩窗；跨度超过 3 个交易日时，必须按已提供的连续 3 交易日分段分析，禁止另查历史首笔交易或替代窗口。该模式没有 knowledge cutoff、冻结事前基线或 blindAssessment；必须明确标为 retrospective，不得把事后解释改写成当时判断，也不得进入正式事前判断质量统计。宿主确定性指标只到 cycleEvidenceEndAt；周期后事实已排除。规则只能成为候选或登记测试，等待人工 Review。如证据足以形成可检验学习，可额外返回 learningProposal 验证草案；其 evidencePosture 必须是 retrospective_not_ex_ante，且 caveats 必须声明它不能冒充或回写为事前判断。"
+              : "本轮是决策周期阶段一盲态复盘：必须调用 review-decision-cycles Skill。若提供 decision timeline，单次模型请求会同时承载按时间排序的多个“节点证据胶囊”；不得声称模型在物理上看不到后续胶囊。必须严格从最早节点开始，只用该胶囊中严格早于其 knowledgeCutoffAt 的事实先形成并冻结节点评价，再依序处理下一胶囊；严禁把晚节点行动、券商事实或技术快照倒灌到早节点。宿主已排除周期结果、当前组合及最后节点之后的事实；不得调用网页、MCP、近期历史或其他工具查询、猜测或暗示这些信息。只评价各时点证据下的判断、技术结构、仓位计划与失效纪律；缺少事前封存时明确标 retrospective，不能用后来事实补写。EMA/Fib 只是可选证据，叙事 Stage 与技术温度必须独立。"
+          : "本轮是订单驱动的财报交易复盘：必须调用 review-earnings-decisions Skill。先核对用户选中的订单/成交与财报事件关联，再区分券商事实、事件事实、用户事前输入、派生指标和 Agent 推断。单案例只能提出候选规则；季度/跨季度分析必须披露样本漏斗、缺失、选择偏差、主要窗口、胜率、赔率、净期望与尾部风险，且任何规则晋级都要等待人工 Review。不要从订单日期猜财季，不要用当前持仓反推历史成交。"
+        : "本轮是已持仓分析：围绕选中真实仓位、技术结构以及它对组合的边际风险给出条件计划。";
   return [
     "你是交易驾驶舱中的 Codex Agent。当前窗口对应一个独立的持久 Codex thread；只延续该 thread 的对话上下文，不要自动混入其他会话。",
     "你可以自由使用本机 Codex 已配置的 Skills、MCP、Apps、网页、文件、Shell 和其他工具来补充或核验分析；不要把自己限制为下方 JSON 的摘要器。",
     `分析范围：${evidence.analysisScope}。${scopeInstruction}`,
-    "本轮 additionalContext 中的 trading-cockpit-evidence 是驾驶舱本地引擎刚刚生成的范围化证据包。稳定规则来自项目与 Skills；当前数量、成本、权重、价格、汇率、OHLCV、EMA 与风险数值只以这份最新快照为准。自动 Fib 标记为 advisory，不是最终锚点。若工具得到更新数据，请明确标注来源和时间差异。",
+    "本轮 additionalContext 中的 trading-cockpit-evidence 是驾驶舱本地引擎刚刚生成的范围化证据包。复盘证据会按语义拆成多个独立 JSON 块；必须合并同一 protocol/cycleId 或 caseRef 的全部块后再判断证据是否缺失。稳定规则来自项目与 Skills；当前数量、成本、权重、价格、汇率、OHLCV、指标与风险数值只以这份最新快照为准。局部 EMA/Fib 计算属于基础证据，不是默认主框架；自动 Fib 标记为 advisory。若工具得到更新数据，请明确标注来源和时间差异。",
     "输出应直接回答用户任务，说明证据冲突、不确定性、风险影响与可执行的条件计划。不要伪造实时数据，也不要承诺收益。驾驶舱的长桥连接本身只读；如讨论订单，只能给出供用户手动确认的计划。",
     "如果 Longbridge 或其他 MCP 返回 463、超时、断线或单个工具失败，把它记录为证据降级；同一失败工具不要循环重试，不得因此延迟最终回答。使用已有持仓快照、其他只读来源或明确的不确定性继续完成本轮。",
     "如用户询问过去的讨论、上次判断或历史复盘，必须调用 query_recent_history；该工具只返回最近 30 天，禁止自行读取归档目录。",
@@ -2555,43 +3033,48 @@ function candidateWorkspaceOutputSchema() {
             enum: ["stage_1", "stage_2", "stage_3", "stage_4p", "stage_4e", "stage_4f", "unknown"],
           },
           fibReview: {
-            type: "object",
-            additionalProperties: false,
-            required: [
-              "decision",
-              "direction",
-              "anchors",
-              "emphasizedRatios",
-              "confidence",
-              "rationale",
-            ],
-            properties: {
-              decision: {
-                type: "string",
-                enum: ["use_auto", "override", "ignore", "insufficient_evidence"],
-              },
-              direction: {
-                type: "string",
-                enum: ["up", "down", "none"],
-              },
-              anchors: {
+            anyOf: [
+              {
                 type: "object",
                 additionalProperties: false,
-                required: ["a", "b", "c"],
+                required: [
+                  "decision",
+                  "direction",
+                  "anchors",
+                  "emphasizedRatios",
+                  "confidence",
+                  "rationale",
+                ],
                 properties: {
-                  a: nullableAnchor,
-                  b: nullableAnchor,
-                  c: nullableAnchor,
+                  decision: {
+                    type: "string",
+                    enum: ["use_auto", "override", "ignore", "insufficient_evidence"],
+                  },
+                  direction: {
+                    type: "string",
+                    enum: ["up", "down", "none"],
+                  },
+                  anchors: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["a", "b", "c"],
+                    properties: {
+                      a: nullableAnchor,
+                      b: nullableAnchor,
+                      c: nullableAnchor,
+                    },
+                  },
+                  emphasizedRatios: {
+                    type: "array",
+                    items: { type: "number", enum: [0.382, 0.618, 1, 1.618] },
+                    maxItems: 4,
+                  },
+                  confidence,
+                  rationale: { type: "string" },
                 },
               },
-              emphasizedRatios: {
-                type: "array",
-                items: { type: "number", enum: [0.382, 0.618, 1, 1.618] },
-                maxItems: 4,
-              },
-              confidence,
-              rationale: { type: "string" },
-            },
+              { type: "null" },
+            ],
           },
           invalidation: {
             type: "object",
@@ -2635,13 +3118,88 @@ function candidateWorkspaceOutputSchema() {
           sizingConfidence: confidence,
           leverageDecision: {
             type: "string",
-            enum: ["cash_only", "disabled"],
+            enum: ["cash_only", "margin_within_cap", "disabled"],
           },
           rationale: { type: "string" },
         },
       },
     },
   };
+}
+
+function reviewLearningWorkspaceOutputSchema() {
+  const learningProposal = {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "hypothesis",
+      "evidenceSummary",
+      "testDesign",
+      "candidateRule",
+      "confidence",
+      "caveats",
+      "evidencePosture",
+    ],
+    properties: {
+      hypothesis: { type: "string", minLength: 1 },
+      evidenceSummary: { type: "string", minLength: 1 },
+      testDesign: {
+        type: "object",
+        additionalProperties: false,
+        required: ["metric", "window", "minCases", "inclusion", "exclusion", "successCriteria"],
+        properties: {
+          metric: { type: "string", minLength: 1 },
+          window: { type: "string", minLength: 1 },
+          minCases: { type: "integer", minimum: 1, maximum: 10_000 },
+          inclusion: { type: "string", minLength: 1 },
+          exclusion: { type: "string", minLength: 1 },
+          successCriteria: { type: "string", minLength: 1 },
+        },
+      },
+      candidateRule: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "action", "invalidation", "scope"],
+        properties: {
+          title: { type: "string", minLength: 1 },
+          action: { type: "string", minLength: 1 },
+          invalidation: { type: "string", minLength: 1 },
+          scope: { type: "string", minLength: 1 },
+        },
+      },
+      confidence: { type: "string", enum: ["high", "medium", "low", "unknown"] },
+      caveats: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        maxItems: 20,
+      },
+      evidencePosture: {
+        type: "string",
+        enum: ["retrospective_not_ex_ante"],
+      },
+    },
+  };
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["analysisMarkdown", "learningProposal"],
+    properties: {
+      analysisMarkdown: { type: "string", minLength: 1 },
+      learningProposal: {
+        anyOf: [learningProposal, { type: "null" }],
+      },
+    },
+  };
+}
+
+function supportsReviewLearningProposal(evidence) {
+  const protocol = evidence?.context?.reviewProtocol
+    ?? evidence?.scopedContext?.reviewProtocol;
+  const phase = evidence?.context?.reviewPhase
+    ?? evidence?.scopedContext?.phase;
+  return evidence?.analysisScope === "review"
+    && protocol === "decision_cycle"
+    && ["retrospective", "outcome"].includes(phase);
 }
 
 function parseWorkspaceTurnResponse(value) {
@@ -2654,13 +3212,60 @@ function parseWorkspaceTurnResponse(value) {
       return {
         text: parsed.analysisMarkdown.trim(),
         candidateSizing: normalizeCandidateModelSizing(parsed.candidateSizing),
+        learningProposal: normalizeLearningProposal(parsed.learningProposal),
       };
     }
   } catch {
     // Older App Server/model combinations can ignore outputSchema. Keep the
     // human-readable answer and treat the structured recommendation as absent.
   }
-  return { text: raw, candidateSizing: null };
+  return { text: raw, candidateSizing: null, learningProposal: null };
+}
+
+function normalizeLearningProposal(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const text = (input, limit) => String(input ?? "").trim().slice(0, limit);
+  const hypothesis = text(value.hypothesis, 4_000);
+  const evidenceSummary = text(value.evidenceSummary, 6_000);
+  const minCases = Number(value.testDesign?.minCases);
+  const testDesign = value.testDesign && typeof value.testDesign === "object" && !Array.isArray(value.testDesign)
+    && Number.isInteger(minCases) && minCases >= 1 && minCases <= 10_000
+    ? {
+      metric: text(value.testDesign.metric, 500),
+      window: text(value.testDesign.window, 500),
+      minCases,
+      inclusion: text(value.testDesign.inclusion, 2_000),
+      exclusion: text(value.testDesign.exclusion, 2_000),
+      successCriteria: text(value.testDesign.successCriteria, 2_000),
+    }
+    : null;
+  const candidateRule = value.candidateRule && typeof value.candidateRule === "object" && !Array.isArray(value.candidateRule)
+    ? {
+      title: text(value.candidateRule.title, 500),
+      action: text(value.candidateRule.action, 2_000),
+      invalidation: text(value.candidateRule.invalidation, 2_000),
+      scope: text(value.candidateRule.scope, 1_000),
+    }
+    : null;
+  if (!hypothesis || !evidenceSummary || !testDesign || !candidateRule
+    || Object.values(testDesign).some((item) => item === "")
+    || Object.values(candidateRule).some((item) => item === "")) return null;
+  const retrospectiveCaveat = "该草案来自事后复盘，只能作为待验证假设，不得冒充、覆盖或回写为事前判断。";
+  const caveats = [...new Set([
+    ...(Array.isArray(value.caveats) ? value.caveats : []).map((item) => text(item, 1_000)).filter(Boolean),
+    retrospectiveCaveat,
+  ])].slice(0, 20);
+  return {
+    hypothesis,
+    evidenceSummary,
+    testDesign,
+    candidateRule,
+    confidence: ["high", "medium", "low", "unknown"].includes(value.confidence)
+      ? value.confidence
+      : "unknown",
+    caveats,
+    evidencePosture: "retrospective_not_ex_ante",
+  };
 }
 
 function normalizeCandidateModelSizing(value) {
@@ -2668,7 +3273,9 @@ function normalizeCandidateModelSizing(value) {
   const confidence = ["high", "medium", "low", "unknown"].includes(value.classificationConfidence)
     ? value.classificationConfidence
     : "unknown";
-  const leverageDecision = value.leverageDecision === "cash_only" ? "cash_only" : "disabled";
+  const leverageDecision = ["cash_only", "margin_within_cap"].includes(value.leverageDecision)
+    ? value.leverageDecision
+    : "disabled";
   return {
     candidateGroupKey: value.candidateGroupKey == null
       ? null
@@ -2781,6 +3388,13 @@ function codexPosition(item) {
 
 export function applyCodexWorkspaceAnalysis(run, analysis) {
   const adjustedRun = applyCandidateSizingReview(run, analysis.candidateSizing);
+  const learningProposal = supportsReviewLearningProposal({
+    analysisScope: run?.context?.scope,
+    context: run?.context,
+    scopedContext: run?.analysisContext,
+  })
+    ? normalizeLearningProposal(analysis.learningProposal)
+    : null;
   const headline = analysisHeadline(analysis.text);
   return {
     ...adjustedRun,
@@ -2790,6 +3404,7 @@ export function applyCodexWorkspaceAnalysis(run, analysis) {
       body: analysis.text,
       posture: "Codex 持久项目分析",
     },
+    ...(learningProposal ? { learningProposal } : {}),
     modelAnalysis: {
       provider: analysis.provider,
       persistent: true,
@@ -2847,6 +3462,19 @@ function applyCandidateSizingReview(run, review) {
     : null;
   const existingWeight = Math.max(0, finiteOrNull(risk.existingPositionWeight) ?? 0);
   const hardMaxTotal = finiteOrNull(risk.hardMaxTotalWeightPercent);
+  const cashHeadroom = Math.max(0, finiteOrNull(risk.cashConstrainedWeightPercent) ?? 0);
+  const buyPowerWeight = finiteOrNull(risk.buyPowerWeightPercent);
+  const currentGross = finiteOrNull(risk.portfolioConstraints?.grossExposurePercent);
+  const grossHardMax = finiteOrNull(
+    risk.portfolioConstraints?.policyThresholds?.grossHardMaxPercent,
+  );
+  const grossLimitedTotal = currentGross != null && grossHardMax != null
+    ? existingWeight + Math.max(0, grossHardMax - currentGross)
+    : null;
+  const cashOnlyTotal = existingWeight + cashHeadroom;
+  const buyPowerLimitedTotal = buyPowerWeight == null
+    ? null
+    : existingWeight + Math.max(0, buyPowerWeight);
   const modelMaxTotal = boundedPercentOrNull(review.recommendedMaxTotalWeightPercent);
   const modelInitialAdditional = boundedPercentOrNull(
     review.recommendedInitialAdditionalWeightPercent,
@@ -2889,6 +3517,14 @@ function applyCandidateSizingReview(run, review) {
     accountAndConcentrationTotalWeightPercent: hardMaxTotal,
     groupTotalWeightPercent: groupMaxTotal == null ? null : rounded(groupMaxTotal),
     riskBudgetTotalWeightPercent: riskBudgetTotal,
+    cashOnlyTotalWeightPercent: rounded(cashOnlyTotal),
+    buyPowerTotalWeightPercent: buyPowerLimitedTotal == null
+      ? null
+      : rounded(buyPowerLimitedTotal),
+    portfolioGrossHardMaxPercent: grossHardMax,
+    portfolioGrossLimitedTotalWeightPercent: grossLimitedTotal == null
+      ? null
+      : rounded(grossLimitedTotal),
   };
   const confidenceAccepted = ["high", "medium"].includes(review.classificationConfidence);
   const sizingConfidenceAccepted = ["high", "medium"].includes(review.sizingConfidence);
@@ -2904,6 +3540,10 @@ function applyCandidateSizingReview(run, review) {
     && modelInitialAdditional != null
     && modelMaxTotal >= existingWeight
     && modelInitialAdditional >= 0;
+  const marginDecisionRequested = review.leverageDecision === "margin_within_cap";
+  const leverageDecisionAccepted = ["cash_only", "margin_within_cap"].includes(
+    review.leverageDecision,
+  );
   const prerequisiteReasons = [
     ...(!risk.supported || !risk.awaitingModelReview
       ? [risk.limitation || risk.entryBlockReasons?.[0] || "本地安全边界不允许生成可执行仓位"]
@@ -2914,7 +3554,19 @@ function applyCandidateSizingReview(run, review) {
     ...(!sizingConfidenceAccepted ? ["仓位建议置信度不足"] : []),
     ...(!narrativeStageAccepted ? ["LLM 未给出可用的叙事 Stage"] : []),
     ...(!modelProposalComplete ? ["LLM 未给出完整有效的初始/最大仓位建议"] : []),
-    ...(review.leverageDecision !== "cash_only" ? ["LLM 未批准现金覆盖的新增仓位"] : []),
+    ...(!leverageDecisionAccepted ? ["LLM 未选择 cash_only 或 margin_within_cap"] : []),
+    ...(risk.buyPowerValid !== true || buyPowerWeight == null
+      ? ["购买力缺失或无效，融资与现金仓位均默认拒绝"]
+      : []),
+    ...(currentGross == null || grossHardMax == null
+      ? ["缺少可验证的组合毛暴露或 150% 硬上限"]
+      : []),
+    ...(marginDecisionRequested && risk.leverage?.marginEligible !== true
+      ? ["LLM 请求融资，但账户未通过购买力、保证金、估值、衍生品覆盖和毛敞口前置校验"]
+      : []),
+    ...(review.leverageDecision === "cash_only" && cashHeadroom <= 0
+      ? ["现金缓冲已无可用新增空间；若要使用融资，LLM 必须显式选择 margin_within_cap"]
+      : []),
     ...(["use_auto", "override"].includes(review.fibReview?.decision)
       && reviewedFib.status !== "selected"
       ? [reviewedFib.rationale || "LLM 选择的 Fib 未通过宿主锚点校验"]
@@ -2926,6 +3578,9 @@ function applyCandidateSizingReview(run, review) {
     hardMaxTotal,
     groupMaxTotal,
     riskBudgetTotal,
+    grossLimitedTotal,
+    buyPowerLimitedTotal,
+    ...(review.leverageDecision === "cash_only" ? [cashOnlyTotal] : []),
     modelMaxTotal,
   ].filter((value) => Number.isFinite(value));
   const maxTotal = reviewCanSize && ceilings.length
@@ -2936,6 +3591,23 @@ function applyCandidateSizingReview(run, review) {
     ? Math.max(0, Math.min(modelInitialAdditional, maxAdditional))
     : 0;
   const entryAllowed = reviewCanSize && maxAdditional > 0 && initialAdditional > 0;
+  const maxAdditionalBorrowed = entryAllowed && marginDecisionRequested
+    ? Math.max(0, maxAdditional - cashHeadroom)
+    : 0;
+  const initialAdditionalBorrowed = entryAllowed && marginDecisionRequested
+    ? Math.max(0, initialAdditional - cashHeadroom)
+    : 0;
+  const effectiveLeverageDecision = entryAllowed
+    ? maxAdditionalBorrowed > 0
+      ? "margin_within_cap"
+      : "cash_only"
+    : "disabled";
+  const projectedGrossAtInitial = currentGross == null
+    ? null
+    : currentGross + initialAdditional;
+  const projectedGrossAtMax = currentGross == null
+    ? null
+    : currentGross + maxAdditional;
   const netAssets = finiteOrNull(run.analysisContext?.portfolioSummary?.netAssets);
   const limitBindings = [];
   if (reviewCanSize) {
@@ -2950,6 +3622,15 @@ function applyCandidateSizingReview(run, review) {
     }
     if (riskBudgetTotal != null && modelMaxTotal > riskBudgetTotal) {
       limitBindings.push("risk_budget");
+    }
+    if (grossLimitedTotal != null && modelMaxTotal > grossLimitedTotal) {
+      limitBindings.push("gross_exposure");
+    }
+    if (buyPowerLimitedTotal != null && modelMaxTotal > buyPowerLimitedTotal) {
+      limitBindings.push("buy_power");
+    }
+    if (review.leverageDecision === "cash_only" && modelMaxTotal > cashOnlyTotal) {
+      limitBindings.push("cash_only");
     }
     if (modelInitialAdditional > maxAdditional) {
       limitBindings.push("initial_additional");
@@ -2997,14 +3678,24 @@ function applyCandidateSizingReview(run, review) {
     fibonacciReview: reviewedFib,
     leverage: {
       ...risk.leverage,
-      decision: entryAllowed ? "cash_only" : "disabled",
-      additionalLeverageAllowed: false,
-      maxAdditionalBorrowedWeightPercent: 0,
+      decision: effectiveLeverageDecision,
+      additionalLeverageAllowed: effectiveLeverageDecision === "margin_within_cap",
+      initialAdditionalBorrowedWeightPercent: rounded(initialAdditionalBorrowed),
+      maxAdditionalBorrowedWeightPercent: rounded(maxAdditionalBorrowed),
       modelReviewDecision: review.leverageDecision,
-      disabledReasons: [...new Set([
-        ...(risk.leverage?.disabledReasons ?? []),
-        ...(!entryAllowed && reviewReason ? [reviewReason] : []),
-      ])],
+      currentGrossExposurePercent: currentGross,
+      projectedGrossAtInitialPercent: projectedGrossAtInitial == null
+        ? null
+        : rounded(projectedGrossAtInitial),
+      projectedGrossAtMaxPercent: projectedGrossAtMax == null
+        ? null
+        : rounded(projectedGrossAtMax),
+      disabledReasons: entryAllowed
+        ? []
+        : [...new Set([
+            ...(risk.leverage?.disabledReasons ?? []),
+            ...(reviewReason ? [reviewReason] : []),
+          ])],
     },
     sizingReview: {
       status: reviewStatus,
@@ -3030,6 +3721,9 @@ function applyCandidateSizingReview(run, review) {
         initialAdditionalWeightPercent: rounded(initialAdditional),
         maxAdditionalWeightPercent: rounded(maxAdditional),
         maxTotalWeightPercent: rounded(maxTotal),
+        initialAdditionalBorrowedWeightPercent: rounded(initialAdditionalBorrowed),
+        maxAdditionalBorrowedWeightPercent: rounded(maxAdditionalBorrowed),
+        leverageDecision: effectiveLeverageDecision,
       },
       hardLimits,
       limitBindings: [...new Set(limitBindings)],
@@ -3072,7 +3766,10 @@ function applyReviewedCandidateSizingToPlan(plan, risk) {
     maxTotalWeightPercent: risk.recommendedMaxWeightPercent,
     maxAdditionalNotionalBase: risk.recommendedMaxAdditionalNotionalBase,
     leverageDecision: risk.leverage?.decision,
-    maxAdditionalBorrowedWeightPercent: 0,
+    initialAdditionalBorrowedWeightPercent:
+      risk.leverage?.initialAdditionalBorrowedWeightPercent ?? 0,
+    maxAdditionalBorrowedWeightPercent:
+      risk.leverage?.maxAdditionalBorrowedWeightPercent ?? 0,
   };
   if (!risk.entryAllowed) {
     return {
@@ -3098,7 +3795,7 @@ function applyReviewedCandidateSizingToPlan(plan, risk) {
   const scenarios = (plan.scenarios ?? []).map((item) => item.name === "允许试探"
     ? {
         ...item,
-        then: `LLM 建议经硬边界校验后：有效初始新增 ${rounded(risk.recommendedInitialAdditionalWeightPercent)}%，有效最大总仓位 ${rounded(risk.recommendedMaxWeightPercent)}%；仅允许现金覆盖，成交前用最新快照重算`,
+        then: `LLM 建议经硬边界校验后：有效初始新增 ${rounded(risk.recommendedInitialAdditionalWeightPercent)}%，有效最大总仓位 ${rounded(risk.recommendedMaxWeightPercent)}%；${risk.leverage?.decision === "margin_within_cap" ? `允许最多 ${rounded(risk.leverage.maxAdditionalBorrowedWeightPercent)}% 融资新增，组合毛暴露不得超过 150%` : "仅允许现金覆盖"}，成交前用最新快照重算`,
         invalidation: `日线按「${risk.referenceLabel} ${rounded(risk.referenceLevel)}」确认失效`,
         impact: `触及参考失效位时，静态组合影响不高于约 ${rounded(risk.portfolioImpactAtReferencePercent)}%`,
       }
@@ -3362,11 +4059,15 @@ export function findRequestedSkills(text, skills) {
   return skills.filter((skill) => requested.has(skill.name));
 }
 
-function analysisSkillsForScope(text, skills, scope) {
+function analysisSkillsForScope(text, skills, scope, reviewProtocol = null) {
   const explicit = findRequestedSkills(text, skills);
-  const automaticNames = scope === "portfolio"
-    ? new Set(["analyze-market-narratives"])
-    : new Set(["analyze-market-narratives", "analyze-technical-structure"]);
+  const automaticNames = scope === "review"
+    ? reviewProtocol === "decision_cycle"
+      ? new Set(["review-decision-cycles", "analyze-market-narratives"])
+      : new Set(["review-earnings-decisions", "analyze-market-narratives"])
+    : scope === "portfolio"
+      ? new Set(["analyze-market-narratives"])
+      : new Set(["analyze-market-narratives", "analyze-technical-structure"]);
   const automatic = skills.filter((skill) => automaticNames.has(skill.name));
   return [...new Map([...explicit, ...automatic].map((skill) => [skill.name, skill])).values()];
 }
@@ -3385,7 +4086,7 @@ export function expandAgentCommand(value) {
   if (!match) return text;
   const commands = {
     full: "完整分析当前持仓的技术结构、组合风险、叙事冲突与牛/基准/熊条件计划。",
-    technical: "重点分析当前持仓的 EMA 3/5/8/13/21、EMA 144/169 与 Fibonacci 扩展结构。",
+    technical: "综合分析价格/成交量、趋势动量、相对强弱、筹码或成本结构、波动率、板块同行与事件反应；EMA、Fib、AVWAP 等按适用性选用。",
     risk: "重点检查当前持仓权重、组合集中度、主题重复暴露、汇率口径与风险预算。",
     plan: "基于当前证据生成牛、基准、熊三种条件计划，并列出触发、动作、失效和组合影响。",
     history: "调用 query_recent_history，只查询并总结最近 30 天的交易驾驶舱对话；不要读取归档目录。",
@@ -3396,7 +4097,7 @@ export function expandAgentCommand(value) {
 export function agentCommands() {
   return [
     { name: "/full", description: "完整技术、风险与条件计划" },
-    { name: "/technical", description: "聚焦 EMA 与 Fibonacci 结构" },
+    { name: "/technical", description: "综合技术、筹码与相对强弱证据" },
     { name: "/risk", description: "聚焦仓位、集中度与风险预算" },
     { name: "/plan", description: "聚焦牛/基准/熊条件计划" },
     { name: "/history", description: "查询最近 30 天的 Agent 对话" },
@@ -3559,7 +4260,21 @@ function addGuardedServerAliases(target, name) {
 }
 
 function isBrokerageWriteToolName(name) {
-  return BROKERAGE_WRITE_TOOLS.has(canonicalIdentifier(name));
+  const identifier = canonicalIdentifier(name);
+  if (BROKERAGE_WRITE_TOOLS.has(identifier)) return true;
+  const tokens = new Set(identifier.split("_").filter(Boolean));
+  const writeVerb = [
+    "submit", "place", "send", "execute", "transmit", "replace", "modify",
+    "amend", "update", "withdraw", "cancel", "close", "liquidate",
+    "exercise", "create", "delete", "pause", "resume", "enable", "disable",
+  ].some((token) => tokens.has(token));
+  const brokerageObject = ["order", "orders", "position", "positions", "option", "dca"]
+    .some((token) => tokens.has(token));
+  return writeVerb && brokerageObject;
+}
+
+function isVerifiedLongbridgeReadTool(tool) {
+  return LONGBRIDGE_READ_ONLY_TOOLS.has(canonicalIdentifier(tool?.name));
 }
 
 function serverIsGuarded(server, guardedServerNames) {
@@ -3582,9 +4297,12 @@ function visibleBrokerageWriteTools(servers, guardedServerNames) {
   const guarded = new Set(guardedServerNames);
   const residual = [];
   for (const server of servers) {
-    if (!isLongbridgeInventoryServer(server) || serverIsGuarded(server, guarded)) continue;
+    if (!isLongbridgeInventoryServer(server)) continue;
+    const configuredGuard = serverIsGuarded(server, guarded);
     for (const tool of server.tools) {
-      if (isBrokerageWriteToolName(tool.name)) {
+      const identifier = canonicalIdentifier(tool.name);
+      const coveredByConfiguredDenyList = configuredGuard && BROKERAGE_WRITE_TOOLS.has(identifier);
+      if (!coveredByConfiguredDenyList && !isVerifiedLongbridgeReadTool(tool)) {
         residual.push({ server: server.name, tool: tool.name });
       }
     }
@@ -4179,7 +4897,7 @@ function analysisHeadline(value) {
 
 async function ensureWorkspaceGuide(workspaceDirectory) {
   const target = path.join(workspaceDirectory, "AGENTS.md");
-  const content = `# Trading Agent Workspace\n\n- This is the persistent Codex project for the Trading Cockpit desktop app.\n- Codex App Server is the only conversational and tool harness; Longbridge, FX, OHLCV/EMA/Fib, and portfolio risk are read-only evidence capabilities.\n- Use configured Skills, MCP servers, Apps, web access, files, and tools whenever they improve the analysis.\n- Treat each <cockpit-evidence> block as a timestamped portfolio snapshot; identify stale or conflicting external data explicitly.\n- For a candidate, Codex decides Stage, Fib use/override/ignore, invalidation, and proposed sizing. The host has no fixed 2%/4% recommendation and enforces only validated data and hard account/risk limits.\n- Fib overrides must reference supplied closed-bar barId and high/low fields. Local AUTO Fib is advisory unless Codex explicitly selects it.\n- If the portfolio snapshot is cached, stale, or older than two minutes at final sizing, keep the narrative but do not return an executable size.\n- For prior cockpit discussion, call query_recent_history. It returns at most the most recent 30 days; do not surface archived older cockpit conversations.\n- Never invent holdings, prices, FX rates, OHLCV bars, EMA/Fib levels, or portfolio weights.\n- The current <cockpit-evidence> already contains the authoritative Longbridge portfolio snapshot and local OHLCV/EMA/risk calculations. Do not query Longbridge again for data already present there.\n- Treat a Longbridge/MCP timeout as missing evidence and continue to a final answer. Do not retry the same failed query or batch multiple Longbridge calls into one aggregate wrapper.\n- The desktop Longbridge bridge is read-only. Discuss trade plans, but do not submit, modify, or cancel brokerage orders.\n- The desktop host disables recognized Longbridge brokerage-write tools in the App Server thread config. Do not seek alternative order-writing tools or attempt to bypass that boundary.\n- Prefer concise Chinese unless the user requests another language.\n`;
+  const content = `# Trading Agent Workspace\n\n- This is the persistent Codex project for the Trading Cockpit desktop app.\n- Codex App Server is the only conversational and tool harness; Longbridge, FX, market-data indicators, and portfolio risk are read-only evidence capabilities.\n- Use configured Skills, MCP servers, Apps, web access, files, and tools whenever they improve the analysis.\n- Treat each <cockpit-evidence> block as a timestamped portfolio snapshot; identify stale or conflicting external data explicitly.\n- For a candidate, Codex decides Stage, invalidation, proposed sizing, and a cash_only / margin_within_cap / disabled leverage posture. Use an open evidence stack: price/volume, trend and momentum, relative strength, sector/peers, cost or chip distribution, AVWAP, volatility/options, and post-catalyst reaction may all matter. EMA and Fib are optional baseline evidence, not mandatory sections or default rules. The host has no fixed 2%/4% recommendation and enforces validated buying power and hard account/risk limits. margin_within_cap must be explicit; portfolio gross exposure warns at 120% and may never exceed 150%.\n- If Fib is used, overrides must reference supplied closed-bar barId and high/low fields. Local AUTO Fib is advisory unless Codex explicitly selects it.\n- If the portfolio snapshot is cached, stale, or older than two minutes at final sizing, keep the narrative but do not return an executable size.\n- For prior cockpit discussion, call query_recent_history. It returns at most the most recent 30 days; do not surface archived older cockpit conversations.\n- Never invent holdings, prices, FX rates, OHLCV bars, indicator levels, or portfolio weights.\n- The current <cockpit-evidence> already contains the authoritative Longbridge portfolio snapshot and local market/risk calculations. Do not query Longbridge again for data already present there.\n- Treat a Longbridge/MCP timeout as missing evidence and continue to a final answer. Do not retry the same failed query or batch multiple Longbridge calls into one aggregate wrapper.\n- The desktop Longbridge bridge is read-only. Discuss trade plans, but do not submit, modify, or cancel brokerage orders.\n- The desktop host disables recognized Longbridge brokerage-write tools in the App Server thread config. Do not seek alternative order-writing tools or attempt to bypass that boundary.\n- Prefer concise Chinese unless the user requests another language.\n`;
   try {
     await writeFile(target, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
   } catch (error) {

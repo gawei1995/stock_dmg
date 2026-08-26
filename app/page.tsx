@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 
 type AgentTab = "agent" | "risk" | "plan";
-type FibMode = "up" | "down";
+type ReviewStage = "import" | "associate" | "reconstruct" | "analyze";
 type EmaPeriod = 3 | 5 | 8 | 13 | 21 | 144 | 169;
 
 type Instrument = {
@@ -157,19 +157,35 @@ const instruments: Instrument[] = [
 ];
 
 const exposures = [
-  { label: "AI / 半导体", value: 28, tone: "cobalt" },
-  { label: "平台科技", value: 19, tone: "sage" },
-  { label: "消费硬件", value: 11, tone: "amber" },
-  { label: "现金", value: 31, tone: "neutral" },
-  { label: "其他策略", value: 11, tone: "other" },
+  { label: "AI / 半导体", value: 48, tone: "cobalt" },
+  { label: "平台科技", value: 31, tone: "sage" },
+  { label: "消费硬件", value: 17, tone: "amber" },
+  { label: "对冲与其他策略", value: 40, tone: "other" },
 ];
 
 const timeframes = ["15m", "1H", "4H", "1D", "1W"];
-const fibRatios = [
-  { ratio: 0.382, role: "浅回撤 / 早期确认" },
-  { ratio: 0.618, role: "黄金决策位" },
-  { ratio: 1, role: "等幅目标" },
-  { ratio: 1.618, role: "扩展目标 / 减仓风险" },
+const evidenceStack = [
+  { label: "量价与市场结构", status: "确认", detail: "突破后缩量回踩，卖压未扩张", tone: "positive" },
+  { label: "筹码 / 成交量分布", status: "确认", detail: "高成交节点位于现价下方，成本带仍有承接", tone: "positive" },
+  { label: "相对强弱", status: "确认", detail: "相对 QQQ 与板块 ETF 维持领先", tone: "positive" },
+  { label: "锚定 VWAP", status: "观察", detail: "财报锚点上方，但斜率趋缓", tone: "mixed" },
+  { label: "期权与波动率", status: "冲突", detail: "短端 IV 偏高，追价赔率被压缩", tone: "bear" },
+  { label: "板块 / 同行联动", status: "确认", detail: "半导体扩散仍在，存储链出现分化", tone: "positive" },
+  { label: "事件后的价格反应", status: "观察", detail: "好消息被接受，仍需后续量能确认", tone: "mixed" },
+  { label: "EMA / Fibonacci", status: "可选", detail: "仅在当前结构有解释力时纳入，不设固定权重", tone: "optional" },
+];
+
+const reviewStages = [
+  { key: "import" as const, index: "01", label: "同步订单", eyebrow: "BROKER FACTS", title: "先取得真实交易事实", copy: "从长桥只读同步历史订单与逐笔成交；标的、时间、方向、数量和成交价不再要求手工重填。" },
+  { key: "associate" as const, index: "02", label: "关联财报", eyebrow: "EVENT MATCH", title: "让订单成为案例入口", copy: "选择订单后，用财报日历匹配日期、财年、季度与盘前/盘后；候选关联必须由你确认。" },
+  { key: "reconstruct" as const, index: "03", label: "补充判断", eyebrow: "HUMAN CONTEXT", title: "你只补当时的信息集", copy: "我的判断、市场相信什么、计划动作和失效条件由你填写；系统事实与 Agent 推断不会覆盖原文。" },
+  { key: "analyze" as const, index: "04", label: "Skill 复盘", eyebrow: "REVIEW & TEST", title: "同一套 Skill 评估并提出验证", copy: "单事件先分析决策与执行；再按财报季度汇总胜率、赔率、净 R、MAE/MFE、失效纪律和候选规则。" },
+];
+
+const orderHistory = [
+  { id: "fill-01", time: "07-22 10:14:08", symbol: "NVDA", side: "买入", quantity: "180", average: "$168.72", role: "待归因", state: "候选" },
+  { id: "fill-02", time: "07-24 09:41:36", symbol: "NVDA", side: "卖出", quantity: "80", average: "$176.38", role: "待归因", state: "候选" },
+  { id: "fill-03", time: "07-24 15:52:11", symbol: "QQQ 保护", side: "买入", quantity: "12", average: "$6.15", role: "组合级保护", state: "待确认" },
 ];
 
 function getEmaStructure(instrument: Instrument) {
@@ -195,7 +211,8 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<AgentTab>("agent");
   const [riskBudget, setRiskBudget] = useState(1.2);
   const [planReady, setPlanReady] = useState(false);
-  const [fibMode, setFibMode] = useState<FibMode>("up");
+  const [reviewStage, setReviewStage] = useState<ReviewStage>("import");
+  const [selectedReviewOrders, setSelectedReviewOrders] = useState(["fill-01", "fill-02"]);
 
   const selected = useMemo(
     () => instruments.find((instrument) => instrument.symbol === selectedSymbol) ?? instruments[0],
@@ -204,15 +221,7 @@ export default function Home() {
 
   const maxLoss = ((selected.position * riskBudget) / 100).toFixed(2);
   const emaStructure = getEmaStructure(selected);
-  const fibLevels = useMemo(() => {
-    const range = selected.fibHigh - selected.fibLow;
-    return fibRatios.map((item) => ({
-      ...item,
-      value: fibMode === "up"
-        ? selected.fibC + range * item.ratio
-        : selected.fibC - range * item.ratio,
-    }));
-  }, [fibMode, selected]);
+  const activeReview = reviewStages.find((stage) => stage.key === reviewStage) ?? reviewStages[0];
   const priceAxis = useMemo(() => {
     const price = Number(selected.price);
     return [1.06, 1.02, 0.98, 0.94].map((factor) => (price * factor).toFixed(0));
@@ -221,6 +230,12 @@ export default function Home() {
   function selectInstrument(symbol: string) {
     setSelectedSymbol(symbol);
     setPlanReady(false);
+  }
+
+  function toggleReviewOrder(id: string) {
+    setSelectedReviewOrders((current) => current.includes(id)
+      ? current.filter((value) => value !== id)
+      : [...current, id]);
   }
 
   return (
@@ -232,8 +247,9 @@ export default function Home() {
         </a>
         <nav aria-label="主要导航">
           <a href="#workspace">工作台</a>
-          <a href="#technical">技术引擎</a>
+          <a href="#technical">证据栈</a>
           <a href="#portfolio">仓位</a>
+          <a href="#review">复盘</a>
           <a href="#architecture">架构</a>
         </nav>
         <div className="header-status">
@@ -249,7 +265,7 @@ export default function Home() {
             <h1 id="page-title">一个界面，从看盘到交易计划。</h1>
           </div>
           <p>
-            你继续用 TradingView 观察市场；长桥提供行情与真实仓位；Agent 把两者合并成风险分析和有条件的交易计划。
+            TradingView 保留你的看盘界面；长桥只读同步行情、真实仓位、历史订单与逐笔成交；Agent 组织证据、控制组合暴露，并让每次决定进入可复用的复盘闭环。
           </p>
         </section>
 
@@ -262,7 +278,7 @@ export default function Home() {
           <div className="rail-arrow" aria-hidden="true">+</div>
           <article>
             <span className="source-logo lb-logo" aria-hidden="true">LB</span>
-            <div><small>机器数据层</small><strong>长桥行情 / 仓位 / 订单</strong></div>
+            <div><small>账户事实层</small><strong>长桥仓位 / 历史订单 / 成交</strong></div>
             <span className="source-state pending">接口待连接</span>
           </article>
           <div className="rail-arrow" aria-hidden="true">→</div>
@@ -273,7 +289,7 @@ export default function Home() {
           </article>
           <div className="rail-output">
             <span>输出</span>
-            <strong>风险分析 · 交易计划</strong>
+            <strong>计划 · 复盘 · 规则</strong>
           </div>
         </section>
 
@@ -368,12 +384,13 @@ export default function Home() {
                   <h3>{selected.verdict}</h3>
                   <p>{selected.thesis}</p>
                   <div className="agent-tech-snapshot">
-                    <div><span>3/5/8/13/21</span><strong className={emaStructure.shortTone}>{emaStructure.shortLabel}</strong></div>
-                    <div><span>144 / 169</span><strong className={emaStructure.longTone}>{emaStructure.longLabel}</strong></div>
+                    <div><span>证据覆盖</span><strong className="bull">6 / 8 项可用</strong></div>
+                    <div><span>冲突证据</span><strong className="mixed">期权赔率偏弱</strong></div>
                   </div>
                   <dl>
                     <div><dt>当前位置</dt><dd>{selected.position}% 组合权重</dd></div>
                     <div><dt>关注区域</dt><dd>{selected.zone}</dd></div>
+                    <div><dt>核心证据</dt><dd>筹码承接 · 相对强弱</dd></div>
                     <div><dt>结构失效</dt><dd>{selected.invalidation}</dd></div>
                   </dl>
                   <button type="button" className="primary-action" onClick={() => setActiveTab("risk")}>查看组合风险 <span>→</span></button>
@@ -382,11 +399,11 @@ export default function Home() {
 
               {activeTab === "risk" && (
                 <div className="risk-view">
-                  <div className="risk-score"><span>风险预算使用 · 演示策略上限 12%（可配置）</span><strong>{Math.round((selected.position / 12) * 100)}%</strong><i><b style={{ width: `${Math.min(100, (selected.position / 12) * 100)}%` }} /></i></div>
+                  <div className="risk-score"><span>组合 Gross Exposure · 120% 预警 / 150% 硬上限</span><strong>136%</strong><i className="gross-meter"><b style={{ width: "90.7%" }} /><em /></i><small>已越过预警线 16%，距硬上限剩余 14%</small></div>
                   <label htmlFor="risk-budget">标的下行假设 <strong>{riskBudget.toFixed(1)}%</strong></label>
                   <input id="risk-budget" type="range" min="0.5" max="8" step="0.1" value={riskBudget} onChange={(event) => setRiskBudget(Number(event.target.value))} />
                   <div className="loss-card"><span>对组合的估算影响</span><strong>-{maxLoss}%</strong><small>{selected.position}% 仓位 × {riskBudget.toFixed(1)}% 下行</small></div>
-                  <p className="risk-note">简化估算未计期权、汇率与板块相关性。完整风险由长桥持仓快照重新计算。</p>
+                  <p className="risk-note">新增仓位先经过 gross exposure 硬约束，再结合净敞口、期权 Delta、汇率与板块相关性评估；达到 150% 时不生成增仓计划。</p>
                   <button type="button" className="primary-action" onClick={() => setActiveTab("plan")}>形成交易计划 <span>→</span></button>
                 </div>
               )}
@@ -407,79 +424,37 @@ export default function Home() {
 
         <section className="technical-section" id="technical" aria-labelledby="technical-title">
           <div className="section-heading">
-            <div><p className="eyebrow">Technical structure engine</p><h2 id="technical-title">快线管时点，慢线管周期。</h2></div>
-            <p>Agent 用 3/5/8/13/21 EMA 判断趋势温度与入场时点，用 144/169 EMA 管理长周期核心仓，再用 Fibonacci 扩展定义决策区和目标区。</p>
+            <div><p className="eyebrow">Open evidence stack</p><h2 id="technical-title">证据先汇合，指标不设唯一答案。</h2></div>
+            <p>Agent 根据标的、周期和事件动态选择有解释力的证据。筹码、量价、相对强弱、AVWAP、期权与板块联动可以互相确认或否定；EMA 和 Fibonacci 只是可选工具，不是固定结论模板。</p>
           </div>
 
-          <div className="technical-grid">
-            <article className="fib-engine panel" aria-labelledby="fib-title">
+          <div className="evidence-layout">
+            <article className="evidence-panel panel" aria-labelledby="evidence-title">
               <div className="panel-title">
-                <div><span>FIBONACCI MAP · {selected.symbol} · 1D DEMO</span><h3 id="fib-title">三点扩展决策位</h3></div>
-                <div className="fib-mode" aria-label="斐波那契计算方向">
-                  <button type="button" className={fibMode === "up" ? "active" : ""} onClick={() => setFibMode("up")} aria-pressed={fibMode === "up"}>向上扩展</button>
-                  <button type="button" className={fibMode === "down" ? "active" : ""} onClick={() => setFibMode("down")} aria-pressed={fibMode === "down"}>向下扩展</button>
-                </div>
+                <div><span>EVIDENCE MATRIX · {selected.symbol} · DYNAMIC</span><h3 id="evidence-title">开放技术证据栈</h3></div>
+                <span className="structure-pill mixed">6 项有效 · 1 项冲突</span>
               </div>
-
-              <div className="swing-basis">
-                <div><span>锚点 A · 起点</span><strong>{selected.fibLow.toFixed(2)}</strong></div>
-                <i aria-hidden="true"><b /></i>
-                <div><span>锚点 B · 脉冲终点</span><strong>{selected.fibHigh.toFixed(2)}</strong></div>
-                <i aria-hidden="true"><b /></i>
-                <div><span>锚点 C · 回撤确认</span><strong>{selected.fibC.toFixed(2)}</strong></div>
-              </div>
-
-              <div className="fib-levels">
-                {fibLevels.map((level) => (
-                  <div className={`fib-level ratio-${String(level.ratio).replace(".", "-")}`} key={level.ratio}>
-                    <span className="fib-ratio">{level.ratio.toFixed(level.ratio === 1 ? 1 : 3)}</span>
-                    <i aria-hidden="true"><b /></i>
-                    <strong>{level.value.toFixed(2)}</strong>
-                    <small>{level.role}</small>
+              <div className="evidence-list">
+                {evidenceStack.map((evidence, index) => (
+                  <div className="evidence-row" key={evidence.label}>
+                    <span className="evidence-index">{String(index + 1).padStart(2, "0")}</span>
+                    <div><strong>{evidence.label}</strong><small>{evidence.detail}</small></div>
+                    <span className={`evidence-state ${evidence.tone}`}>{evidence.status}</span>
                   </div>
                 ))}
               </div>
-
-              <div className="fib-judgement">
-                <span>Agent 判断</span>
-                <p>公式为 <strong>C ± (B − A) × 比率</strong>。<strong>0.382 / 0.618</strong> 用来观察早期反应；<strong>1.0</strong> 是等幅完成位；<strong>1.618</strong> 进入扩展与分批兑现风险区。</p>
-              </div>
             </article>
 
-            <article className="ema-engine panel" aria-labelledby="ema-title">
-              <div className="panel-title">
-                <div><span>EMA ARCHITECTURE · {selected.symbol}</span><h3 id="ema-title">双层均线结构</h3></div>
-                <span className={`structure-pill ${emaStructure.shortTone}`}>{emaStructure.shortLabel}</span>
-              </div>
-
-              <div className="ema-group">
-                <div className="ema-group-head"><div><span>交易时点层</span><strong>EMA 3 / 5 / 8 / 13 / 21</strong></div><small>{emaStructure.shortAction}</small></div>
-                <div className="ema-ribbon" aria-label={`${selected.symbol} 短周期 EMA 数值`}>
-                  {([3, 5, 8, 13, 21] as EmaPeriod[]).map((period, index) => (
-                    <div key={period} style={{ "--ema-index": index } as CSSProperties}>
-                      <span>EMA {period}</span><strong>{selected.ema[period].toFixed(2)}</strong>
-                    </div>
-                  ))}
+            <article className="synthesis-panel panel" aria-labelledby="synthesis-title">
+              <div className="panel-title"><div><span>AGENT SYNTHESIS</span><h3 id="synthesis-title">证据如何形成判断</h3></div><span className="prototype-label">非固定权重</span></div>
+              <div className="synthesis-body">
+                <div className="synthesis-score"><span>当前证据质量</span><strong>74<small>/100</small></strong><p>方向证据一致，但事件溢价与期权成本降低了追价赔率。</p></div>
+                <div className="evidence-buckets">
+                  <div><span>主导证据</span><strong>筹码承接 · 相对强弱 · 板块扩散</strong></div>
+                  <div><span>反方证据</span><strong>短端 IV 偏高 · 上方供应仍在</strong></div>
+                  <div><span>暂不采用</span><strong>单一 EMA 穿越 · 未确认的 Fib 锚点</strong></div>
                 </div>
-                <div className="ema-observations">
-                  <div><span>排序</span><strong>{emaStructure.shortLabel}</strong></div>
-                  <div><span>斜率 / 扩散</span><strong>{selected.shortSlope}</strong></div>
-                  <div><span>结构事件</span><strong>{selected.emaEvent}</strong></div>
-                </div>
-                <div className="ema-rule"><span>完整多头</span><code>价格 &gt; 3 &gt; 5 &gt; 8 &gt; 13 &gt; 21</code><span>完整空头</span><code>价格 &lt; 3 &lt; 5 &lt; 8 &lt; 13 &lt; 21</code></div>
-              </div>
-
-              <div className="ema-group long-cycle">
-                <div className="ema-group-head"><div><span>长周期仓位层</span><strong>EMA 144 / 169</strong></div><small>{emaStructure.longAction}</small></div>
-                <div className="long-ema-map">
-                  <div><span>现价</span><strong>{selected.price}</strong></div>
-                  <i aria-hidden="true"><b /></i>
-                  <div><span>EMA 144</span><strong>{selected.ema[144].toFixed(2)}</strong></div>
-                  <i aria-hidden="true"><b /></i>
-                  <div><span>EMA 169</span><strong>{selected.ema[169].toFixed(2)}</strong></div>
-                </div>
-                <div className={`long-verdict ${emaStructure.longTone}`}><span>{emaStructure.longLabel}</span><p>短周期信号决定“何时动”，144/169 决定“核心仓是否还值得留在场内”。</p></div>
-                <p className="long-slope">斜率观察：{selected.longSlope}</p>
+                <div className="method-note"><span>方法边界</span><p>每次分析都保存实际采用的数据、指标、参数、锚点与时间戳。后续复盘按“当时用了什么”检验，而不是事后套用另一套指标解释结果。</p></div>
               </div>
             </article>
           </div>
@@ -488,7 +463,7 @@ export default function Home() {
         <section className="portfolio-section" id="portfolio" aria-labelledby="portfolio-title">
           <div className="section-heading">
             <div><p className="eyebrow">Longbridge portfolio truth</p><h2 id="portfolio-title">先看组合，再看单只股票。</h2></div>
-            <p>Agent 不仅判断图形，还把标的放回真实仓位、板块重复暴露与组合风险预算里。</p>
+            <p>长桥作为账户事实源：真实持仓、历史订单和逐笔成交只读导入。Agent 先检查组合 gross exposure，再讨论任何单只标的的新增仓位。</p>
           </div>
 
           <div className="portfolio-grid">
@@ -497,8 +472,8 @@ export default function Home() {
               <div className="account-strip" aria-label="长桥账户摘要演示">
                 <div><span>账户净资产 · USD</span><strong>$1,248,620</strong></div>
                 <div><span>可用现金</span><strong>$387,072</strong></div>
-                <div><span>购买力</span><strong>$421,380</strong></div>
-                <div><span>冻结资金</span><strong>$0</strong></div>
+                <div><span>Gross Exposure</span><strong className="warning-text">136%</strong></div>
+                <div><span>Net Exposure</span><strong>92%</strong></div>
               </div>
               <div className="positions-table">
                 <table>
@@ -520,7 +495,7 @@ export default function Home() {
                   </tbody>
                 </table>
               </div>
-              <div className="cash-row"><span>当前仅展示 27% 核心持仓；其他持仓 42% 未展开</span><strong>现金 31.0%</strong><small>真实值以长桥回传为准</small></div>
+              <div className="cash-row"><span>当前仅展示 27% 核心持仓；其他现货、期权与对冲未展开</span><strong>现金 31.0%</strong><small>统一折算 USD</small></div>
             </article>
 
             <article className="exposure panel" aria-labelledby="exposure-title">
@@ -533,8 +508,110 @@ export default function Home() {
                   </div>
                 ))}
               </div>
-              <div className="risk-callout"><span>集中度提醒</span><strong>AI / 半导体为最大重复暴露</strong><p>增加 NVDA 或 AVGO 前，先按板块合并计算风险。</p></div>
+              <div className="gross-policy" aria-label="组合总暴露限制">
+                <div className="gross-summary"><span>Gross Exposure · 120% 预警 / 150% 硬上限</span><strong>136%</strong><small>14% 可用空间</small></div>
+                <div className="gross-track"><i className="gross-fill" /><i className="gross-warning" /><span className="warning-mark">120</span><span className="limit-mark">150</span></div>
+                <div className="gross-legend"><span><i className="safe-dot" />0–120% 正常</span><span><i className="warn-dot" />120–150% 预警</span></div>
+              </div>
+              <div className="risk-callout"><span>组合约束已触发</span><strong>Gross 已超过 120% 预警线</strong><p>新增风险必须说明资金来源和风险释放路径；达到 150% 时，Agent 只允许减仓、替换或对冲方案。</p></div>
             </article>
+          </div>
+
+          <article className="orders-panel panel" aria-labelledby="orders-title">
+            <div className="panel-title">
+              <div><span>LONG BRIDGE · READ-ONLY IMPORT</span><h3 id="orders-title">历史订单与逐笔成交</h3></div>
+              <span className="readonly-pill"><i />只读同步</span>
+            </div>
+            <div className="orders-summary">
+              <div><span>历史同步</span><strong>默认 365 天 · 最多 730 天</strong></div>
+              <div><span>归因单元</span><strong>股票 × 财报季度 × 决策包</strong></div>
+              <div><span>写操作</span><strong>永久关闭</strong></div>
+            </div>
+            <div className="orders-table">
+              <table>
+                <caption className="sr-only">长桥历史成交只读导入演示</caption>
+                <thead><tr><th scope="col">成交时间</th><th scope="col">标的</th><th scope="col">方向</th><th scope="col">数量</th><th scope="col">成交均价</th><th scope="col">复盘角色</th><th scope="col">案例归因</th></tr></thead>
+                <tbody>
+                  {orderHistory.map((order) => (
+                    <tr key={`${order.time}-${order.symbol}`}>
+                      <td>{order.time}</td><td><strong>{order.symbol}</strong></td><td>{order.side}</td><td>{order.quantity}</td><td>{order.average}</td><td>{order.role}</td><td><span className={order.state === "已匹配" ? "match-state matched" : "match-state"}>{order.state}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="orders-note"><strong>事实与解释分离</strong><p>订单号、成交号、数量、价格、费用和时间来自长桥，只读保留；选择订单会补齐它的逐笔成交，选择成交会补齐父订单与同单成交。Agent 只能建议它属于哪一个财报决策包，最终关联由你确认。</p></div>
+          </article>
+        </section>
+
+        <section className="review-section" id="review" aria-labelledby="review-title">
+          <div className="section-heading">
+            <div><p className="eyebrow">Order-first decision review</p><h2 id="review-title">从真实订单开始，不从空白表单开始。</h2></div>
+            <p>复盘不是结案：长桥先提供交易事实，财报日历补齐事件和季度，你再补当时的判断与计划。复盘 Skill 负责分析、跨季度验证和提出规则候选，但不会替你改写原始记录或批准规则。</p>
+          </div>
+
+          <div className="review-flow" aria-label="复盘到规则的工作流">
+            {reviewStages.map((stage, index) => (
+              <button key={stage.key} type="button" className={reviewStage === stage.key ? "review-step active" : "review-step"} onClick={() => setReviewStage(stage.key)} aria-pressed={reviewStage === stage.key}>
+                <span>{stage.index}</span><strong>{stage.label}</strong><small>{stage.eyebrow}</small>{index < reviewStages.length - 1 && <i aria-hidden="true">→</i>}
+              </button>
+            ))}
+          </div>
+
+          <div className="review-workspace">
+            <article className="case-panel review-intake panel" aria-labelledby="case-title">
+              <div className="panel-title"><div><span>LONG BRIDGE · READ-ONLY INTAKE</span><h3 id="case-title">选择要复盘的订单 / 成交</h3></div><span className="case-status pending">{selectedReviewOrders.length} 条已选</span></div>
+              <div className="review-intake-toolbar">
+                <div><span>同步范围</span><strong>最近 365 天</strong><small>历史订单 + 今日订单 + 逐笔成交</small></div>
+                <button type="button"><i />同步长桥历史</button>
+              </div>
+              <div className="review-order-picker" aria-label="可选择的长桥成交演示">
+                {orderHistory.map((order) => {
+                  const selectedOrder = selectedReviewOrders.includes(order.id);
+                  return (
+                    <button key={order.id} type="button" className={selectedOrder ? "selected" : ""} onClick={() => toggleReviewOrder(order.id)} aria-pressed={selectedOrder}>
+                      <i aria-hidden="true">{selectedOrder ? "✓" : ""}</i>
+                      <span><strong>{order.symbol} · {order.side} {order.quantity}</strong><small>{order.time} · {order.average}</small></span>
+                      <em>{order.state}</em>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="event-candidate">
+                <div className="event-candidate-head"><span>AUTO ENRICHMENT · 待确认</span><strong>最接近的财报事件</strong></div>
+                <div className="event-fields">
+                  <div><span>标的</span><strong>NVDA.US</strong><small>来自所选订单</small></div>
+                  <div><span>财报日期</span><strong>2026-08-26 · 盘后</strong><small>来自长桥财报日历</small></div>
+                  <div><span>财报季度</span><strong>FY2027 Q2</strong><small>fiscal_year + period</small></div>
+                  <div><span>关联置信度</span><strong>候选</strong><small>由你确认是否因财报操作</small></div>
+                </div>
+                <div className="human-context-preview"><span>确认关联后由你补充</span><p>我的判断 · 市场当时相信什么 · 计划动作 · 失效条件</p></div>
+              </div>
+            </article>
+
+            <aside className="review-detail panel" aria-live="polite">
+              <div className="review-detail-head"><span>{activeReview.index} · {activeReview.eyebrow}</span><strong>{activeReview.title}</strong><p>{activeReview.copy}</p></div>
+              <div className="review-metrics">
+                <div><span>事实来源</span><strong>Longbridge</strong><small>订单 / 成交 / 时间只读</small></div>
+                <div><span>案例单元</span><strong>股票 × 财报</strong><small>再绑定一组计划动作</small></div>
+                <div><span>主评价窗口</span><strong>待冻结</strong><small>T+1 / T+5 / T+20 选一</small></div>
+                <div><span>正式统计</span><strong>尚未进入</strong><small>需事前版本与确定性结果</small></div>
+              </div>
+              <div className="rule-candidate">
+                <span>复盘 Skill · 同一 Codex harness</span>
+                <strong>单事件还原 → 季度通盘 → 跨季度验证</strong>
+                <p>输出决策质量、执行一致性、净 R、胜率、赔率、MAE/MFE、失效延迟、反事实与候选规则。小样本只标为观察，不自动晋升。</p>
+                <div><span>REVIEW</span><i><b /></i><span>HUMAN GATE</span></div>
+              </div>
+              <button type="button" className="review-action" onClick={() => setReviewStage(reviewStage === "import" ? "associate" : reviewStage === "associate" ? "reconstruct" : reviewStage === "reconstruct" ? "analyze" : "import")}>{reviewStage === "analyze" ? "重新查看同步入口" : "继续下一步"} <span>→</span></button>
+            </aside>
+          </div>
+
+          <div className="review-principles">
+            <article><span>REVIEW</span><strong>还原单事件</strong><p>事实、你的事前原文和 Agent 推断分栏；盈利不自动证明过程正确。</p></article>
+            <article><span>TEST</span><strong>固定口径验证</strong><p>主窗口、样本纳入和排除条件先登记，再计算胜率、赔率与净期望。</p></article>
+            <article><span>RULE</span><strong>只产生候选规则</strong><p>可观察、可执行、可证伪，并保留反例和适用市场环境。</p></article>
+            <article><span>REVIEW</span><strong>人工升降级</strong><p>跨季度稳定后才可暂行；环境改变、尾部恶化或反证出现时降级。</p></article>
           </div>
         </section>
 
@@ -546,9 +623,9 @@ export default function Home() {
           <div className="architecture-flow">
             <article><span>01</span><i className="arch-icon chart" aria-hidden="true" /><h3>TradingView</h3><p>版面、画线、指标与告警</p><strong>图表真相</strong></article>
             <div className="connector"><span>Webhook / 截图</span></div>
-            <article><span>02</span><i className="arch-icon bars" aria-hidden="true" /><h3>长桥</h3><p>Quote / OHLCV / 盘口 / 期权链；资产、持仓、成本与订单</p><strong>行情与账户真相</strong></article>
+            <article><span>02</span><i className="arch-icon bars" aria-hidden="true" /><h3>长桥</h3><p>行情、真实持仓、历史订单与逐笔成交的只读同步</p><strong>账户与执行真相</strong></article>
             <div className="connector"><span>只读 API</span></div>
-            <article className="agent-node"><span>03</span><i className="arch-icon orbit" aria-hidden="true">AI</i><h3>交易 Agent</h3><p>Fib、EMA、Stage、技术温度与组合风险</p><strong>分析真相</strong></article>
+            <article className="agent-node"><span>03</span><i className="arch-icon orbit" aria-hidden="true">AI</i><h3>交易 Agent</h3><p>开放证据栈、叙事 Stage、组合风险与复盘规则</p><strong>分析与学习</strong></article>
             <div className="connector"><span>条件化计划</span></div>
             <article><span>04</span><i className="arch-icon check" aria-hidden="true">✓</i><h3>手动确认</h3><p>回到长桥检查并执行</p><strong>执行真相</strong></article>
           </div>

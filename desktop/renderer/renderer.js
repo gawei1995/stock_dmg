@@ -18,12 +18,16 @@ const state = {
   selectedSymbol: null,
   currentRun: null,
   runsById: new Map(),
+  reviewEvidenceRevisions: new Map(),
+  reviewCycleRetrospectiveVersions: new Map(),
+  reviewCycleEvidenceRevisions: new Map(),
   activeRequestId: null,
   activeRunNode: null,
   operations: new Map(),
   sessionViews: new Map(),
   filter: "",
   busy: false,
+  longbridgeReauthRequired: false,
   codexRuntimeAvailable: false,
   codexAvailable: false,
   agentCapabilities: null,
@@ -112,9 +116,11 @@ async function initialize() {
     setLongbridgeStatus(
       initial.longbridge.connected
         ? { state: "connected", message: "长桥已连接 · 查询权限" }
-        : initial.longbridge.hasSavedAuthorization
-          ? { state: "connecting", message: "正在恢复长桥授权" }
-          : { state: "disconnected", message: "长桥未连接" },
+        : initial.longbridge.needsAuthorizationUpgrade
+          ? { state: "scope_upgrade_required", message: "长桥历史查询需要升级只读授权" }
+          : initial.longbridge.hasSavedAuthorization
+            ? { state: "connecting", message: "正在恢复长桥授权" }
+            : { state: "disconnected", message: "长桥未连接" },
     );
     if (!initial.storage.encrypted) {
       setSystemMessage("系统密钥存储不可用：授权不会持久化", "warning");
@@ -194,6 +200,24 @@ function bindEvents() {
   elements.agentSessionSelect.addEventListener("change", switchAgentSession);
   elements.newAgentSession.addEventListener("click", createAgentSession);
   elements.agentForm.addEventListener("submit", submitAgentTask);
+  window.addEventListener("cockpit:review-analysis-prepared", (event) => {
+    void submitPreparedReviewAnalysis(event.detail);
+  });
+  window.addEventListener("cockpit:review-cycle-analysis-prepared", (event) => {
+    void submitPreparedReviewCycleAnalysis(event.detail);
+  });
+  window.addEventListener("cockpit:review-evidence-revisions", (event) => {
+    state.reviewEvidenceRevisions = new Map((event.detail?.cases ?? [])
+      .map((item) => [String(item?.caseId ?? ""), Number(item?.revision)])
+      .filter(([caseId, revision]) => caseId && Number.isInteger(revision) && revision > 0));
+    state.reviewCycleRetrospectiveVersions = new Map((event.detail?.cycles ?? [])
+      .map((item) => [String(item?.cycleId ?? ""), Number(item?.retrospectiveVersion)])
+      .filter(([cycleId, version]) => cycleId && Number.isInteger(version) && version > 0));
+    state.reviewCycleEvidenceRevisions = new Map((event.detail?.cycles ?? [])
+      .map((item) => [String(item?.cycleId ?? ""), Number(item?.evidenceRevision)])
+      .filter(([cycleId, revision]) => cycleId && Number.isInteger(revision) && revision > 0));
+    refreshCurrentRunTrustUi();
+  });
   elements.agentCancel.addEventListener("click", cancelAgentTask);
   elements.agentInput.addEventListener("input", updatePromptSuggestions);
   elements.agentInput.addEventListener("keydown", handlePromptKeydown);
@@ -233,6 +257,29 @@ function bindEvents() {
     });
   });
   elements.agentThread.addEventListener("click", async (event) => {
+    const learningButton = event.target.closest("[data-open-learning-proposal]");
+    if (learningButton) {
+      const run = state.runsById.get(learningButton.dataset.openLearningProposal);
+      if (!run?.learningProposal) return;
+      if (isRunStale(run)) {
+        setSystemMessage(
+          run.context?.reviewPhasePersistence === "failed"
+            ? "分析已经返回，但未写入审计台账；这份草案不能登记，请重新运行复盘。"
+            : "这份验证草案基于已被替换的复盘证据，请先用最新订单关联重新运行复盘。",
+          "warning",
+        );
+        return;
+      }
+      window.dispatchEvent(new CustomEvent("cockpit:learning-proposal-opened", {
+        detail: {
+          runId: run.id,
+          threadId: run.modelAnalysis?.threadId ?? null,
+          reviewCycleId: run.context?.reviewCycleId ?? null,
+          proposal: run.learningProposal,
+        },
+      }));
+      return;
+    }
     const button = event.target.closest("[data-save-plan]");
     if (!button) return;
     const run = state.runsById.get(button.dataset.savePlan);
@@ -331,7 +378,7 @@ function renderAgentSessions() {
 }
 
 async function createAgentSession() {
-  if (!api.agentSessions?.create || state.sessionsLoading) return;
+  if (!api.agentSessions?.create || state.sessionsLoading) return null;
   saveActiveSessionView();
   const previousId = state.activeSessionId;
   const provisionalId = `provisioning-${crypto.randomUUID()}`;
@@ -374,11 +421,13 @@ async function createAgentSession() {
     resetAgentConversation("已创建独立会话。项目规则与工具保持共享，对话上下文不会与其他会话混合。");
     ensureSessionView(createdId).transcript = [];
     restoreSessionAgentResult(result);
+    return createdId || null;
   } catch (error) {
     state.agentSessions = state.agentSessions.filter((session) => session.id !== provisionalId);
     state.sessionViews.delete(provisionalId);
     if (state.activeSessionId === provisionalId) state.activeSessionId = previousId;
     setSystemMessage(error.message || "新建 Agent 会话失败", "error");
+    return null;
   } finally {
     state.sessionsLoading = false;
     renderAgentSessions();
@@ -451,6 +500,7 @@ function ensureSessionView(threadId) {
       scope: "position",
       candidateSymbol: "",
       riskBudget: "0.8",
+      reviewContext: null,
       lastAgentResult: null,
     });
   }
@@ -470,7 +520,33 @@ function renderOpenedSession(payload) {
   const threadId = String(payload?.activeSessionId ?? payload?.currentThreadId ?? state.activeSessionId ?? "");
   const view = ensureSessionView(threadId);
   if (Array.isArray(payload?.transcript)) view.transcript = payload.transcript;
-  if (payload?.lastAgentResult?.run) view.lastAgentResult = payload.lastAgentResult;
+  if (payload?.lastAgentResult?.run) {
+    view.lastAgentResult = payload.lastAgentResult;
+    const lastRun = payload.lastAgentResult.run;
+    if (lastRun.context?.scope === "review") {
+      view.scope = "review";
+      if (lastRun.context.reviewProtocol === "decision_cycle") {
+        view.reviewContext = {
+          reviewProtocol: "decision_cycle",
+          reviewCycleId: lastRun.context.reviewCycleId ?? null,
+          reviewPhase: normalizeReviewPhase(lastRun.context.reviewPhase),
+          cycleType: lastRun.context.cycleType ?? null,
+        };
+      } else {
+        const quarters = [...new Set((lastRun.analysisContext?.cases ?? [])
+          .map((item) => String(item?.fiscalQuarter ?? "").trim())
+          .filter(Boolean))];
+        view.reviewContext = {
+          reviewProtocol: "earnings_case",
+          reviewCaseIds: lastRun.context.reviewCaseIds ?? [],
+          fiscalQuarter: quarters.length === 1 && lastRun.context.reviewMode === "single_event"
+            ? quarters[0]
+            : null,
+          reviewMode: lastRun.context.reviewMode ?? null,
+        };
+      }
+    }
+  }
   resetAgentConversation();
   restoreSessionComposer(view);
 
@@ -536,7 +612,9 @@ function summarizeConversationTitle(value) {
 }
 
 function restoreSessionComposer(view) {
-  const scope = ["position", "candidate", "portfolio"].includes(view.scope) ? view.scope : "position";
+  const scope = ["position", "candidate", "portfolio", "review"].includes(view.scope)
+    ? view.scope
+    : "position";
   state.analysisScope = scope;
   state.candidateSymbol = view.candidateSymbol ?? "";
   document.querySelectorAll(".scope-segmented [data-scope]").forEach((button) => {
@@ -546,7 +624,8 @@ function restoreSessionComposer(view) {
   elements.candidateSymbol.value = state.candidateSymbol;
   elements.riskBudget.value = view.riskBudget || "0.8";
   elements.agentInput.value = view.draft || "";
-  renderAgentContext();
+  if (scope === "review") renderReviewAgentContext(view.reviewContext ?? {});
+  else renderAgentContext();
 }
 
 function syncActiveAgents(activeAgents) {
@@ -592,6 +671,9 @@ function restoreSessionAgentResult(payload) {
 function setAnalysisScope(scope) {
   if (!["position", "candidate", "portfolio"].includes(scope) || scope === state.analysisScope) return;
   state.analysisScope = scope;
+  const view = ensureSessionView(state.activeSessionId);
+  view.scope = scope;
+  view.reviewContext = null;
   document.querySelectorAll(".scope-segmented [data-scope]").forEach((button) => {
     button.setAttribute("aria-checked", String(button.dataset.scope === scope));
   });
@@ -851,15 +933,22 @@ function queueTvBoundsSync() {
 
 async function connectLongbridge() {
   if (state.busy) return;
+  const forceReauthorize = state.longbridgeReauthRequired;
   setBusy(true);
-  setSystemMessage("将在系统浏览器中打开长桥 OAuth；仅请求账户读取权限");
+  setSystemMessage("将在系统浏览器中打开长桥 OAuth；仅请求账户、持仓、历史订单与成交查询权限，不含下单");
   try {
-    const result = await api.connectLongbridge();
+    const result = await api.connectLongbridge({ forceReauthorize });
+    if (result.cancelled) {
+      setSystemMessage("已取消长桥只读重新授权", "warning");
+      return;
+    }
     if (!result.ok) {
       setSystemMessage(
         result.status?.detail || result.status?.message || result.error || "长桥连接失败",
         "error",
       );
+    } else if (result.warning) {
+      setSystemMessage(`长桥只读授权已完成；${result.warning}`, "warning");
     }
   } catch (error) {
     setSystemMessage(error.message || "长桥连接失败", "error");
@@ -1194,6 +1283,10 @@ async function syncSelectedToTv() {
 }
 
 function renderAgentContext() {
+  if (state.analysisScope === "review") {
+    renderReviewAgentContext(ensureSessionView(state.activeSessionId).reviewContext ?? {});
+    return;
+  }
   const position = selectedPosition();
   const scope = state.analysisScope;
   const asOf = state.portfolio?.syncedAt;
@@ -1234,11 +1327,18 @@ function appendContextDirty() {
 async function submitAgentTask(event) {
   event.preventDefault();
   closePromptSuggestions();
-  if (!state.portfolio) {
+  const scope = state.analysisScope;
+  if (scope !== "review" && !state.portfolio) {
     setSystemMessage("请先连接长桥并同步真实组合", "warning");
     return;
   }
-  const scope = state.analysisScope;
+  const reviewContext = ensureSessionView(state.activeSessionId).reviewContext;
+  if (scope === "review"
+    && !reviewContext?.reviewCycleId
+    && !reviewContext?.reviewCaseIds?.length) {
+    setSystemMessage("当前复盘对话缺少已关联周期或案例，请返回复盘台重新选择。", "warning");
+    return;
+  }
   const position = selectedPosition();
   const candidateSymbol = normalizeCandidateSymbol(elements.candidateSymbol.value || state.candidateSymbol);
   if (scope === "position" && !position) {
@@ -1256,26 +1356,206 @@ async function submitAgentTask(event) {
     position: "分析当前持仓的技术结构、组合风险和条件计划",
     candidate: "为未持有候选标的生成买入计划，包括触发、失效条件和风险预算",
     portfolio: "检查全部持仓的集中度、重复暴露、下行情景和组合健康度",
+    review: reviewContext?.reviewProtocol === "decision_cycle"
+      ? reviewContext.reviewPhase === "retrospective"
+        ? "继续该订单优先事后复盘；保持 retrospective 证据标签，并更新可验证建议"
+        : `继续执行该周期的${reviewContext.reviewPhase === "outcome" ? "结果归因" : "盲态过程"}复盘；遵守时间防火墙并更新可验证建议`
+      : "继续基于当前已关联订单、财报事件与事前记录分析，并更新验证或规避建议",
   };
   const task = elements.agentInput.value.trim() || defaultTasks[scope];
   const riskBudgetPercent = Number(elements.riskBudget.value || 0.8);
+  const targetSymbol = scope === "position" ? position?.symbol : scope === "candidate" ? candidateSymbol : null;
+  // The prepared-review entry points create and bind the independent Codex
+  // thread. Once the user is inside it, ordinary follow-ups must stay in that
+  // same thread so its review context and prior answer remain conversational.
+  startAgentOperation({
+    scope,
+    targetSymbol,
+    task,
+    riskBudgetPercent,
+    targetLabel: scope === "review"
+      ? reviewContext.reviewCycleId
+        ? reviewContext.reviewPhase === "retrospective"
+          ? "直接事后复盘 · 决策周期"
+          : `${reviewContext.reviewPhase === "outcome" ? "阶段二" : "阶段一"} · 决策周期`
+        : reviewContext.fiscalQuarter || `${reviewContext.reviewCaseIds.length} 个复盘案例`
+      : null,
+    requestExtras: scope === "review"
+      ? reviewContext.reviewCycleId
+        ? {
+          reviewCycleId: reviewContext.reviewCycleId,
+          cycleId: reviewContext.reviewCycleId,
+          reviewPhase: reviewContext.reviewPhase,
+          reviewProtocol: "decision_cycle",
+        }
+        : {
+          reviewCaseIds: reviewContext.reviewCaseIds,
+          caseIds: reviewContext.reviewCaseIds,
+          fiscalQuarter: reviewContext.fiscalQuarter ?? null,
+          reviewMode: reviewContext.reviewMode ?? null,
+        }
+      : {},
+  });
+}
+
+async function submitPreparedReviewAnalysis(detail) {
+  const source = detail?.request ?? detail?.analysis ?? detail ?? {};
+  const reviewCaseIds = [...new Set([
+    ...(Array.isArray(source.reviewCaseIds) ? source.reviewCaseIds : []),
+    ...(Array.isArray(source.caseIds) ? source.caseIds : []),
+    source.caseId,
+  ].map((item) => String(item ?? "").trim()).filter(Boolean))];
+  if (!reviewCaseIds.length) {
+    setSystemMessage("复盘 Agent 请求缺少案例 ID，请返回复盘台重新选择。", "warning");
+    return;
+  }
+  const reviewSessionId = await createReviewAgentSession({
+    reviewCaseIds,
+    fiscalQuarter: source.fiscalQuarter ?? null,
+    reviewMode: source.reviewMode ?? (reviewCaseIds.length === 1 ? "single_event" : "selected_case_set"),
+  });
+  if (!reviewSessionId) {
+    setSystemMessage("无法创建独立 Codex 复盘对话，复盘尚未提交。", "error");
+    return;
+  }
+  document.querySelector("#workspace-cockpit")?.click();
+  if (state.layout.agentCollapsed) setPaneCollapsed("agent", false);
+  const task = String(source.task ?? "").trim()
+    || (reviewCaseIds.length > 1
+      ? `$review-earnings-decisions 组合复盘用户明确选择的 ${reviewCaseIds.length} 个案例及其已关联订单与成交；披露样本覆盖，区分决策、执行和结果，并提出下一轮验证与规避计划。`
+      : "$review-earnings-decisions 基于已确认关联的长桥订单、成交、财报事件和用户事前记录，复盘该决策；区分过程质量与结果运气，并提出可验证的下一步。 ");
+  elements.agentInput.value = task;
+  const view = ensureSessionView(reviewSessionId);
+  view.draft = task;
+  renderReviewAgentContext({
+    fiscalQuarter: source.fiscalQuarter,
+    caseCount: reviewCaseIds.length,
+  });
+  startAgentOperation({
+    scope: "review",
+    targetSymbol: null,
+    targetLabel: source.fiscalQuarter || `${reviewCaseIds.length} 个复盘案例`,
+    task,
+    riskBudgetPercent: Number(elements.riskBudget.value || 0.8),
+    requestExtras: {
+      reviewCaseIds,
+      caseIds: reviewCaseIds,
+      fiscalQuarter: source.fiscalQuarter ?? null,
+      reviewMode: source.reviewMode ?? (reviewCaseIds.length === 1 ? "single_event" : "selected_case_set"),
+    },
+  });
+}
+
+async function submitPreparedReviewCycleAnalysis(detail) {
+  const source = detail?.request ?? detail?.analysis ?? detail ?? {};
+  const reviewCycleId = String(source.reviewCycleId ?? source.cycleId ?? "").trim();
+  const reviewPhase = normalizeReviewPhase(source.reviewPhase);
+  if (!reviewCycleId) {
+    setSystemMessage("复盘 Agent 请求缺少周期 ID，请返回复盘台重新选择。", "warning");
+    return;
+  }
+  const reviewSessionId = await createReviewAgentSession({
+    reviewProtocol: "decision_cycle",
+    reviewCycleId,
+    reviewPhase,
+    cycleType: source.cycleType ?? null,
+  });
+  if (!reviewSessionId) {
+    setSystemMessage("无法创建独立 Codex 周期复盘对话，复盘尚未提交。", "error");
+    return;
+  }
+  document.querySelector("#workspace-cockpit")?.click();
+  if (state.layout.agentCollapsed) setPaneCollapsed("agent", false);
+  const task = String(source.task ?? "").trim()
+    || `$review-decision-cycles 执行该决策周期的${reviewPhase === "blind"
+      ? "阶段一盲态"
+      : reviewPhase === "outcome" ? "阶段二结果" : "订单优先直接事后"}复盘。`;
+  elements.agentInput.value = task;
+  const view = ensureSessionView(reviewSessionId);
+  view.draft = task;
+  renderReviewAgentContext(view.reviewContext);
+  startAgentOperation({
+    scope: "review",
+    targetSymbol: null,
+    targetLabel: reviewPhase === "blind"
+      ? "阶段一 · 盲态复盘"
+      : reviewPhase === "outcome" ? "阶段二 · 结果复盘" : "订单优先 · 直接事后复盘",
+    task,
+    riskBudgetPercent: Number(elements.riskBudget.value || 0.8),
+    requestExtras: {
+      reviewCycleId,
+      cycleId: reviewCycleId,
+      reviewPhase,
+      reviewProtocol: "decision_cycle",
+    },
+  });
+}
+
+async function createReviewAgentSession({
+  reviewProtocol = "earnings_case",
+  reviewCycleId = null,
+  reviewPhase = null,
+  cycleType = null,
+  reviewCaseIds = [],
+  fiscalQuarter = null,
+  reviewMode = null,
+} = {}) {
+  const threadId = await createAgentSession();
+  if (!threadId || String(state.activeSessionId ?? "") !== String(threadId)) return null;
+  const view = ensureSessionView(threadId);
+  view.scope = "review";
+  view.reviewContext = reviewProtocol === "decision_cycle" || reviewCycleId
+    ? {
+      reviewProtocol: "decision_cycle",
+      reviewCycleId: String(reviewCycleId ?? "").trim(),
+      reviewPhase: normalizeReviewPhase(reviewPhase),
+      cycleType,
+    }
+    : {
+      reviewProtocol: "earnings_case",
+      reviewCaseIds: [...new Set((reviewCaseIds ?? []).map((item) => String(item ?? "").trim()).filter(Boolean))],
+      fiscalQuarter,
+      reviewMode: reviewMode ?? ((reviewCaseIds ?? []).length === 1 ? "single_event" : "selected_case_set"),
+    };
+  state.analysisScope = "review";
+  document.querySelectorAll(".scope-segmented [data-scope]").forEach((button) => {
+    button.setAttribute("aria-checked", "false");
+  });
+  elements.candidateSymbolField.hidden = true;
+  return threadId;
+}
+
+function startAgentOperation({
+  scope,
+  targetSymbol = null,
+  targetLabel = null,
+  task,
+  riskBudgetPercent,
+  requestExtras = {},
+}) {
   const threadId = String(state.activeSessionId ?? "");
   if (!threadId) {
     setSystemMessage("请先新建或打开一个 Codex 对话", "warning");
-    return;
+    return false;
   }
   if (activeOperationForThread(threadId)) {
     setSystemMessage("当前对话已有分析在运行；可以新建或切换到其他对话并行分析。", "warning");
-    return;
+    return false;
   }
-
-  const targetSymbol = scope === "position" ? position?.symbol : scope === "candidate" ? candidateSymbol : null;
   const requestId = crypto.randomUUID();
   const operation = {
     operationId: requestId,
     threadId,
     status: "running",
-    progress: "正在获取长桥日线并计算 EMA、Fib 与组合风险…",
+    progress: scope === "review"
+      ? requestExtras.reviewCycleId
+        ? requestExtras.reviewPhase === "retrospective"
+          ? "正在汇总周期内真实订单、成交与结果证据…"
+          : requestExtras.reviewPhase === "outcome"
+            ? "正在引用冻结的盲态结论并汇总周期结果…"
+            : "正在建立时间防火墙并汇总截止点以前的证据…"
+        : "正在汇总已关联订单、成交、财报事件与事前记录…"
+      : "正在获取长桥日线并计算 EMA、Fib 与组合风险…",
     task,
     streamText: "",
     finalText: "",
@@ -1296,8 +1576,8 @@ async function submitAgentTask(event) {
   elements.agentThread.insertAdjacentHTML("beforeend", `<div class="user-message">${esc(task)}</div>`);
   state.activeRunNode = createOperationNode(operation);
   elements.agentThread.append(state.activeRunNode);
-  const targetLabel = scope === "portfolio" ? "全部组合" : targetSymbol;
-  elements.agentLiveStatus.textContent = `正在分析 ${targetLabel}`;
+  const displayTarget = targetLabel ?? (scope === "portfolio" ? "全部组合" : targetSymbol);
+  elements.agentLiveStatus.textContent = `正在分析 ${displayTarget}`;
   elements.agentCancel.hidden = false;
   updateAgentSubmitState();
   renderAgentSessions();
@@ -1310,11 +1590,49 @@ async function submitAgentTask(event) {
     symbol: targetSymbol,
     task,
     riskBudgetPercent,
+    ...requestExtras,
   }).then((run) => {
     acceptAgentResult({ threadId, operationId: requestId, run });
   }).catch((error) => {
     failAgentOperation(operation, error.message || "Agent 运行失败");
   });
+  return true;
+}
+
+function renderReviewAgentContext({
+  reviewProtocol = "earnings_case",
+  reviewCycleId = null,
+  reviewPhase = null,
+  cycleType = null,
+  fiscalQuarter = null,
+  caseCount = 0,
+  reviewCaseIds = [],
+} = {}) {
+  if (reviewProtocol === "decision_cycle" || reviewCycleId) {
+    const normalizedPhase = normalizeReviewPhase(reviewPhase);
+    const phaseLabel = normalizedPhase === "retrospective"
+      ? "订单优先 · 直接事后复盘"
+      : normalizedPhase === "outcome" ? "阶段二 · 结果与归因" : "阶段一 · 盲态重放";
+    const typeLabels = {
+      catalyst: "财报 / 催化剂周期",
+      position_lifecycle: "单一持仓生命周期",
+      monthly_portfolio: "月度组合周期",
+    };
+    elements.agentContext.innerHTML = `
+      <div><span>复盘范围</span><strong>${esc(typeLabels[cycleType] || "决策周期")}</strong></div>
+      <div><span>时间防火墙</span><strong>${esc(phaseLabel)}</strong></div>
+      <div><span>分析方式</span><strong>$review-decision-cycles · 独立 Codex 对话</strong></div>`;
+    return;
+  }
+  const resolvedCaseCount = caseCount || reviewCaseIds.length;
+  elements.agentContext.innerHTML = `
+    <div><span>复盘范围</span><strong>${esc(fiscalQuarter || `${resolvedCaseCount} 个已关联案例`)}</strong></div>
+    <div><span>事实层</span><strong>长桥历史订单 + 成交 + 财报事件</strong></div>
+    <div><span>分析方式</span><strong>$review-earnings-decisions · 独立 Codex 对话</strong></div>`;
+}
+
+function normalizeReviewPhase(value) {
+  return value === "outcome" || value === "retrospective" ? value : "blind";
 }
 
 function handleAgentResult(envelope) {
@@ -1510,20 +1828,35 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
   if (operationId) {
     rememberSettledOperation(operationId);
   }
-  const resultLabel = runScope === "portfolio" ? "全部组合" : run.context.symbol || "目标";
+  const resultLabel = runScope === "portfolio"
+    ? "全部组合"
+    : runScope === "review"
+      ? "复盘"
+      : run.context.symbol || "目标";
   const label = stale
     ? `${resultLabel} 分析完成，但上下文已变化`
     : `${resultLabel} 分析完成`;
   if (operation) finishAgentOperation(operation, label);
   else if (resultThreadId === activeThreadId) finishActiveAgentUi(operationId, label);
+  if (run.context.reviewProtocol === "decision_cycle") {
+    window.dispatchEvent(new CustomEvent("cockpit:review-cycle-analysis-completed", {
+      detail: {
+        cycleId: run.context.reviewCycleId,
+        reviewPhase: run.context.reviewPhase,
+        phaseRunId: run.context.reviewPhaseRunId ?? null,
+      },
+    }));
+  }
   renderAgentSessions();
   if (resultThreadId === activeThreadId) scrollAgentToEnd();
   return true;
 }
 
 function isRunStale(run, now = Date.now()) {
-  if (!run?.context || !state.portfolio) return true;
+  if (!run?.context) return true;
   const runScope = run.context.scope ?? (run.context.symbol ? "position" : "portfolio");
+  if (runScope === "review") return reviewRunEvidenceStale(run);
+  if (!state.portfolio) return true;
   const activeTarget = state.analysisScope === "position"
     ? normalizeCandidateSymbol(state.selectedSymbol)
     : state.analysisScope === "candidate"
@@ -1538,6 +1871,34 @@ function isRunStale(run, now = Date.now()) {
     || !snapshotMatches
     || !trust.freshForSizing
     || (runScope === "candidate" && candidateSizingExpired(run.risk, now));
+}
+
+function reviewRunEvidenceStale(run) {
+  if (run?.context?.reviewProtocol === "decision_cycle") {
+    if (run?.context?.reviewPhasePersistence === "failed") return true;
+    const phase = run?.context?.reviewPhase;
+    if (phase === "blind") return false;
+    const cycleId = String(run.context.reviewCycleId ?? "");
+    const currentNote = state.reviewCycleRetrospectiveVersions.get(cycleId);
+    const usedNote = Number(run.context.reviewRetrospectiveVersion);
+    const currentEvidence = state.reviewCycleEvidenceRevisions.get(cycleId);
+    const usedEvidence = Number(run.context.reviewEvidenceRevision);
+    const noteChanged = Number.isInteger(currentNote) && currentNote > 0
+      && (!Number.isInteger(usedNote) || usedNote !== currentNote);
+    const evidenceChanged = Number.isInteger(currentEvidence) && currentEvidence > 0
+      && (!Number.isInteger(usedEvidence) || usedEvidence !== currentEvidence);
+    return (phase === "retrospective" && noteChanged) || evidenceChanged;
+  }
+  const revisions = Array.isArray(run?.context?.reviewEvidenceRevisions)
+    ? run.context.reviewEvidenceRevisions
+    : [];
+  if (!revisions.length || !state.reviewEvidenceRevisions.size) return false;
+  return revisions.some((item) => {
+    const current = state.reviewEvidenceRevisions.get(String(item?.caseId ?? ""));
+    const used = Number(item?.revision);
+    return Number.isInteger(current) && current > 0
+      && (!Number.isInteger(used) || used !== current);
+  });
 }
 
 function candidateSizingExpired(risk, now = Date.now()) {
@@ -1710,18 +2071,23 @@ function renderAgentRun(run, { stale = false } = {}) {
   const structuredModuleCount = structuredSections.length;
   const notices = [];
   if (runStale) {
-    notices.push(`<div class="run-state"><span class="evidence-dot degraded"></span><span>账户快照、仓位裁决有效期或分析选择已失效；此结果仅供回看，不能保存为当前计划。</span></div>`);
+    notices.push(`<div class="run-state"><span class="evidence-dot degraded"></span><span>${run.context?.scope === "review"
+      ? run.context?.reviewPhasePersistence === "failed"
+        ? "分析已返回，但没有写入不可变审计台账；该结果不能登记验证草案，请重新运行。"
+        : "关联订单的证据版本已经变化；此结果已标记为历史产物，请基于最新关联完整重跑。"
+      : "账户快照、仓位裁决有效期或分析选择已失效；此结果仅供回看，不能保存为当前计划。"}</span></div>`);
   }
   if (run.plan?.available && requestedSections.includes("plan")) {
     structuredSections.push(`<button class="save-plan" type="button" data-save-plan="${esc(run.id)}" ${runStale ? "disabled" : ""}>${runStale ? "上下文或裁决已失效 · 请刷新后重新运行" : "保存为静态计划快照 · 不监控、不下单"}</button>`);
   }
   const structured = structuredSections.length
-    ? `<details class="structured-evidence"><summary><span>展开结构化证据</span><strong>${structuredModuleCount} 个模块 · EMA / FIB / 风险 / 计划</strong></summary><div class="structured-evidence-body">${structuredSections.join("")}</div></details>`
+    ? `<details class="structured-evidence"><summary><span>展开结构化证据</span><strong>${structuredModuleCount} 个模块 · 市场证据 / 风险 / 计划</strong></summary><div class="structured-evidence-body">${structuredSections.join("")}</div></details>`
     : "";
   const adjudication = run.context?.scope === "candidate"
     ? candidateAdjudicationCard(run.risk, { stale: runStale })
     : "";
-  wrapper.innerHTML = `${notices.join("")}${conclusion}${adjudication}${structured}`;
+  const learning = run.learningProposal ? learningProposalCard(run, { stale: runStale }) : "";
+  wrapper.innerHTML = `${notices.join("")}${conclusion}${learning}${adjudication}${structured}`;
   const response = wrapper.querySelector(".model-response");
   if (response) {
     if (window.CockpitMarkdown?.renderMarkdown) {
@@ -1731,6 +2097,22 @@ function renderAgentRun(run, { stale = false } = {}) {
     }
   }
   return wrapper;
+}
+
+function learningProposalCard(run, { stale = false } = {}) {
+  const proposal = run.learningProposal;
+  const test = proposal?.testDesign ?? {};
+  const rule = proposal?.candidateRule ?? {};
+  return `<article class="agent-card learning-proposal-card">
+    <div class="agent-card-head"><span>AI VALIDATION DRAFT</span><strong>HUMAN CONFIRMATION</strong></div>
+    <div class="agent-card-body">
+      <h3>${esc(rule.title || "从本次复盘生成验证草案")}</h3>
+      <p>${esc(proposal.hypothesis || "—")}</p>
+      <div class="learning-proposal-summary"><span>${esc(test.metric || "待定指标")}</span><span>${esc(test.window || "待定窗口")}</span><span>至少 ${number(test.minCases, 0)} 个案例</span><span>${esc(String(proposal.confidence || "unknown").toUpperCase())}</span></div>
+      <p class="learning-proposal-caveat">事后草案不会回写为事前判断；确认后只登记为待验证假设。</p>
+      <button class="save-plan learning-proposal-open" type="button" data-open-learning-proposal="${esc(run.id)}" ${stale ? "disabled" : ""}>${stale ? "证据已更新 · 请重新复盘" : "打开验证草案并确认"}</button>
+    </div>
+  </article>`;
 }
 
 function conclusionCard(run) {
@@ -2184,7 +2566,7 @@ function candidateRiskCard(risk) {
         <div><span>${esc(risk.referenceLabel)}</span><strong>${number(risk.referenceLevel)}</strong></div>
         <div><span>新增融资权重</span><strong>${percent(leverage.maxAdditionalBorrowedWeightPercent ?? 0)}</strong></div>
         <div><span>杠杆上限</span><strong>${number(leverage.maxLeverageMultiple, 2)}×</strong></div>
-        <div><span>杠杆判断</span><strong>${leverage.decision === "disabled" ? "禁止新增 / 不可评估" : leverage.additionalLeverageAllowed ? "可复核" : "仅现金覆盖"}</strong></div>
+        <div><span>杠杆判断</span><strong>${leverage.decision === "disabled" ? "禁止新增 / 不可评估" : leverage.decision === "margin_within_cap" ? "融资上限内 · ≤150%" : leverage.additionalLeverageAllowed ? "可复核" : "仅现金覆盖"}</strong></div>
         <div><span>DECISION AT</span><strong>${sizingReview.decisionAt ? esc(shortDateTime(sizingReview.decisionAt)) : "—"}</strong></div>
         <div><span>VALID UNTIL</span><strong>${risk.sizingValidUntil ? esc(shortDateTime(risk.sizingValidUntil)) : "—"}</strong></div>
       </div>
@@ -2285,9 +2667,13 @@ function setLongbridgeStatus(status) {
     "syncing",
   ]);
   const connected = connectedStates.has(status.state);
+  state.longbridgeReauthRequired = status.state === "scope_upgrade_required"
+    || status.state === "reauth_required";
   elements.longbridgeChip.className = `status-chip ${connected ? "connected" : ""}`;
   elements.longbridgeChip.innerHTML = `<i></i>${esc(status.message || (connected ? "长桥已连接" : "长桥未连接"))}`;
-  elements.connect.textContent = connected ? "长桥已连接" : "连接长桥";
+  elements.connect.textContent = state.longbridgeReauthRequired
+    ? "升级只读授权"
+    : connected ? "长桥已连接" : "连接长桥";
 }
 
 function setCodexStatus(status) {
@@ -2317,7 +2703,7 @@ function updateAgentSubmitState() {
   const active = activeOperationForThread(state.activeSessionId);
   const activeSession = state.agentSessions.find((session) => session.id === state.activeSessionId);
   elements.agentSubmit.disabled = state.busy
-    || !state.portfolio
+    || (state.analysisScope !== "review" && !state.portfolio)
     || !state.codexAvailable
     || !state.activeSessionId
     || Boolean(activeSession?.provisioning)

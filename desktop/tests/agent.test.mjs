@@ -108,7 +108,7 @@ test("candidate scope analyzes an unheld bare US ticker and builds an entry plan
   ));
   assert.equal(run.risk.leverage.additionalLeverageAllowed, false);
   assert.equal(run.risk.leverage.maxAdditionalBorrowedWeightPercent, 0);
-  assert.equal(run.risk.leverage.maxLeverageMultiple, 1);
+  assert.equal(run.risk.leverage.maxLeverageMultiple, 1.5);
   assert.equal(run.risk.leverage.decision, "model_review_required");
   assert.equal(run.plan.sizing.initialAdditionalWeightPercent, null);
   assert.equal(run.plan.sizing.maxTotalWeightPercent, null);
@@ -120,7 +120,7 @@ test("candidate scope analyzes an unheld bare US ticker and builds an entry plan
   assert.equal(run.capabilities.leverageAssessment, true);
 });
 
-test("candidate sizing fails closed until EMA21 evidence is plan-ready", async () => {
+test("candidate sizing accepts closed market evidence without requiring EMA21", async () => {
   const run = await buildAnalysisEvidence({
     scope: "candidate",
     portfolio: portfolioFixture(),
@@ -129,37 +129,102 @@ test("candidate sizing fails closed until EMA21 evidence is plan-ready", async (
   });
 
   assert.equal(run.technical.ema[21], null);
-  assert.equal(run.risk.technicalPlanReady, false);
+  assert.equal(run.risk.technicalPlanReady, true);
+  assert.equal(run.risk.supported, true);
+  assert.equal(run.risk.entryAllowed, false);
+  assert.equal(run.risk.recommendedInitialAdditionalWeightPercent, null);
+  assert.equal(run.risk.recommendedMaxWeightPercent, null);
+  assert.equal(run.risk.leverage.decision, "model_review_required");
+  assert.equal(run.risk.leverage.additionalLeverageAllowed, false);
+  assert.equal(run.plan.available, true);
+  assert.equal(run.plan.state, "awaiting_codex_strategy");
+  assert.equal(run.risk.limitation, null);
+});
+
+test("candidate sizing requires a finite cash ratio", async () => {
+  const portfolio = portfolioFixture();
+  portfolio.totals.cashRatio = undefined;
+  const run = await buildAnalysisEvidence({
+    scope: "candidate",
+    portfolio,
+    symbol: "MSFT",
+    loadCandles: async () => risingCandles(220),
+  });
+
+  assert.equal(run.risk.cashRatioValid, false);
   assert.equal(run.risk.supported, false);
   assert.equal(run.risk.entryAllowed, false);
   assert.equal(run.risk.recommendedInitialAdditionalWeightPercent, null);
   assert.equal(run.risk.recommendedMaxWeightPercent, null);
   assert.equal(run.risk.leverage.decision, "disabled");
   assert.equal(run.risk.leverage.additionalLeverageAllowed, false);
-  assert.equal(run.plan.available, false);
-  assert.match(run.risk.limitation, /EMA21|日线证据/);
+  assert.match(run.risk.limitation, /现金比例/);
 });
 
-test("candidate sizing requires a finite non-negative cash ratio", async () => {
-  for (const cashRatio of [undefined, -1]) {
-    const portfolio = portfolioFixture();
-    portfolio.totals.cashRatio = cashRatio;
-    const run = await buildAnalysisEvidence({
-      scope: "candidate",
-      portfolio,
-      symbol: "MSFT",
-      loadCandles: async () => risingCandles(220),
-    });
+test("negative cash is a financing warning instead of an automatic block below the gross cap", async () => {
+  const portfolio = portfolioFixture();
+  portfolio.totals.cashRatio = -10;
+  portfolio.totals.positionsGrossMarketValueBase = 1.1 * portfolio.account.netAssets;
+  const run = await buildAnalysisEvidence({
+    scope: "candidate",
+    portfolio,
+    symbol: "MSFT",
+    loadCandles: async () => risingCandles(220),
+  });
 
-    assert.equal(run.risk.cashRatioValid, false);
-    assert.equal(run.risk.supported, false);
-    assert.equal(run.risk.entryAllowed, false);
-    assert.equal(run.risk.recommendedInitialAdditionalWeightPercent, null);
-    assert.equal(run.risk.recommendedMaxWeightPercent, null);
-    assert.equal(run.risk.leverage.decision, "disabled");
-    assert.equal(run.risk.leverage.additionalLeverageAllowed, false);
-    assert.match(run.risk.limitation, /现金比例/);
-  }
+  assert.equal(run.risk.cashRatioValid, true);
+  assert.equal(run.risk.supported, true);
+  assert.equal(run.risk.awaitingModelReview, true);
+  assert.equal(run.risk.cashConstrainedWeightPercent, 0);
+  assert.equal(run.risk.leverage.marginEligible, true);
+  assert.ok(run.risk.portfolioConstraints.alerts.some(
+    (item) => item.code === "negative_cash" && item.severity === "warning",
+  ));
+});
+
+test("candidate sizing fails closed when broker buying power is missing", async () => {
+  const portfolio = portfolioFixture();
+  delete portfolio.account.buyPower;
+  const run = await buildAnalysisEvidence({
+    scope: "candidate",
+    portfolio,
+    symbol: "MSFT",
+    loadCandles: async () => risingCandles(220),
+  });
+
+  assert.equal(run.risk.buyPowerValid, false);
+  assert.equal(run.risk.supported, false);
+  assert.equal(run.risk.leverage.decision, "disabled");
+  assert.match(run.risk.limitation, /购买力/);
+});
+
+test("candidate gross headroom uses 150 percent as the hard cap and blocks at the cap", async () => {
+  const nearCap = portfolioFixture();
+  nearCap.totals.positionsGrossMarketValueBase = 14_900;
+  nearCap.totals.cashRatio = -49;
+  const nearCapRun = await buildAnalysisEvidence({
+    scope: "candidate",
+    portfolio: nearCap,
+    symbol: "MSFT",
+    loadCandles: async () => risingCandles(220),
+  });
+  assert.equal(nearCapRun.risk.portfolioConstraints.policyThresholds.grossWarningPercent, 120);
+  assert.equal(nearCapRun.risk.portfolioConstraints.policyThresholds.grossHardMaxPercent, 150);
+  assert.equal(nearCapRun.risk.hardMaxAdditionalWeightPercent, 1);
+  assert.equal(nearCapRun.risk.awaitingModelReview, true);
+
+  const atCap = portfolioFixture();
+  atCap.totals.positionsGrossMarketValueBase = 15_000;
+  atCap.totals.cashRatio = -50;
+  const atCapRun = await buildAnalysisEvidence({
+    scope: "candidate",
+    portfolio: atCap,
+    symbol: "MSFT",
+    loadCandles: async () => risingCandles(220),
+  });
+  assert.equal(atCapRun.risk.hardMaxAdditionalWeightPercent, 0);
+  assert.equal(atCapRun.risk.awaitingModelReview, false);
+  assert.match(atCapRun.risk.entryBlockReasons.join(" "), /150% 硬上限/);
 });
 
 test("candidate sizing and leverage are disabled when option Delta exposure is unavailable", async () => {
@@ -453,6 +518,7 @@ function portfolioFixture() {
       baseCurrency: "USD",
       netAssets: 10_000,
       totalCash: 4_000,
+      buyPower: 20_000,
       maintenanceMargin: 500,
       initMargin: 700,
       marginCall: 0,

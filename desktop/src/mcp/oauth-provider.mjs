@@ -1,5 +1,12 @@
 import { randomBytes } from "node:crypto";
 
+// Longbridge's restricted /v2 surface separates portfolio reads (6) from
+// order/execution history reads (10). Keep this explicit instead of following
+// every scope advertised by the server: scope 4 can mutate watchlists and
+// scope 11 can place/replace/cancel orders.
+export const LONGBRIDGE_READ_SCOPE = "6 10";
+const REQUIRED_READ_SCOPES = new Set(LONGBRIDGE_READ_SCOPE.split(" "));
+
 /**
  * Persistent OAuth 2.1 provider for the MCP TypeScript SDK.
  * Secrets are stored only through EncryptedStore (Electron safeStorage).
@@ -25,7 +32,7 @@ export class DesktopOAuthProvider {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
-      scope: "6",
+      scope: LONGBRIDGE_READ_SCOPE,
     };
   }
 
@@ -64,8 +71,11 @@ export class DesktopOAuthProvider {
     if (url.protocol !== "https:" || !allowedHost) {
       throw new Error("Rejected an unexpected Longbridge authorization URL.");
     }
-    if (scopes.size !== 1 || !scopes.has("6")) {
-      throw new Error("Rejected a Longbridge authorization request outside account.read scope 6.");
+    if (
+      scopes.size !== REQUIRED_READ_SCOPES.size
+      || [...REQUIRED_READ_SCOPES].some((scope) => !scopes.has(scope))
+    ) {
+      throw new Error("Rejected a Longbridge authorization request outside account.read + trade.read scopes 6 and 10.");
     }
     await this.onRedirect(url);
   }

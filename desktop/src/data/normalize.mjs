@@ -39,6 +39,7 @@ export function normalizePortfolio({
     const quote = quoteMap.get(position.symbol) ?? null;
     const instrumentType = inferInstrumentType(position.symbol);
     const mark = selectQuoteMark(quote);
+    const regularMark = selectRegularQuoteMark(quote);
     const quantity = number(position.quantity);
     const grossQuantity = number(position.gross_quantity, Math.abs(quantity));
     const costPrice = number(position.cost_price, NaN);
@@ -59,6 +60,13 @@ export function normalizePortfolio({
       contractMultiplier,
     });
     const nativePricingAvailable = !nativeLimitation;
+    const regularNativeLimitation = nativeValuationLimitation({
+      symbol: position.symbol,
+      instrumentType,
+      mark: regularMark,
+      contractMultiplier,
+    });
+    const regularNativePricingAvailable = !regularNativeLimitation;
     const fxLimitation = fxToBase > 0
       ? null
       : `${position.symbol} 缺少到组合基准币种的可用汇率。`;
@@ -77,6 +85,21 @@ export function normalizePortfolio({
       : null;
     const nativeGrossCostValue = nativePricingAvailable
       ? number(position.gross_cost_value, Math.abs(quantity * number(costPrice))) * contractMultiplier
+      : null;
+    const regularNativeNetValue = regularNativePricingAvailable
+      ? quantity * regularMark.price * contractMultiplier
+      : null;
+    const regularNativeGrossValue = regularNativePricingAvailable
+      ? grossQuantity * regularMark.price * contractMultiplier
+      : null;
+    const regularMarketValueBase = regularNativePricingAvailable && fxToBase > 0
+      ? regularNativeNetValue * fxToBase
+      : null;
+    const regularGrossMarketValueBase = regularNativePricingAvailable && fxToBase > 0
+      ? regularNativeGrossValue * fxToBase
+      : null;
+    const regularPnlBase = regularNativePricingAvailable && fxToBase > 0 && Number.isFinite(nativeCostValue)
+      ? (regularNativeNetValue - nativeCostValue) * fxToBase
       : null;
     const marketValueBase = baseValuationAvailable ? nativeNetValue * fxToBase : null;
     const grossMarketValueBase = baseValuationAvailable ? nativeGrossValue * fxToBase : null;
@@ -100,6 +123,7 @@ export function normalizePortfolio({
       hasOffsettingLegs: Boolean(position.has_offsetting_legs),
       costPrice: Number.isFinite(costPrice) ? costPrice : null,
       lastPrice,
+      regularLastPrice: regularNativePricingAvailable ? regularMark.price : null,
       prevClose: Number.isFinite(prevClose) ? prevClose : null,
       changePercent:
         nativePricingAvailable && Number.isFinite(prevClose) && prevClose !== 0
@@ -109,6 +133,16 @@ export function normalizePortfolio({
       marketValueBase,
       grossMarketValueBase,
       pnlBase,
+      regularQuoteTimestamp: regularMark?.timestamp ?? null,
+      regularMarketValue: regularNativeNetValue,
+      regularMarketValueBase,
+      regularGrossMarketValueBase,
+      regularPnlBase,
+      regularValuationStatus: regularNativePricingAvailable && fxToBase > 0
+        ? "priced"
+        : regularNativePricingAvailable
+          ? "native_only"
+          : "unpriced",
       pnlPercent:
         nativePricingAvailable && nativeGrossCostValue > 0 && Number.isFinite(nativeCostValue)
           ? ((nativeNetValue - nativeCostValue) / nativeGrossCostValue) * 100
@@ -157,6 +191,10 @@ export function normalizePortfolio({
     .map((position) => position.quoteTimestamp)
     .filter(Boolean)
     .sort();
+  const regularQuoteTimes = normalized
+    .map((position) => position.regularQuoteTimestamp)
+    .filter(Boolean)
+    .sort();
   const unpricedPositionCount = normalized.length - pricedPositions.length;
   const missingTimestampCount = pricedPositions.filter(
     (position) => !position.quoteTimestamp,
@@ -179,6 +217,8 @@ export function normalizePortfolio({
     syncedAt: new Date().toISOString(),
     quoteAsOf: quoteTimes[0] ?? null,
     quoteLatestAsOf: quoteTimes.at(-1) ?? null,
+    regularQuoteAsOf: regularQuoteTimes[0] ?? null,
+    regularQuoteLatestAsOf: regularQuoteTimes.at(-1) ?? null,
     account: {
       baseCurrency: account.currency,
       netAssets: account.netAssets,
@@ -316,6 +356,11 @@ export function selectQuoteMark(quote) {
   ].filter(Boolean);
   if (!candidates.length) return null;
   return candidates.sort((a, b) => (b.epoch ?? 0) - (a.epoch ?? 0))[0];
+}
+
+export function selectRegularQuoteMark(quote) {
+  if (!quote || typeof quote !== "object") return null;
+  return quoteCandidate(quote, "regular");
 }
 
 export function buildFxGraph(payload) {

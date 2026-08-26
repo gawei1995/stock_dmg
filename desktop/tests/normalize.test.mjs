@@ -197,6 +197,32 @@ test("uses the newest valid extended-hours mark and records its session", () => 
   assert.equal(mark.timestamp, "2026-01-01T02:00:00.000Z");
 });
 
+test("keeps the regular mark beside the latest after-hours mark for formal close snapshots", () => {
+  const result = normalizePortfolio({
+    positions: { list: [{ stock_info: [{
+      symbol: "AAPL.US",
+      quantity: "10",
+      currency: "USD",
+      cost_price: "90",
+      market: "US",
+    }] }] },
+    balances: [{ currency: "USD", net_assets: "1100", total_cash: "100" }],
+    quotes: [{
+      symbol: "AAPL.US",
+      last_done: "100",
+      timestamp: "1767225600",
+      post_market_quote: { last_done: "105", timestamp: "1767232800" },
+    }],
+    exchangeRates: [],
+  });
+
+  assert.equal(result.positions[0].lastPrice, 105);
+  assert.equal(result.positions[0].quoteSession, "post_market");
+  assert.equal(result.positions[0].regularLastPrice, 100);
+  assert.equal(result.positions[0].regularMarketValueBase, 1000);
+  assert.equal(result.regularQuoteAsOf, "2026-01-01T00:00:00.000Z");
+});
+
 test("supports current Longbridge extended-hours field names", () => {
   const mark = selectQuoteMark({
     last_done: "100",

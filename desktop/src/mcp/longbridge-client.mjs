@@ -1,16 +1,28 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
-import { DesktopOAuthProvider } from "./oauth-provider.mjs";
+import {
+  DesktopOAuthProvider,
+  LONGBRIDGE_READ_SCOPE,
+} from "./oauth-provider.mjs";
 import { OAuthLoopbackServer } from "./loopback-callback.mjs";
+
+const AUTHORIZATION_PROFILE = "v2-read-6-10";
+const LEGACY_AUTHORIZATION_PROFILES = [null];
 
 const READ_ONLY_TOOLS = new Set([
   "account_balance",
   "candlesticks",
   "exchange_rate",
+  "finance_calendar",
+  "history_executions",
+  "history_orders",
+  "order_detail",
   "option_quote",
   "quote",
   "stock_positions",
+  "today_executions",
+  "today_orders",
 ]);
 const REQUIRED_TOOLS = new Set([
   "account_balance",
@@ -26,9 +38,15 @@ const DEFAULT_TOOL_TIMEOUT_MS = Object.freeze({
   account_balance: 12_000,
   candlesticks: 15_000,
   exchange_rate: 10_000,
+  finance_calendar: 20_000,
+  history_executions: 20_000,
+  history_orders: 20_000,
+  order_detail: 12_000,
   option_quote: 12_000,
   quote: 12_000,
   stock_positions: 12_000,
+  today_executions: 12_000,
+  today_orders: 12_000,
 });
 
 export class LongbridgeClient {
@@ -50,7 +68,8 @@ export class LongbridgeClient {
     if (typeof fetchFn !== "function") {
       throw new TypeError("Longbridge fetchFn must be a function.");
     }
-    this.credentialPrefix = `longbridge:${new URL(this.endpoint).hostname}`;
+    this.credentialBasePrefix = `longbridge:${new URL(this.endpoint).hostname}`;
+    this.credentialPrefix = `${this.credentialBasePrefix}:${AUTHORIZATION_PROFILE}`;
     this.store = store;
     this.openExternal = openExternal;
     this.onStatus = onStatus;
@@ -79,6 +98,15 @@ export class LongbridgeClient {
 
   async hasSavedAuthorization() {
     return Boolean(await this.store.get(`${this.credentialPrefix}:tokens`));
+  }
+
+  async needsAuthorizationUpgrade() {
+    if (await this.hasSavedAuthorization()) return false;
+    for (const profile of LEGACY_AUTHORIZATION_PROFILES) {
+      const prefix = profile ? `${this.credentialBasePrefix}:${profile}` : this.credentialBasePrefix;
+      if (await this.store.get(`${prefix}:tokens`)) return true;
+    }
+    return false;
   }
 
   async connect({ interactive = true } = {}) {
@@ -111,7 +139,7 @@ export class LongbridgeClient {
       this.onStatus({ state: "connecting", message: "正在连接长桥只读 MCP" });
       const authResult = await this.authFn(provider, {
         serverUrl: new URL(this.endpoint),
-        scope: "6",
+        scope: LONGBRIDGE_READ_SCOPE,
         fetchFn: this.fetchFn,
       });
       if (authResult === "REDIRECT") {
@@ -123,7 +151,7 @@ export class LongbridgeClient {
         await this.authFn(provider, {
           serverUrl: new URL(this.endpoint),
           authorizationCode: code,
-          scope: "6",
+          scope: LONGBRIDGE_READ_SCOPE,
           fetchFn: this.fetchFn,
         });
       }
@@ -183,6 +211,10 @@ export class LongbridgeClient {
     };
   }
 
+  supports(name) {
+    return READ_ONLY_TOOLS.has(name) && this.tools.has(name);
+  }
+
   async call(name, args = {}, { signal, timeoutMs } = {}) {
     if (!READ_ONLY_TOOLS.has(name)) {
       throw new Error(`Tool ${name} is not in the desktop read-only allowlist.`);
@@ -213,7 +245,7 @@ export class LongbridgeClient {
 
   async #handleToolError(name, error) {
     const classification = classifyLongbridgeError(error);
-    if (classification.kind === "auth" || classification.kind === "transport") {
+    if (classification.kind === "auth" || classification.kind === "transport" || classification.reauth) {
       this.tools.clear();
       await this.#closeClient();
     }
@@ -224,9 +256,15 @@ export class LongbridgeClient {
     await this.#closeClient();
     this.tools.clear();
     if (forget) {
-      for (const name of ["tokens", "clientInformation", "codeVerifier", "discoveryState"]) {
-        const key = `${this.credentialPrefix}:${name}`;
-        await this.store.delete(key);
+      const prefixes = [
+        this.credentialPrefix,
+        ...LEGACY_AUTHORIZATION_PROFILES.map((profile) =>
+          profile ? `${this.credentialBasePrefix}:${profile}` : this.credentialBasePrefix),
+      ];
+      for (const prefix of prefixes) {
+        for (const name of ["tokens", "clientInformation", "codeVerifier", "discoveryState"]) {
+          await this.store.delete(`${prefix}:${name}`);
+        }
       }
     }
     this.onStatus({ state: "disconnected", message: "长桥未连接" });
@@ -259,6 +297,7 @@ export class LongbridgeToolError extends Error {
 export function classifyLongbridgeError(error) {
   const message = error instanceof Error ? error.message : String(error ?? "");
   const normalized = message.toLowerCase();
+  const explicitCode = Number(error?.code);
   if (
     error?.name === "StreamableHTTPError"
     || /streamable http error|failed to fetch|fetch failed|econnreset|socket|network|session (?:closed|expired)|transport|net::err_[a-z0-9_]+|err_(?:connection|proxy|tunnel|name_not_resolved|internet_disconnected)/.test(normalized)
@@ -276,6 +315,12 @@ export function classifyLongbridgeError(error) {
   }
   if (/401003|invalid[_ ]token|token expired|invalid[_ ]grant|unauthori[sz]ed/.test(normalized)) {
     return { kind: "auth", code: 401, retryable: true, reauth: true };
+  }
+  if (
+    explicitCode === 403308
+    || /403308|target api(?:'s)? scope is not in authorized scopes|scope is not in authorized scopes/.test(normalized)
+  ) {
+    return { kind: "permission", code: 403308, retryable: false, reauth: true };
   }
   if (/insufficient[_ ]scope|permission denied|\b403\b/.test(normalized)) {
     return { kind: "permission", code: 403, retryable: false, reauth: false };
