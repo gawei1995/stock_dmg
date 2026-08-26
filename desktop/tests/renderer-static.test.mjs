@@ -117,6 +117,17 @@ test("renderer exposes snapshot, calculation, Fib, and LLM sizing provenance", a
     /const finalizedReview = \["llm_reviewed", "bounded", "blocked"\]\.includes\(reviewStatus\)/,
   );
   assert.match(script, /function isRunStale\(/);
+  assert.match(script, /function reviewRunEvidenceStale\(/);
+  assert.match(script, /reviewEvidenceRevisions:\s*new Map\(\)/);
+  assert.match(script, /reviewCycleRetrospectiveVersions:\s*new Map\(\)/);
+  assert.match(script, /reviewCycleEvidenceRevisions:\s*new Map\(\)/);
+  assert.match(script, /usedEvidence !== currentEvidence/);
+  assert.match(script, /phase === "blind"/);
+  assert.match(script, /phase === "retrospective" && noteChanged/);
+  assert.match(script, /reviewPhasePersistence === "failed"/);
+  assert.match(script, /没有写入不可变审计台账/);
+  assert.match(script, /关联订单的证据版本已经变化/);
+  assert.match(script, /证据已更新 · 请重新复盘/);
   assert.match(script, /function candidateSizingExpired\(/);
   assert.match(
     script,
@@ -218,7 +229,7 @@ test("desktop fixes Longbridge to the global endpoint and uses Electron's system
   assert.match(main, /state:\s*"network_error"/);
   assert.equal(
     (main.match(/error:\s*failure\.detail \|\| failure\.message/g) ?? []).length,
-    2,
+    3,
   );
   const connectHandlerStart = main.indexOf('ipcMain.handle("longbridge:connect"');
   const forgetHandlerStart = main.indexOf('ipcMain.handle("longbridge:forget"', connectHandlerStart);

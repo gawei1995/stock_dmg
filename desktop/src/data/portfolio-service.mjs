@@ -7,11 +7,19 @@ import {
 } from "./normalize.mjs";
 import { withPortfolioFreshness } from "./freshness.mjs";
 import { EcbReferenceFxProvider } from "./reference-fx.mjs";
+import { MarketHistoryStore } from "./market-history-store.mjs";
 
 const QUOTE_BATCH_SIZE = 500;
 const DEFAULT_CANDLE_COUNT = 1000;
 const CANDLE_CACHE_TTL_MS = 2 * 60 * 1000;
 const MAX_CANDLE_CACHE_ENTRIES = 100;
+const DEFAULT_PERSISTENT_REVALIDATE_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_CANDLE_REFRESH_TIMEOUT_MS = 8_000;
+const CANDLE_DESCRIPTOR = Object.freeze({
+  period: "day",
+  adjustment: "forward",
+  tradeSessions: "intraday",
+});
 export const PORTFOLIO_SNAPSHOT_SCHEMA_VERSION = 2;
 
 export class PortfolioService {
@@ -20,6 +28,7 @@ export class PortfolioService {
     store,
     onStatus = () => {},
     referenceFxProvider = null,
+    marketHistoryStore = null,
     baseCurrency = "USD",
   }) {
     this.longbridge = longbridge;
@@ -27,8 +36,13 @@ export class PortfolioService {
     this.onStatus = onStatus;
     this.referenceFxProvider = referenceFxProvider ?? new EcbReferenceFxProvider({ store });
     this.baseCurrency = String(baseCurrency || "USD").toUpperCase();
+    this.marketHistoryStore = marketHistoryStore
+      ?? (store?.get && store?.set
+        ? new MarketHistoryStore({ store, endpoint: longbridge.endpoint })
+        : disabledMarketHistoryStore());
     this.refreshing = null;
     this.candleCache = new Map();
+    this.candleLoads = new Map();
   }
 
   async cachedPortfolio() {
@@ -122,42 +136,406 @@ export class PortfolioService {
     return portfolio;
   }
 
-  async candles(symbol, count = DEFAULT_CANDLE_COUNT, { signal } = {}) {
+  async candles(symbol, count = DEFAULT_CANDLE_COUNT, options = {}) {
+    const result = await this.candlesWithCoverage(symbol, count, options);
+    return result.candles;
+  }
+
+  async candlesWithCoverage(symbol, count = DEFAULT_CANDLE_COUNT, {
+    signal,
+    preferPersistent = false,
+    allowPersistentFallback = true,
+    persistentRevalidateMs = DEFAULT_PERSISTENT_REVALIDATE_MS,
+    liveRefreshTimeoutMs = DEFAULT_CANDLE_REFRESH_TIMEOUT_MS,
+  } = {}) {
+    const normalizedSymbol = String(symbol ?? "").trim().toUpperCase();
+    if (!normalizedSymbol) throw new Error("Daily candle symbol is required.");
     const normalizedCount = Math.min(
       Math.max(Number(count) || DEFAULT_CANDLE_COUNT, 21),
       1000,
     );
-    const cacheKey = `${String(symbol).toUpperCase()}:${normalizedCount}`;
+    const cacheKey = `${normalizedSymbol}:${normalizedCount}`;
     const now = Date.now();
     this.#pruneCandleCache(now);
     const cached = this.candleCache.get(cacheKey);
-    if (cached && now - cached.fetchedAt < CANDLE_CACHE_TTL_MS) {
-      return structuredClone(cached.candles);
+    if (cached && now - (cached.cachedAt ?? cached.fetchedAt) < CANDLE_CACHE_TTL_MS) {
+      return cloneCandleResult({
+        candles: cached.candles,
+        coverage: buildCandleCoverage({
+          source: "memory",
+          originSource: cached.coverage?.originSource ?? cached.coverage?.source ?? null,
+          fetchedAt: cached.coverage?.fetchedAt ?? isoFromMs(cached.fetchedAt),
+          requestedCount: normalizedCount,
+          candles: cached.candles,
+          endpoint: this.longbridge.endpoint,
+          now,
+          partialReasons: cached.coverage?.partialReasons,
+          refreshAttempted: cached.coverage?.refreshAttempted,
+          fallbackReason: cached.coverage?.fallbackReason,
+          persistenceStatus: cached.coverage?.persistenceStatus,
+        }),
+      });
     }
-    const raw = await this.longbridge.call("candlesticks", {
-      symbol,
-      period: "day",
+
+    const persistent = await this.marketHistoryStore.getSeries({
+      symbol: normalizedSymbol,
       count: normalizedCount,
-      forward_adjust: true,
-      trade_sessions: "intraday",
-    }, { signal });
-    const candles = normalizeCandles(raw, { symbol });
+      ...CANDLE_DESCRIPTOR,
+    }).catch(() => null);
+    const persistentAgeMs = cacheAgeMs(persistent?.fetchedAt, now);
+    const revalidateAfterMs = nonNegativeNumber(
+      persistentRevalidateMs,
+      DEFAULT_PERSISTENT_REVALIDATE_MS,
+    );
+    const persistentIncomplete = Boolean(persistent?.candles?.length)
+      && persistent.candles.length < normalizedCount;
+    const persistentStale = Boolean(persistent?.candles?.length)
+      && (!Number.isFinite(persistentAgeMs) || persistentAgeMs >= revalidateAfterMs);
+    if (preferPersistent && persistent?.candles?.length && !persistentIncomplete && !persistentStale) {
+      const coverage = buildCandleCoverage({
+        source: "persistent",
+        fetchedAt: persistent.fetchedAt,
+        storedAt: persistent.storedAt,
+        requestedCount: normalizedCount,
+        candles: persistent.candles,
+        endpoint: this.longbridge.endpoint,
+        now,
+      });
+      this.#rememberCandles(cacheKey, persistent.candles, coverage);
+      return cloneCandleResult({ candles: persistent.candles, coverage });
+    }
+
+    const refreshReasons = [
+      ...(persistentIncomplete ? ["insufficient_history"] : []),
+      ...(persistentStale ? ["stale_cache"] : []),
+    ];
+    const canAttemptLive = this.longbridge?.connected !== false;
+    try {
+      if (!canAttemptLive) throw candleRefreshUnavailableError("longbridge_disconnected");
+      return await this.#fetchCandlesShared(normalizedSymbol, normalizedCount, cacheKey, {
+        signal,
+        timeoutMs: preferPersistent && persistent?.candles?.length
+          ? liveRefreshTimeoutMs
+          : null,
+      });
+    } catch (error) {
+      if (signal?.aborted || !allowPersistentFallback || !persistent?.candles?.length) throw error;
+      const fallbackReason = candleErrorSummary(error);
+      const coverage = buildCandleCoverage({
+        source: "persistent_fallback",
+        originSource: "persistent",
+        fetchedAt: persistent.fetchedAt,
+        storedAt: persistent.storedAt,
+        requestedCount: normalizedCount,
+        candles: persistent.candles,
+        endpoint: this.longbridge.endpoint,
+        now,
+        forcePartial: true,
+        partialReasons: [...refreshReasons, "live_refresh_failed"],
+        refreshAttempted: canAttemptLive,
+        fallbackReason,
+      });
+      this.#rememberCandles(cacheKey, persistent.candles, coverage);
+      return cloneCandleResult({ candles: persistent.candles, coverage });
+    }
+  }
+
+  async prewarmCandles(symbols, {
+    count = DEFAULT_CANDLE_COUNT,
+    concurrency = 2,
+    maxSymbols = 24,
+    persistentRevalidateMs = DEFAULT_PERSISTENT_REVALIDATE_MS,
+  } = {}) {
+    const queue = [...new Set((Array.isArray(symbols) ? symbols : [])
+      .map((symbol) => String(symbol ?? "").trim().toUpperCase())
+      .filter(Boolean))].slice(0, Math.max(1, Number(maxSymbols) || 24));
+    const results = [];
+    const worker = async () => {
+      while (queue.length) {
+        const symbol = queue.shift();
+        try {
+          const { candles, coverage } = await this.candlesWithCoverage(symbol, count, {
+            preferPersistent: true,
+            persistentRevalidateMs,
+          });
+          results.push({ symbol, ok: true, candleCount: candles.length, coverage });
+        } catch (error) {
+          results.push({ symbol, ok: false, error: String(error?.message ?? error).slice(0, 240) });
+        }
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(queue.length, Math.max(1, Number(concurrency) || 2)) },
+      () => worker(),
+    ));
+    return results;
+  }
+
+  async #fetchCandlesShared(symbol, count, cacheKey, { signal, timeoutMs } = {}) {
+    // Do not share an abortable caller's fetch: one consumer must never cancel
+    // another. Non-abortable reads with an identical evidence descriptor and
+    // count safely reuse the same Longbridge request and encrypted write.
+    if (signal) return this.#fetchCandles(symbol, count, cacheKey, { signal, timeoutMs });
+    const descriptorKey = [
+      this.longbridge.endpoint,
+      symbol,
+      CANDLE_DESCRIPTOR.period,
+      CANDLE_DESCRIPTOR.adjustment,
+      CANDLE_DESCRIPTOR.tradeSessions,
+      count,
+    ].join("|");
+    const existing = this.candleLoads.get(descriptorKey);
+    if (existing) return cloneCandleResult(await existing);
+    const load = this.#fetchCandles(symbol, count, cacheKey, { timeoutMs })
+      .finally(() => this.candleLoads.delete(descriptorKey));
+    this.candleLoads.set(descriptorKey, load);
+    return cloneCandleResult(await load);
+  }
+
+  async #fetchCandles(symbol, count, cacheKey, { signal, timeoutMs } = {}) {
+    const requestedAt = Date.now();
+    const raw = await callWithDeadline(
+      (requestSignal) => this.longbridge.call("candlesticks", {
+        symbol,
+        period: CANDLE_DESCRIPTOR.period,
+        count,
+        forward_adjust: true,
+        trade_sessions: CANDLE_DESCRIPTOR.tradeSessions,
+      }, { signal: requestSignal }),
+      { signal, timeoutMs },
+    );
+    const candles = deduplicateDailyCandles(normalizeCandles(
+      validRawCandleRows(raw),
+      { symbol },
+    ));
+    if (!candles.length) {
+      throw candleRefreshUnavailableError("no_valid_daily_candles");
+    }
+    const requestedAtIso = new Date(requestedAt).toISOString();
+    let persisted = null;
+    let persistenceStatus = "stored";
+    try {
+      persisted = await this.marketHistoryStore.putSeries({
+        symbol,
+        ...CANDLE_DESCRIPTOR,
+        fetchedAt: requestedAtIso,
+        candles,
+      });
+      if (!persisted) persistenceStatus = "not_stored";
+    } catch {
+      persistenceStatus = "failed";
+    }
+    // If this was an older overlapping response, putSeries returns the newer
+    // persisted truth. Prefer that truth over the stale raw response.
+    const effectiveCandles = (persisted?.candles?.length ? persisted.candles : candles)
+      .slice(-count);
+    const effectiveFetchedAt = persisted?.fetchedAt ?? requestedAtIso;
+    const coverage = buildCandleCoverage({
+      source: "live",
+      fetchedAt: effectiveFetchedAt,
+      storedAt: persisted?.storedAt ?? null,
+      requestedCount: count,
+      candles: effectiveCandles,
+      endpoint: this.longbridge.endpoint,
+      now: Date.now(),
+      refreshAttempted: true,
+      persistenceStatus,
+    });
+    this.#rememberCandles(cacheKey, effectiveCandles, coverage);
+    return cloneCandleResult({ candles: effectiveCandles, coverage });
+  }
+
+  #rememberCandles(cacheKey, candles, coverage) {
+    const fetchedAt = Date.parse(coverage?.fetchedAt ?? "");
+    const previous = this.candleCache.get(cacheKey);
+    if (previous && Number.isFinite(previous.fetchedAt) && Number.isFinite(fetchedAt)
+        && previous.fetchedAt > fetchedAt) {
+      return;
+    }
     this.candleCache.delete(cacheKey);
-    this.candleCache.set(cacheKey, { fetchedAt: Date.now(), candles });
+    this.candleCache.set(cacheKey, {
+      cachedAt: Date.now(),
+      fetchedAt: Number.isFinite(fetchedAt) ? fetchedAt : Date.now(),
+      candles: structuredClone(candles),
+      coverage: structuredClone(coverage ?? null),
+    });
     while (this.candleCache.size > MAX_CANDLE_CACHE_ENTRIES) {
       const oldestKey = this.candleCache.keys().next().value;
       this.candleCache.delete(oldestKey);
     }
-    return structuredClone(candles);
   }
 
   #pruneCandleCache(now) {
     for (const [key, entry] of this.candleCache) {
-      if (!entry || now - entry.fetchedAt >= CANDLE_CACHE_TTL_MS) {
+      if (!entry || now - (entry.cachedAt ?? entry.fetchedAt) >= CANDLE_CACHE_TTL_MS) {
         this.candleCache.delete(key);
       }
     }
   }
+}
+
+function disabledMarketHistoryStore() {
+  return {
+    async getSeries() { return null; },
+    async putSeries() { return null; },
+  };
+}
+
+function cloneCandleResult(result) {
+  return {
+    candles: structuredClone(result?.candles ?? []),
+    coverage: structuredClone(result?.coverage ?? null),
+  };
+}
+
+function buildCandleCoverage({
+  source,
+  originSource = null,
+  fetchedAt = null,
+  storedAt = null,
+  requestedCount,
+  candles,
+  endpoint,
+  now = Date.now(),
+  forcePartial = false,
+  partialReasons = [],
+  refreshAttempted = false,
+  fallbackReason = null,
+  persistenceStatus = null,
+}) {
+  const rows = Array.isArray(candles) ? candles : [];
+  const requested = Math.max(0, Math.trunc(Number(requestedCount) || 0));
+  const reasons = new Set((Array.isArray(partialReasons) ? partialReasons : []).filter(Boolean));
+  if (rows.length < requested) reasons.add("insufficient_history");
+  if (persistenceStatus === "failed") reasons.add("persistence_failed");
+  if (persistenceStatus === "not_stored") reasons.add("persistence_unavailable");
+  if (forcePartial && !reasons.size) reasons.add("degraded_fallback");
+  const normalizedFetchedAt = validIso(fetchedAt);
+  const ageMs = cacheAgeMs(normalizedFetchedAt, now);
+  const partial = forcePartial || reasons.size > 0;
+  return {
+    source: String(source ?? "unknown"),
+    originSource: originSource ? String(originSource) : null,
+    coverageStatus: partial ? "partial" : "complete",
+    complete: !partial,
+    partial,
+    partialReasons: [...reasons],
+    fetchedAt: normalizedFetchedAt,
+    storedAt: validIso(storedAt),
+    cacheAgeMs: Number.isFinite(ageMs) ? Math.max(0, ageMs) : null,
+    requestedCount: requested,
+    returnedCount: rows.length,
+    latestTradeDate: rows.reduce((latest, row) => (
+      String(row?.tradeDate ?? "") > latest ? String(row.tradeDate) : latest
+    ), "") || null,
+    endpoint: String(endpoint ?? "") || null,
+    period: CANDLE_DESCRIPTOR.period,
+    adjustment: CANDLE_DESCRIPTOR.adjustment,
+    tradeSessions: CANDLE_DESCRIPTOR.tradeSessions,
+    refreshAttempted: Boolean(refreshAttempted),
+    fallbackReason: fallbackReason ? structuredClone(fallbackReason) : null,
+    persistenceStatus: persistenceStatus ? String(persistenceStatus) : null,
+  };
+}
+
+function validRawCandleRows(payload) {
+  const list = Array.isArray(payload)
+    ? payload
+    : payload?.list ?? payload?.candlesticks ?? [];
+  if (!Array.isArray(list)) return [];
+  return list.filter((bar) => [bar?.open, bar?.high, bar?.low, bar?.close, bar?.volume]
+    .every(isProvidedFiniteNumber));
+}
+
+function isProvidedFiniteNumber(value) {
+  if (value == null || typeof value === "boolean") return false;
+  if (typeof value === "string" && !value.trim()) return false;
+  return Number.isFinite(Number(value));
+}
+
+function deduplicateDailyCandles(candles) {
+  const rows = new Map();
+  for (const candle of Array.isArray(candles) ? candles : []) {
+    if (!candle?.tradeDate) continue;
+    rows.set(candle.tradeDate, candle);
+  }
+  return [...rows.values()].sort((left, right) => (
+    String(left.tradeDate).localeCompare(String(right.tradeDate))
+    || Date.parse(left.timestamp) - Date.parse(right.timestamp)
+  ));
+}
+
+async function callWithDeadline(call, { signal, timeoutMs } = {}) {
+  if (signal?.aborted) throw abortSignalError(signal.reason);
+  const controller = new AbortController();
+  let timeoutId = null;
+  let abortListener = null;
+  const races = [Promise.resolve().then(() => call(controller.signal))];
+  if (signal) {
+    races.push(new Promise((_, reject) => {
+      abortListener = () => {
+        controller.abort(signal.reason);
+        reject(abortSignalError(signal.reason));
+      };
+      signal.addEventListener("abort", abortListener, { once: true });
+    }));
+  }
+  const boundedMs = Number(timeoutMs);
+  if (Number.isFinite(boundedMs) && boundedMs > 0) {
+    races.push(new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        const error = new Error(`Daily candle live refresh exceeded ${boundedMs}ms.`);
+        error.code = "CANDLE_REFRESH_TIMEOUT";
+        controller.abort(error);
+        reject(error);
+      }, boundedMs);
+    }));
+  }
+  try {
+    return await Promise.race(races);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (signal && abortListener) signal.removeEventListener("abort", abortListener);
+  }
+}
+
+function abortSignalError(reason) {
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason ? String(reason) : "Daily candle request was aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
+function candleRefreshUnavailableError(reason) {
+  const error = new Error(`Daily candle live refresh unavailable: ${reason}.`);
+  error.code = String(reason).toUpperCase();
+  return error;
+}
+
+function candleErrorSummary(error) {
+  return {
+    code: error?.code == null ? null : String(error.code).slice(0, 80),
+    message: String(error?.message ?? error ?? "unknown error").slice(0, 240),
+  };
+}
+
+function cacheAgeMs(fetchedAt, now = Date.now()) {
+  const timestamp = Date.parse(fetchedAt ?? "");
+  return Number.isFinite(timestamp) ? Math.max(0, now - timestamp) : Infinity;
+}
+
+function isoFromMs(value) {
+  return Number.isFinite(Number(value)) ? new Date(Number(value)).toISOString() : null;
+}
+
+function validIso(value) {
+  if (!value || !Number.isFinite(Date.parse(value))) return null;
+  return new Date(Date.parse(value)).toISOString();
+}
+
+function nonNegativeNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 async function fetchExchangeRates(longbridge, referenceFxProvider) {

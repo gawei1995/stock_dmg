@@ -631,3 +631,288 @@ test("daily candle cache prunes expired rows and remains bounded at 100 entries"
   assert.equal(bar.market, "US");
   assert.ok(bar.tradeDate);
 });
+
+test("daily candles survive service restart through encrypted persistent history", async () => {
+  const values = new Map();
+  const store = {
+    async get(key) {
+      return values.has(key) ? structuredClone(values.get(key)) : null;
+    },
+    async set(key, value) {
+      values.set(key, structuredClone(value));
+    },
+  };
+  const endpoint = "https://mcp.longbridge.com/v2";
+  const online = new PortfolioService({
+    store,
+    longbridge: {
+      endpoint,
+      async call(name) {
+        assert.equal(name, "candlesticks");
+        return [{
+          timestamp: "1767243600",
+          open: "100",
+          high: "102",
+          low: "99",
+          close: "101",
+          volume: "1000",
+        }];
+      },
+    },
+  });
+  assert.equal((await online.candles("AAPL.US"))[0].close, 101);
+
+  let offlineCalls = 0;
+  const restored = new PortfolioService({
+    store,
+    longbridge: {
+      endpoint,
+      async call() {
+        offlineCalls += 1;
+        throw new Error("offline");
+      },
+    },
+  });
+  const [cached] = await restored.candles("AAPL.US");
+  assert.equal(offlineCalls, 1);
+  assert.equal(cached.close, 101);
+});
+
+test("review candle reads can prefer persistent history without waiting for Longbridge", async () => {
+  const values = new Map();
+  const store = {
+    async get(key) {
+      return values.has(key) ? structuredClone(values.get(key)) : null;
+    },
+    async set(key, value) {
+      values.set(key, structuredClone(value));
+    },
+  };
+  const endpoint = "https://mcp.longbridge.com/v2";
+  const seeded = new PortfolioService({
+    store,
+    longbridge: {
+      endpoint,
+      async call() {
+        return [{
+          timestamp: "1767243600",
+          open: "100",
+          high: "102",
+          low: "99",
+          close: "101",
+          volume: "1000",
+        }];
+      },
+    },
+  });
+  await seeded.candles("QQQ.US");
+
+  let liveCalls = 0;
+  const review = new PortfolioService({
+    store,
+    longbridge: {
+      endpoint,
+      connected: false,
+      async call() {
+        liveCalls += 1;
+        throw new Error("should not run");
+      },
+    },
+  });
+  const [cached] = await review.candles("QQQ.US", 600, { preferPersistent: true });
+  assert.equal(liveCalls, 0);
+  assert.equal(cached.close, 101);
+});
+
+test("candlesWithCoverage returns complete fresh persistent evidence without a live call", async () => {
+  let liveCalls = 0;
+  const fetchedAt = new Date(Date.now() - 60_000).toISOString();
+  const candles = normalizedDailyBars(21);
+  const service = new PortfolioService({
+    store: { async get() { return null; }, async set() {} },
+    marketHistoryStore: {
+      async getSeries() {
+        return { candles, fetchedAt, storedAt: fetchedAt, candleCount: candles.length };
+      },
+      async putSeries() { throw new Error("unexpected write"); },
+    },
+    longbridge: {
+      endpoint: "https://mcp.longbridge.com/v2",
+      connected: true,
+      async call() { liveCalls += 1; throw new Error("unexpected live call"); },
+    },
+  });
+
+  const result = await service.candlesWithCoverage("AAPL.US", 21, { preferPersistent: true });
+  assert.equal(liveCalls, 0);
+  assert.equal(result.candles.length, 21);
+  assert.deepEqual(result.coverage, {
+    source: "persistent",
+    originSource: null,
+    coverageStatus: "complete",
+    complete: true,
+    partial: false,
+    partialReasons: [],
+    fetchedAt,
+    storedAt: fetchedAt,
+    cacheAgeMs: result.coverage.cacheAgeMs,
+    requestedCount: 21,
+    returnedCount: 21,
+    latestTradeDate: "2026-01-21",
+    endpoint: "https://mcp.longbridge.com/v2",
+    period: "day",
+    adjustment: "forward",
+    tradeSessions: "intraday",
+    refreshAttempted: false,
+    fallbackReason: null,
+    persistenceStatus: null,
+  });
+  assert.ok(result.coverage.cacheAgeMs >= 0);
+});
+
+test("insufficient persistent history is an explicit partial fallback when Longbridge is disconnected", async () => {
+  let liveCalls = 0;
+  const fetchedAt = new Date(Date.now() - 60_000).toISOString();
+  const service = new PortfolioService({
+    store: { async get() { return null; }, async set() {} },
+    marketHistoryStore: {
+      async getSeries() {
+        return { candles: normalizedDailyBars(3), fetchedAt, storedAt: fetchedAt };
+      },
+      async putSeries() { return null; },
+    },
+    longbridge: {
+      endpoint: "https://mcp.longbridge.com/v2",
+      connected: false,
+      async call() { liveCalls += 1; throw new Error("must not run"); },
+    },
+  });
+
+  const result = await service.candlesWithCoverage("AAPL.US", 21, { preferPersistent: true });
+  assert.equal(liveCalls, 0);
+  assert.equal(result.coverage.source, "persistent_fallback");
+  assert.equal(result.coverage.coverageStatus, "partial");
+  assert.equal(result.coverage.refreshAttempted, false);
+  assert.deepEqual(new Set(result.coverage.partialReasons), new Set([
+    "insufficient_history",
+    "live_refresh_failed",
+  ]));
+  assert.equal(result.coverage.fallbackReason.code, "LONGBRIDGE_DISCONNECTED");
+});
+
+test("stale persistent history attempts a bounded live refresh then returns a marked fallback", async () => {
+  let liveCalls = 0;
+  const staleAt = "2026-01-01T00:00:00.000Z";
+  const service = new PortfolioService({
+    store: { async get() { return null; }, async set() {} },
+    marketHistoryStore: {
+      async getSeries() {
+        return { candles: normalizedDailyBars(21), fetchedAt: staleAt, storedAt: staleAt };
+      },
+      async putSeries() { return null; },
+    },
+    longbridge: {
+      endpoint: "https://mcp.longbridge.com/v2",
+      connected: true,
+      async call() { liveCalls += 1; return new Promise(() => {}); },
+    },
+  });
+
+  const result = await service.candlesWithCoverage("AAPL.US", 21, {
+    preferPersistent: true,
+    liveRefreshTimeoutMs: 5,
+  });
+  assert.equal(liveCalls, 1);
+  assert.equal(result.coverage.source, "persistent_fallback");
+  assert.equal(result.coverage.refreshAttempted, true);
+  assert.equal(result.coverage.partial, true);
+  assert.ok(result.coverage.partialReasons.includes("stale_cache"));
+  assert.equal(result.coverage.fallbackReason.code, "CANDLE_REFRESH_TIMEOUT");
+});
+
+test("identical concurrent candle reads reuse one descriptor-level live request", async () => {
+  let liveCalls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const service = new PortfolioService({
+    store: { async get() { return null; }, async set() {} },
+    marketHistoryStore: {
+      async getSeries() { return null; },
+      async putSeries(input) {
+        return {
+          candles: input.candles,
+          fetchedAt: input.fetchedAt,
+          storedAt: input.fetchedAt,
+        };
+      },
+    },
+    longbridge: {
+      endpoint: "https://mcp.longbridge.com/v2",
+      connected: true,
+      async call() { liveCalls += 1; await gate; return rawDailyBars(21); },
+    },
+  });
+
+  const first = service.candlesWithCoverage("AAPL.US", 21);
+  const second = service.candlesWithCoverage("aapl.us", 21);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(liveCalls, 1);
+  release();
+  const [left, right] = await Promise.all([first, second]);
+  assert.equal(left.coverage.source, "live");
+  assert.equal(right.coverage.source, "live");
+  assert.equal(left.candles.length, 21);
+  left.candles[0].close = 0;
+  assert.notEqual(right.candles[0].close, 0);
+});
+
+test("live candle normalization rejects null and empty OHLC instead of creating zero prices", async () => {
+  const service = new PortfolioService({
+    store: { async get() { return null; }, async set() {} },
+    marketHistoryStore: {
+      async getSeries() { return null; },
+      async putSeries() { throw new Error("invalid rows must not be persisted"); },
+    },
+    longbridge: {
+      endpoint: "https://mcp.longbridge.com/v2",
+      async call() {
+        return [
+          { ...rawDailyBars(1)[0], close: null },
+          { ...rawDailyBars(1)[0], open: "" },
+        ];
+      },
+    },
+  });
+  await assert.rejects(service.candles("AAPL.US", 21), /no_valid_daily_candles/);
+});
+
+function normalizedDailyBars(count) {
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(Date.UTC(2026, 0, 1 + index));
+    const tradeDate = date.toISOString().slice(0, 10);
+    return {
+      timestamp: `${tradeDate}T05:00:00.000Z`,
+      tradeDate,
+      timestampBasis: "exchange_trade_date_midnight",
+      symbol: "AAPL.US",
+      market: "US",
+      open: 100 + index,
+      high: 102 + index,
+      low: 99 + index,
+      close: 101 + index,
+      volume: 1000,
+      tradeSession: "Intraday",
+    };
+  });
+}
+
+function rawDailyBars(count) {
+  return normalizedDailyBars(count).map((bar) => ({
+    timestamp: String(Date.parse(bar.timestamp) / 1000),
+    open: String(bar.open),
+    high: String(bar.high),
+    low: String(bar.low),
+    close: String(bar.close),
+    volume: String(bar.volume),
+  }));
+}

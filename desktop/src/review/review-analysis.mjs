@@ -49,6 +49,10 @@ export function buildReviewAnalysisRun({
   const snapshotAt = archive?.syncedAt ?? workspace?.updatedAt ?? new Date().toISOString();
   const analysisTask = String(task || defaultTask(mode, cases)).trim().slice(0, 4_000);
   const brokerEvidenceStatus = reviewBrokerEvidenceStatus(archive, cases);
+  const reviewEvidenceRevisions = cases.map((item) => ({
+    caseId: item.id,
+    revision: item.brokerAssociation.revision,
+  }));
 
   return {
     id: String(runId || `review-${Date.now()}`),
@@ -60,6 +64,7 @@ export function buildReviewAnalysisRun({
       scope: "review",
       reviewMode: mode,
       reviewCaseIds: selectedIds,
+      reviewEvidenceRevisions,
       symbol: singleSymbol,
       snapshotAt,
       valuationSchemaVersion: portfolio?.valuationSchemaVersion ?? null,
@@ -67,6 +72,7 @@ export function buildReviewAnalysisRun({
     analysisContext: {
       scope: "review",
       reviewMode: mode,
+      basedOnEvidenceRevisions: reviewEvidenceRevisions,
       sampleUnit: "symbol × earnings_event × decision_package",
       portfolioSummary: portfolio ? {
         snapshotAt: portfolio.syncedAt ?? null,
@@ -141,20 +147,13 @@ export function buildReviewAnalysisRun({
 export function selectReviewCaseIds(workspace, {
   caseId = null,
   caseIds = [],
-  fiscalQuarter = null,
 } = {}) {
   const explicit = uniqueStrings([caseId, ...(Array.isArray(caseIds) ? caseIds : [])]);
   if (explicit.length) {
     assertReviewCaseLimit(explicit);
     return explicit;
   }
-  const quarter = cleanText(fiscalQuarter, 80);
-  if (!quarter) return [];
-  const matches = (workspace?.cases ?? [])
-    .filter((item) => !item.archived && String(item.fiscalQuarter ?? "") === quarter)
-    .map((item) => String(item.id));
-  assertReviewCaseLimit(matches);
-  return matches;
+  return [];
 }
 
 function sanitizeCase(reviewCase, orderById, executionById) {
@@ -204,6 +203,7 @@ function sanitizeCase(reviewCase, orderById, executionById) {
     createdAt: reviewCase.createdAt ?? null,
     updatedAt: reviewCase.updatedAt ?? null,
     brokerAssociation: {
+      revision: brokerLinkRevision(reviewCase),
       confirmedAt: reviewCase.brokerLinks?.confirmedAt ?? null,
       linkedOrderCount: linkedOrderIds.length,
       linkedExecutionCount: linkedExecutionIds.length,
@@ -225,6 +225,14 @@ function sanitizeCase(reviewCase, orderById, executionById) {
     review: reviewCase.review ?? null,
     ruleIds: uniqueStrings(reviewCase.ruleIds),
   };
+}
+
+function brokerLinkRevision(reviewCase) {
+  const current = Number(reviewCase?.brokerLinks?.revision);
+  if (Number.isInteger(current) && current > 0) return current;
+  const latest = (Array.isArray(reviewCase?.brokerLinkVersions) ? reviewCase.brokerLinkVersions : [])
+    .reduce((maximum, item) => Math.max(maximum, Number(item?.revision) || 0), 0);
+  return latest || null;
 }
 
 function sanitizeOrder(item, recordRef) {
@@ -293,25 +301,20 @@ function sanitizeRule(item) {
 
 function reviewMode(cases) {
   if (cases.length === 1) return "single_event";
-  const quarters = new Set(cases.map((item) => String(item.fiscalQuarter ?? "待确认季度")));
-  return quarters.size === 1 ? "earnings_quarter" : "cross_quarter_validation";
+  return "selected_case_set";
 }
 
 function defaultTask(mode, cases) {
   if (mode === "single_event") {
     return `$review-earnings-decisions 复盘 ${cases[0].symbol} ${cases[0].fiscalQuarter} 的已确认订单与成交，区分决策质量、执行质量和结果运气，并提出继续、验证、规避。`;
   }
-  if (mode === "earnings_quarter") {
-    return `$review-earnings-decisions 对 ${cases[0].fiscalQuarter} 的 ${cases.length} 个财报决策包做通盘复盘，报告样本漏斗、胜率、赔率、期望、尾部风险、执行纪律和下一季度验证计划。`;
-  }
-  return `$review-earnings-decisions 对 ${cases.length} 个跨季度财报决策包做规则验证，比较发现集与留出集，提出规则保留、修改、降级或退役建议，等待人工 Review。`;
+  return `$review-earnings-decisions 组合复盘用户明确选择的 ${cases.length} 个财报决策包。样本只包含这些案例各自已确认关联的订单与成交，不代表同期间账户全部订单；先披露覆盖缺口，再评估胜率、赔率、尾部风险、执行纪律和下一轮验证计划。`;
 }
 
 function modeLabel(value) {
   return {
     single_event: "单事件复盘",
-    earnings_quarter: "财报季度通盘复盘",
-    cross_quarter_validation: "跨季度规则验证",
+    selected_case_set: "所选案例组合复盘",
   }[value] ?? "复盘";
 }
 
@@ -330,7 +333,7 @@ function reviewBrokerEvidenceStatus(archive, cases) {
 
 function assertReviewCaseLimit(caseIds) {
   if (caseIds.length > MAX_REVIEW_CASES) {
-    throw new Error(`一次最多分析 ${MAX_REVIEW_CASES} 个复盘案例；请缩小季度或分批验证，系统不会静默截断。`);
+    throw new Error(`一次最多分析 ${MAX_REVIEW_CASES} 个复盘案例；请缩小所选范围或分批验证，系统不会静默截断。`);
   }
 }
 

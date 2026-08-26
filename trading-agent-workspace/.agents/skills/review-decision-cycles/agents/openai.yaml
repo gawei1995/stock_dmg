@@ -1,0 +1,4 @@
+interface:
+  display_name: "决策周期复盘"
+  short_description: "先记录、再关联真实订单，生成可人工确认的复盘与验证草案"
+  default_prompt: "使用 $review-decision-cycles 先记录三段用户原话，再关联券商记录并复盘；若重选订单，保留修订记录并用最新证据重跑。"

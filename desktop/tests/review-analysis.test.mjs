@@ -15,6 +15,7 @@ test("review analysis contains only broker records explicitly linked to selected
       eventAt: "2026-08-26T20:00:00.000Z",
       eventSession: "amc",
       brokerLinks: {
+        revision: 3,
         orderIds: ["order-selected"],
         executionIds: ["trade-selected"],
         confirmedAt: "2026-08-10T00:00:00.000Z",
@@ -42,15 +43,18 @@ test("review analysis contains only broker records explicitly linked to selected
 
   assert.equal(run.context.scope, "review");
   assert.equal(run.context.reviewMode, "single_event");
+  assert.deepEqual(run.context.reviewEvidenceRevisions, [{ caseId: "case-1", revision: 3 }]);
+  assert.deepEqual(run.analysisContext.basedOnEvidenceRevisions, [{ caseId: "case-1", revision: 3 }]);
   assert.deepEqual(run.analysisContext.cases[0].orders.map((item) => item.recordRef), ["order-1"]);
   assert.deepEqual(run.analysisContext.cases[0].executions.map((item) => item.recordRef), ["execution-1"]);
+  assert.equal(run.analysisContext.cases[0].brokerAssociation.revision, 3);
   assert.doesNotMatch(JSON.stringify(run), /order-not-selected|trade-not-selected/);
   assert.doesNotMatch(JSON.stringify(run), /order-selected|trade-selected/);
   assert.match(run.task, /\$review-earnings-decisions/);
   assert.deepEqual(run.sections, ["conclusion", "evidence"]);
 });
 
-test("review mode distinguishes one earnings quarter from cross-quarter validation", () => {
+test("multi-case review is always an explicitly selected case set", () => {
   const workspace = {
     cases: [
       { id: "a", symbol: "AAPL.US", fiscalQuarter: "2026 Q2", brokerLinks: { orderIds: ["oa"], confirmedAt: "2026-01-01T00:00:00Z" } },
@@ -61,9 +65,10 @@ test("review mode distinguishes one earnings quarter from cross-quarter validati
     rules: [],
   };
   const archive = { orders: [], executions: [] };
-  assert.equal(buildReviewAnalysisRun({ workspace, archive, caseIds: ["a", "b"] }).context.reviewMode, "earnings_quarter");
-  assert.equal(buildReviewAnalysisRun({ workspace, archive, caseIds: ["a", "c"] }).context.reviewMode, "cross_quarter_validation");
-  assert.deepEqual(selectReviewCaseIds(workspace, { fiscalQuarter: "2026 Q2" }), ["a", "b"]);
+  assert.equal(buildReviewAnalysisRun({ workspace, archive, caseIds: ["a", "b"] }).context.reviewMode, "selected_case_set");
+  assert.equal(buildReviewAnalysisRun({ workspace, archive, caseIds: ["a", "c"] }).context.reviewMode, "selected_case_set");
+  assert.deepEqual(selectReviewCaseIds(workspace, { fiscalQuarter: "2026 Q2" }), []);
+  assert.deepEqual(selectReviewCaseIds(workspace, { caseIds: ["a", "b"] }), ["a", "b"]);
 });
 
 test("review analysis surfaces missing linked records instead of reconstructing them from current holdings", () => {
@@ -167,10 +172,7 @@ test("review analysis rejects unconfirmed cases and never silently truncates ove
     caseIds: ["manual"],
   }), /确认关联/);
 
-  assert.throws(() => selectReviewCaseIds({
-    cases: Array.from({ length: 101 }, (_, index) => ({
-      id: `case-${index}`,
-      fiscalQuarter: "FY2026 Q2",
-    })),
-  }, { fiscalQuarter: "FY2026 Q2" }), /最多分析 100/);
+  assert.throws(() => selectReviewCaseIds({}, {
+    caseIds: Array.from({ length: 101 }, (_, index) => `case-${index}`),
+  }), /最多分析 100/);
 });

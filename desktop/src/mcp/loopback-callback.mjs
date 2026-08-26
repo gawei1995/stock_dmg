@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 const SUCCESS_HTML = `<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><title>长桥授权完成</title>
 <style>body{margin:0;display:grid;place-items:center;min-height:100vh;background:#0b0f12;color:#e8f0f2;font:16px system-ui}.card{max-width:440px;padding:32px;border:1px solid #263139;border-radius:16px;background:#12181d}p{color:#9aabb4;line-height:1.7}</style>
-<div class="card"><h1>长桥授权完成</h1><p>你可以关闭此页面并返回「交易驾驶舱」。应用只会调用账户、仓位和行情查询工具。</p></div>`;
+<div class="card"><h1>长桥授权完成</h1><p>你可以关闭此页面并返回「交易驾驶舱」。应用只会调用账户、仓位、行情、历史订单与成交查询工具，不具备下单能力。</p></div>`;
 
 export class OAuthLoopbackServer {
   constructor({ port = 37819, path = "/oauth/callback", timeoutMs = 5 * 60 * 1000 } = {}) {

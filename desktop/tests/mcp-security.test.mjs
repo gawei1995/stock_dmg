@@ -114,6 +114,8 @@ test("OAuth discovery and MCP transport share the injected system-proxy fetch", 
   assert.equal(authOptions[1].fetchFn, fetchFn);
   assert.equal(authOptions[0].serverUrl.toString(), "https://mcp.longbridge.com/v2");
   assert.equal(authOptions[1].serverUrl.toString(), "https://mcp.longbridge.com/v2");
+  assert.equal(authOptions[0].scope, "6 10");
+  assert.equal(authOptions[1].scope, "6 10");
   assert.equal(authOptions[1].authorizationCode, "oauth-code");
   assert.equal(transportOptions.fetch, fetchFn);
   assert.equal(transportUrl.toString(), "https://mcp.longbridge.com/v2");
@@ -130,14 +132,53 @@ test("global OAuth policy rejects mainland authorization hosts", async () => {
     store: memoryStore,
     onRedirect: async (url) => opened.push(url.toString()),
   });
+  assert.equal(oauth.clientMetadata.scope, "6 10");
   await assert.rejects(
-    oauth.redirectToAuthorization(new URL("https://openapi.longbridge.cn/oauth2/authorize?scope=6")),
+    oauth.redirectToAuthorization(new URL("https://openapi.longbridge.cn/oauth2/authorize?scope=6%2010")),
     /unexpected Longbridge authorization URL/,
   );
-  await oauth.redirectToAuthorization(
-    new URL("https://openapi.longbridge.com/oauth2/authorize?scope=6"),
+  await assert.rejects(
+    oauth.redirectToAuthorization(new URL("https://openapi.longbridge.com/oauth2/authorize?scope=6")),
+    /outside account\.read \+ trade\.read/,
   );
-  assert.deepEqual(opened, ["https://openapi.longbridge.com/oauth2/authorize?scope=6"]);
+  await assert.rejects(
+    oauth.redirectToAuthorization(new URL("https://openapi.longbridge.com/oauth2/authorize?scope=6%2010%2011")),
+    /outside account\.read \+ trade\.read/,
+  );
+  await assert.rejects(
+    oauth.redirectToAuthorization(new URL("https://openapi.longbridge.com/oauth2/authorize?scope=4%206%2010")),
+    /outside account\.read \+ trade\.read/,
+  );
+  await oauth.redirectToAuthorization(
+    new URL("https://openapi.longbridge.com/oauth2/authorize?scope=10%206"),
+  );
+  assert.deepEqual(opened, ["https://openapi.longbridge.com/oauth2/authorize?scope=10%206"]);
+});
+
+test("the versioned read profile requires one upgrade from legacy scope-6 credentials", async () => {
+  const values = new Map([
+    ["longbridge:mcp.longbridge.com:tokens", { access_token: "legacy-scope-6" }],
+  ]);
+  const store = {
+    persistent: true,
+    async get(key) { return structuredClone(values.get(key)); },
+    async set(key, value) { values.set(key, structuredClone(value)); },
+    async delete(key) { values.delete(key); },
+  };
+  const client = new LongbridgeClient({ store, openExternal: async () => {} });
+
+  assert.equal(await client.hasSavedAuthorization(), false);
+  assert.equal(await client.needsAuthorizationUpgrade(), true);
+
+  values.set("longbridge:mcp.longbridge.com:v2-read-6-10:tokens", {
+    access_token: "current-read-profile",
+  });
+  assert.equal(await client.hasSavedAuthorization(), true);
+  assert.equal(await client.needsAuthorizationUpgrade(), false);
+
+  await client.disconnect({ forget: true });
+  assert.equal(values.has("longbridge:mcp.longbridge.com:tokens"), false);
+  assert.equal(values.has("longbridge:mcp.longbridge.com:v2-read-6-10:tokens"), false);
 });
 
 test("OAuth loopback callback ignores the wrong state and accepts the expected state", async () => {
@@ -163,6 +204,7 @@ test("Longbridge error classification never treats gateway 463 as expired author
     ["invalid_token", "auth", true],
     ["invalid_grant", "auth", true],
     ["403 insufficient_scope", "permission", false],
+    ["openapi error: code=403308: Target API's scope is not in authorized scopes", "permission", true],
     ["429002 api request is limited", "rate_limit", false],
     ["Streamable HTTP error: Error POSTing to endpoint: 463", "transport", false],
     ["fetch failed: unauthorized proxy", "transport", false],
