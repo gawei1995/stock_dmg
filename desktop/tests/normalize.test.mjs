@@ -56,6 +56,31 @@ test("normalizes account positions, quotes, FX, weights, and exposure", () => {
   assert.equal(result.orderWrite, false);
 });
 
+test("missing Longbridge account numbers stay null and valuation completeness fails closed", () => {
+  const result = normalizePortfolio({
+    positions: { list: [] },
+    balances: [{
+      currency: "USD",
+      net_assets: "1000",
+      cash_infos: [{ currency: "USD" }],
+    }],
+    quotes: [],
+    exchangeRates: [],
+  });
+
+  assert.equal(result.account.netAssets, 1000);
+  assert.equal(result.account.totalCash, null);
+  assert.equal(result.account.buyPower, null);
+  assert.equal(result.account.initMargin, null);
+  assert.equal(result.account.maintenanceMargin, null);
+  assert.equal(result.account.marginCall, null);
+  assert.equal(result.account.cashInfos[0].availableCash, null);
+  assert.equal(result.account.valuationComplete, false);
+  assert.equal(result.dataQuality.valuationComplete, false);
+  assert.equal(result.status, "degraded");
+  assert.ok(result.account.missingFields.includes("total_cash"));
+});
+
 test("derives HKD per USD from an inverse HKD/USD response", () => {
   const rate = findHkdPerUsd({
     exchanges: [
@@ -88,6 +113,89 @@ test("aggregates the same symbol across Longbridge position channels", () => {
   assert.equal(result.positions[0].quantity, 5);
   assert.equal(result.positions[0].availableQuantity, 3);
   assert.equal(result.positions[0].costPrice, 160);
+});
+
+test("missing cost price never becomes zero or an invented full-market-value profit", () => {
+  const result = normalizePortfolio({
+    positions: { list: [{ stock_info: [{
+      symbol: "AAPL.US",
+      quantity: "2",
+      available_quantity: "2",
+      currency: "USD",
+      market: "US",
+    }] }] },
+    balances: [{ currency: "USD", net_assets: "1000", total_cash: "500" }],
+    quotes: [{
+      symbol: "AAPL.US",
+      last_done: "250",
+      prev_close: "240",
+      timestamp: "1767225600",
+    }],
+    exchangeRates: [],
+  });
+
+  const position = result.positions[0];
+  assert.equal(position.marketValueBase, 500);
+  assert.equal(position.weight, 50);
+  assert.equal(position.costPrice, null);
+  assert.equal(position.pnlBase, null);
+  assert.equal(position.regularPnlBase, null);
+  assert.equal(position.pnlPercent, null);
+  assert.equal(position.costBasisStatus, "missing");
+  assert.match(position.costBasisLimitation, /成本价.*盈亏保持为空/);
+  assert.equal(result.dataQuality.costBasisComplete, false);
+  assert.equal(result.dataQuality.missingCostBasisPositionCount, 1);
+  assert.deepEqual(result.dataQuality.missingCostBasisSymbols, ["AAPL.US"]);
+});
+
+test("one missing-cost channel invalidates the aggregate cost basis without hiding market value", () => {
+  const result = normalizePortfolio({
+    positions: { list: [
+      { stock_info: [{ symbol: "AAPL.US", quantity: "2", currency: "USD", cost_price: "100", market: "US" }] },
+      { stock_info: [{ symbol: "AAPL.US", quantity: "3", currency: "USD", market: "US" }] },
+    ] },
+    balances: [{ currency: "USD", net_assets: "1000", total_cash: "0" }],
+    quotes: [{ symbol: "AAPL.US", last_done: "200", timestamp: "1767225600" }],
+    exchangeRates: [],
+  });
+
+  assert.equal(result.positions[0].quantity, 5);
+  assert.equal(result.positions[0].marketValueBase, 1000);
+  assert.equal(result.positions[0].costPrice, null);
+  assert.equal(result.positions[0].pnlBase, null);
+  assert.equal(result.positions[0].costBasisStatus, "missing");
+});
+
+test("USD-only portfolio ignores FX-source failure for valuation completeness", () => {
+  const result = normalizePortfolio({
+    positions: { list: [{ stock_info: [{
+      symbol: "AAPL.US",
+      quantity: "2",
+      currency: "USD",
+      cost_price: "100",
+      market: "US",
+    }] }] },
+    balances: [{
+      currency: "USD",
+      net_assets: "1000",
+      total_cash: "500",
+      cash_infos: [{ currency: "USD", available_cash: "500" }],
+    }],
+    quotes: [{ symbol: "AAPL.US", last_done: "250", timestamp: "1767225600" }],
+    exchangeRates: [],
+    fxStatus: "unavailable",
+    sourceErrors: [
+      { tool: "exchange_rate", code: 463, kind: "gateway", message: "failed" },
+      { tool: "ecb_reference_rates", kind: "network", message: "offline" },
+    ],
+  });
+
+  assert.equal(result.status, "live");
+  assert.equal(result.dataQuality.valuationComplete, true);
+  assert.equal(result.dataQuality.fxStatus, "not_required");
+  assert.equal(result.dataQuality.fxRequired, false);
+  assert.deepEqual(result.dataQuality.sourceErrors, []);
+  assert.equal(result.dataQuality.ignoredFxErrors.length, 2);
 });
 
 test("keeps real quantities but degrades valuation when a quote is missing", () => {

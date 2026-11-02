@@ -1,3 +1,4 @@
+const { radarChanges, radarHasGap, radarVisibleCards, radarFieldLabel, radarStateLabel, radarInteger, radarEmaNote } = window.CockpitRadarView;
 const api = window.cockpit;
 const LAYOUT_STORAGE_KEY = "trading-cockpit:layout:v1";
 const DEFAULT_PANE_WIDTHS = Object.freeze({ portfolio: 292, agent: 408 });
@@ -10,11 +11,14 @@ const LEGACY_PORTFOLIO_MAX_AGE_MS = 2 * 60 * 1000;
 const POST_TERMINAL_RECOVERY_WINDOW_MS = 60_000;
 const AGENT_WELCOME_HTML = `<article class="agent-welcome">
   <span class="agent-orbit" aria-hidden="true">A</span>
-  <div><strong>Codex 项目线程已接入交易驾驶舱。</strong><p>每条本机对话都可直接打开并继续；不同对话可通过同一条 Codex 链路并行调用 Skills、MCP、Apps 与项目工具。</p></div>
+  <div><strong>Codex 项目线程已接入交易驾驶舱。</strong><p>可直接聊天与研究，无需先连接券商；每条本机对话都可继续。Skills、Web 与项目文件可用，外部 MCP / Apps 以当前对话的工具状态为准。</p></div>
 </article>`;
 
 const state = {
   portfolio: null,
+  brokerScope: "all",
+  brokers: null,
+  brokerBusy: new Set(),
   selectedSymbol: null,
   currentRun: null,
   runsById: new Map(),
@@ -24,6 +28,7 @@ const state = {
   activeRequestId: null,
   activeRunNode: null,
   operations: new Map(),
+  latestOperationByThread: new Map(),
   sessionViews: new Map(),
   filter: "",
   busy: false,
@@ -31,6 +36,11 @@ const state = {
   codexRuntimeAvailable: false,
   codexAvailable: false,
   agentCapabilities: null,
+  agentNetworkPreferences: null,
+  agentNetworkDraft: "",
+  agentNetworkSaving: false,
+  agentNetworkError: null,
+  agentNetworkRuntime: null,
   promptSuggestions: [],
   suggestionIndex: 0,
   suggestionTrigger: null,
@@ -41,10 +51,31 @@ const state = {
   activeSessionId: null,
   sessionsLoading: false,
   sessionOpenEpoch: 0,
-  analysisScope: "position",
+  analysisScope: "chat",
   candidateSymbol: "",
+  technicalRadar: {
+    running: false,
+    lastError: null,
+    watchlist: { items: [], revision: 0, updatedAt: null },
+    linkage: { profiles: [], revision: 0, updatedAt: null },
+    latestBatch: null,
+  },
+  technicalRadarLoading: false,
+  technicalRadarMutationBusy: false,
+  radarUi: { view: "portfolio", settings: false, filter: "all", query: "", expanded: null, notice: null, scroll: { results: 0, settings: 0 } },
+  technicalLinkageDrafts: new Map(),
+  technicalLinkageBusy: false,
+  technicalLinkageDraft: {
+    symbol: "",
+    sectorSymbol: "",
+    peerSymbols: "",
+    rationale: "",
+    dirty: false,
+  },
+  technicalLinkageMessage: null,
   streamFrame: null,
   scrollFrame: null,
+  agentFollowTail: true,
   settledOperationIds: new Set(),
   layout: {
     portfolioCollapsed: false,
@@ -61,8 +92,25 @@ const elements = {
   agentCancel: $("#agent-cancel"),
   agentForm: $("#agent-form"),
   agentInput: $("#agent-input"),
+  agentJumpLatest: $("#agent-jump-latest"),
   agentLiveStatus: $("#agent-live-status"),
   agentSubmit: $("#agent-submit"),
+  agentAvailability: $("#agent-availability"),
+  agentGuardActions: $("#agent-guard-actions"),
+  agentGuardRecheck: $("#agent-guard-recheck"),
+  agentGuardNewSession: $("#agent-guard-new-session"),
+  agentRestrictedSession: $("#agent-restricted-session"),
+  agentFullSession: $("#agent-full-session"),
+  agentGuardDetails: $("#agent-guard-details"),
+  agentGuardFeedback: $("#agent-guard-feedback"),
+  agentNetworkSettings: $("#agent-network-settings"),
+  agentNetworkForm: $("#agent-network-form"),
+  agentNetworkMode: $("#agent-network-mode"),
+  agentNetworkSave: $("#agent-network-save"),
+  agentNetworkSummary: $("#agent-network-summary"),
+  agentNetworkEffective: $("#agent-network-effective"),
+  agentNetworkRuntime: $("#agent-network-runtime"),
+  agentNetworkFeedback: $("#agent-network-feedback"),
   agentThread: $("#agent-thread"),
   agentSessionSelect: $("#agent-session-select"),
   newAgentSession: $("#new-agent-session"),
@@ -82,6 +130,27 @@ const elements = {
   positionCount: $("#position-count"),
   positionList: $("#position-list"),
   positionSearch: $("#position-search"),
+  technicalRadar: $("#technical-radar"),
+  technicalRadarToggle: $("#technical-radar-toggle"),
+  technicalRadarToggleState: $("#technical-radar-toggle-state"),
+  technicalRadarBody: $("#technical-radar-body"),
+  technicalRadarSummary: $("#technical-radar-summary"),
+  technicalRadarRun: $("#technical-radar-run"),
+  technicalRadarComputed: $("#technical-radar-computed"),
+  technicalRadarList: $("#technical-radar-list"),
+  technicalLinkageEditor: $("#technical-linkage-editor"),
+  technicalLinkageForm: $("#technical-linkage-form"),
+  technicalLinkageState: $("#technical-linkage-state"),
+  technicalLinkageSymbol: $("#technical-linkage-symbol"),
+  technicalLinkageSector: $("#technical-linkage-sector"),
+  technicalLinkagePeers: $("#technical-linkage-peers"),
+  technicalLinkageRationale: $("#technical-linkage-rationale"),
+  technicalLinkageSave: $("#technical-linkage-save"),
+  technicalLinkageRemove: $("#technical-linkage-remove"),
+  technicalLinkageMessage: $("#technical-linkage-message"),
+  technicalWatchlistForm: $("#technical-watchlist-form"),
+  technicalWatchlistSymbol: $("#technical-watchlist-symbol"),
+  technicalWatchlistAdd: $("#technical-watchlist-add"),
   portfolioFoot: $("#portfolio-foot"),
   portfolioPane: $("#portfolio-pane"),
   portfolioResizer: $("#portfolio-resizer"),
@@ -106,8 +175,10 @@ async function initialize() {
   queueTvBoundsSync();
   try {
     const initial = await api.getInitialState();
+    setAgentNetworkPreferences(initial.agentNetwork);
     setCodexStatus(initial.codex);
-    setPortfolio(initial.portfolio ?? null);
+    if (initial.brokers) setBrokers(initial.brokers);
+    else setPortfolio(initial.portfolio ?? null);
     syncActiveAgents(initial.activeAgents);
     if (initial.agentSessions) setAgentSessions(initial.agentSessions);
     loadAgentSessions();
@@ -122,12 +193,9 @@ async function initialize() {
             ? { state: "connecting", message: "正在恢复长桥授权" }
             : { state: "disconnected", message: "长桥未连接" },
     );
-    if (!initial.storage.encrypted) {
-      setSystemMessage("系统密钥存储不可用：授权不会持久化", "warning");
-    } else if (initial.storage.recoveredUnreadableState) {
-      setSystemMessage("旧加密状态无法解密，已保留恢复副本并以空状态启动", "warning");
-    }
+    renderStorageHealth(initial.storage);
     loadAgentCapabilities();
+    void loadTechnicalRadar();
   } catch (error) {
     setPortfolio(null);
     setLongbridgeStatus({ state: "error", message: "本地驾驶舱初始化失败" });
@@ -144,6 +212,7 @@ function bindEvents() {
   new ResizeObserver(sendTvBounds).observe(elements.tvSurface);
   api.onRequestTvBounds(sendTvBounds);
   api.onStatus((status) => {
+    if (status.storage) renderStorageHealth(status.storage);
     if (status.domain === "agent" || String(status.state).startsWith("agent_")) {
       const message = status.detail || status.message || "Agent 状态已更新";
       const operation = status.operationId ? state.operations.get(String(status.operationId)) : null;
@@ -166,17 +235,20 @@ function bindEvents() {
       }
       return;
     }
-    setLongbridgeStatus(status);
+    if (isLongbridgeConnectionStatus(status)) setLongbridgeStatus(status);
     setSystemMessage(status.detail || status.message || "状态已更新");
   });
-  api.onPortfolio((portfolio) => setPortfolio(portfolio));
+  api.onPortfolio((portfolio) => { if (!api.brokers) setPortfolio(portfolio); });
+  api.onBrokers?.(setBrokers);
   api.onAgentCapabilities(setAgentCapabilities);
   api.onAgentStream(renderAgentStream);
   api.onAgentResult(handleAgentResult);
+  api.onTechnicalRadar(setTechnicalRadar);
   api.onTvState(setTvStatus);
 
   elements.connect.addEventListener("click", connectLongbridge);
   elements.refresh.addEventListener("click", refreshPortfolio);
+  bindBrokerControls();
   elements.positionSearch.addEventListener("input", (event) => {
     state.filter = event.target.value.trim().toUpperCase();
     renderPositions();
@@ -184,6 +256,39 @@ function bindEvents() {
   elements.positionList.addEventListener("click", (event) => {
     const row = event.target.closest("[data-symbol]");
     if (row) selectPosition(row.dataset.symbol);
+  });
+  elements.technicalRadarToggle.addEventListener("click", toggleTechnicalRadar);
+  document.querySelectorAll("[data-portfolio-view]").forEach((button) => button.addEventListener("click", () => setPortfolioView(button.dataset.portfolioView)));
+  $("#radar-settings-toggle").addEventListener("click", () => setRadarSettings(!state.radarUi.settings));
+  $("#radar-settings-back").addEventListener("click", () => setRadarSettings(false));
+  $("#radar-filters").addEventListener("click", (event) => {
+    const filter = event.target.closest("[data-radar-filter]")?.dataset.radarFilter;
+    if (!filter) return;
+    state.radarUi.filter = filter; renderTechnicalRadar(); elements.technicalRadarBody.scrollTop = 0;
+  });
+  $("#radar-search").addEventListener("input", (event) => { state.radarUi.query = event.target.value; renderTechnicalRadar(); });
+  $("#radar-watchlist-items").addEventListener("click", handleTechnicalRadarClick);
+  elements.technicalRadarRun.addEventListener("click", runTechnicalRadar);
+  elements.technicalWatchlistForm.addEventListener("submit", addTechnicalWatchlistSymbol);
+  elements.technicalRadarList.addEventListener("click", handleTechnicalRadarClick);
+  elements.technicalRadarList.addEventListener("keydown", (event) => {
+    if (!event.target.matches("[data-radar-expand]") || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const buttons = [...elements.technicalRadarList.querySelectorAll("[data-radar-expand]")];
+    const i = buttons.indexOf(event.target);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, i + (event.key === "ArrowDown" ? 1 : -1)));
+    event.preventDefault(); buttons[next]?.focus({ preventScroll: true }); buttons[next]?.scrollIntoView({ block: "nearest" });
+  });
+  elements.technicalLinkageForm.addEventListener("submit", confirmTechnicalLinkage);
+  elements.technicalLinkageRemove.addEventListener("click", removeTechnicalLinkage);
+  for (const input of [
+    elements.technicalLinkageSector,
+    elements.technicalLinkagePeers,
+    elements.technicalLinkageRationale,
+  ]) {
+    input.addEventListener("input", updateTechnicalLinkageDraft);
+  }
+  elements.technicalLinkageSymbol.addEventListener("change", () => {
+    setTechnicalLinkageEditorSymbol(elements.technicalLinkageSymbol.value, { force: true });
   });
   elements.syncTv.addEventListener("click", syncSelectedToTv);
   elements.togglePortfolio.addEventListener("click", () => {
@@ -198,13 +303,31 @@ function bindEvents() {
   $("#tv-home").addEventListener("click", () => api.tv.home());
 
   elements.agentSessionSelect.addEventListener("change", switchAgentSession);
-  elements.newAgentSession.addEventListener("click", createAgentSession);
+  elements.agentNetworkForm?.addEventListener("submit", saveAgentNetworkPreferences);
+  elements.agentNetworkMode?.addEventListener("change", () => {
+    state.agentNetworkDraft = elements.agentNetworkMode.value;
+    state.agentNetworkError = null;
+    renderAgentNetworkPreferences();
+  });
+  elements.newAgentSession.addEventListener("click", () => createAgentSession());
+  elements.agentRestrictedSession?.addEventListener("click", () => createResearchModeSession("restricted"));
+  elements.agentFullSession?.addEventListener("click", () => createResearchModeSession("full"));
+  elements.agentGuardRecheck?.addEventListener("click", recheckAgentReadOnlyGuard);
+  elements.agentGuardNewSession?.addEventListener("click", async () => {
+    if (state.guardRepairBusy) return;
+    const created = await createAgentSession();
+    if (created) await recheckAgentReadOnlyGuard();
+  });
+  elements.agentGuardDetails?.addEventListener("click", () => $("#system-health-open")?.click());
   elements.agentForm.addEventListener("submit", submitAgentTask);
   window.addEventListener("cockpit:review-analysis-prepared", (event) => {
     void submitPreparedReviewAnalysis(event.detail);
   });
   window.addEventListener("cockpit:review-cycle-analysis-prepared", (event) => {
     void submitPreparedReviewCycleAnalysis(event.detail);
+  });
+  window.addEventListener("cockpit:research-analysis-prepared", (event) => {
+    void submitPreparedResearchAnalysis(event.detail);
   });
   window.addEventListener("cockpit:review-evidence-revisions", (event) => {
     state.reviewEvidenceRevisions = new Map((event.detail?.cases ?? [])
@@ -219,6 +342,8 @@ function bindEvents() {
     refreshCurrentRunTrustUi();
   });
   elements.agentCancel.addEventListener("click", cancelAgentTask);
+  elements.agentThread.addEventListener("scroll", handleAgentThreadScroll, { passive: true });
+  elements.agentJumpLatest.addEventListener("click", () => scrollAgentToEnd({ force: true }));
   elements.agentInput.addEventListener("input", updatePromptSuggestions);
   elements.agentInput.addEventListener("keydown", handlePromptKeydown);
   elements.agentInput.addEventListener("blur", () => setTimeout(closePromptSuggestions, 100));
@@ -229,6 +354,7 @@ function bindEvents() {
   elements.candidateSymbol.addEventListener("change", () => {
     elements.candidateSymbol.value = state.candidateSymbol;
     invalidateAgentRuns();
+    syncTechnicalLinkageEditorFromContext();
   });
   document.querySelectorAll("[data-scope]").forEach((button) => {
     if (!button.closest(".scope-segmented")) return;
@@ -257,6 +383,18 @@ function bindEvents() {
     });
   });
   elements.agentThread.addEventListener("click", async (event) => {
+    const researchButton = event.target.closest("[data-open-research]");
+    if (researchButton) {
+      window.dispatchEvent(new CustomEvent("cockpit:research-opened", {
+        detail: { researchThesisId: researchButton.dataset.openResearch },
+      }));
+      return;
+    }
+    const originalThreadButton = event.target.closest("[data-open-original-thread]");
+    if (originalThreadButton) {
+      await openAgentSession(originalThreadButton.dataset.openOriginalThread, { force: true });
+      return;
+    }
     const learningButton = event.target.closest("[data-open-learning-proposal]");
     if (learningButton) {
       const run = state.runsById.get(learningButton.dataset.openLearningProposal);
@@ -377,7 +515,7 @@ function renderAgentSessions() {
   updateAgentSubmitState();
 }
 
-async function createAgentSession() {
+async function createAgentSession(options = {}) {
   if (!api.agentSessions?.create || state.sessionsLoading) return null;
   saveActiveSessionView();
   const previousId = state.activeSessionId;
@@ -397,7 +535,8 @@ async function createAgentSession() {
   ++state.sessionOpenEpoch;
   renderAgentSessions();
   try {
-    const result = await api.agentSessions.create({ name });
+    const toolMode = ["full", "restricted"].includes(options?.toolMode) ? options.toolMode : null;
+    const result = await api.agentSessions.create({ name, ...(toolMode ? { toolMode } : {}) });
     if (result?.sessions || result?.threads || Array.isArray(result)) setAgentSessions(result);
     const createdId = String(result?.session?.id ?? result?.thread?.id ?? result?.activeSessionId ?? result?.activeThreadId ?? "");
     const createdSession = result?.session ?? result?.thread;
@@ -418,7 +557,7 @@ async function createAgentSession() {
       state.agentSessions.unshift({ ...createdSession, id: createdId, name: createdSession.name ?? createdSession.title ?? name });
     }
     if (createdId && state.activeSessionId === provisionalId) state.activeSessionId = createdId;
-    resetAgentConversation("已创建独立会话。项目规则与工具保持共享，对话上下文不会与其他会话混合。");
+    resetAgentConversation("已创建独立会话。项目规则保持共享，工具以本对话的核验状态为准；对话上下文不会与其他会话混合。");
     ensureSessionView(createdId).transcript = [];
     restoreSessionAgentResult(result);
     return createdId || null;
@@ -434,6 +573,16 @@ async function createAgentSession() {
   }
 }
 
+async function createResearchModeSession(toolMode) {
+  if (!["full", "restricted"].includes(toolMode) || state.guardRepairBusy || state.sessionsLoading) return;
+  const created = await createAgentSession({ toolMode });
+  if (!created) return;
+  if (elements.agentGuardFeedback) elements.agentGuardFeedback.textContent = toolMode === "restricted"
+    ? "已新建受限研究对话；外部 MCP / Apps 关闭，原对话与历史保留。"
+    : "已请求新建完整工具对话；工具是否可用以本对话的只读核验结果为准，原对话保留。";
+  await loadAgentCapabilities();
+}
+
 async function switchAgentSession(event) {
   const nextId = String(event.target.value || "");
   const previousId = state.activeSessionId;
@@ -441,9 +590,9 @@ async function switchAgentSession(event) {
   await openAgentSession(nextId, { previousId });
 }
 
-async function openAgentSession(nextId, { previousId = state.activeSessionId } = {}) {
+async function openAgentSession(nextId, { previousId = state.activeSessionId, force = false } = {}) {
   if (!nextId || state.sessionsLoading || !(api.agentSessions?.open || api.agentSessions?.switch)) return;
-  if (String(nextId) === String(state.activeSessionId ?? "")) {
+  if (!force && String(nextId) === String(state.activeSessionId ?? "")) {
     elements.historyPanel.hidden = true;
     elements.historyToggle.setAttribute("aria-expanded", "false");
     elements.historyToggle.classList.remove("active");
@@ -497,10 +646,11 @@ function ensureSessionView(threadId) {
     state.sessionViews.set(id, {
       transcript: [],
       draft: "",
-      scope: "position",
+      scope: state.portfolio ? "position" : "chat",
       candidateSymbol: "",
       riskBudget: "0.8",
       reviewContext: null,
+      researchContext: null,
       lastAgentResult: null,
     });
   }
@@ -516,34 +666,79 @@ function saveActiveSessionView() {
   view.riskBudget = elements.riskBudget.value;
 }
 
+function mergeReviewSessionContext(persistedBinding, lastRunContext) {
+  if (!persistedBinding) return lastRunContext ?? null;
+  if (!lastRunContext || persistedBinding.reviewProtocol !== lastRunContext.reviewProtocol) {
+    return persistedBinding;
+  }
+  // The persisted thread binding is authoritative for the evidence identity.
+  // Last-run context may add display metadata, but must never roll the binding
+  // back to an older evidence revision, retrospective version, or input hash.
+  return {
+    ...lastRunContext,
+    ...persistedBinding,
+  };
+}
+
 function renderOpenedSession(payload) {
   const threadId = String(payload?.activeSessionId ?? payload?.currentThreadId ?? state.activeSessionId ?? "");
   const view = ensureSessionView(threadId);
+  const researchContext = payload?.session?.researchContext ?? payload?.researchContext ?? null;
+  if (researchContext?.researchThesisId) {
+    view.scope = "chat";
+    view.researchContext = { researchThesisId: researchContext.researchThesisId };
+  }
   if (Array.isArray(payload?.transcript)) view.transcript = payload.transcript;
+  const persistedReviewContext = payload?.session?.reviewContext ?? payload?.reviewContext ?? null;
+  let persistedReviewBinding = null;
+  if (persistedReviewContext?.reviewProtocol) {
+    view.scope = "review";
+    persistedReviewBinding = persistedReviewContext.reviewProtocol === "decision_cycle"
+      ? {
+        reviewProtocol: "decision_cycle",
+        reviewCycleId: persistedReviewContext.reviewCycleId ?? null,
+        reviewPhase: normalizeReviewPhase(persistedReviewContext.reviewPhase),
+        reviewEvidenceRevision: persistedReviewContext.reviewEvidenceRevision ?? null,
+        reviewRetrospectiveVersion: persistedReviewContext.reviewRetrospectiveVersion ?? null,
+        reviewInputSnapshotHash: persistedReviewContext.reviewInputSnapshotHash ?? null,
+      }
+      : {
+        reviewProtocol: "earnings_case",
+        reviewCaseIds: Array.isArray(persistedReviewContext.reviewCaseIds)
+          ? persistedReviewContext.reviewCaseIds
+          : [],
+      };
+    view.reviewContext = persistedReviewBinding;
+  }
   if (payload?.lastAgentResult?.run) {
     view.lastAgentResult = payload.lastAgentResult;
     const lastRun = payload.lastAgentResult.run;
+    if (lastRun.context?.scope === "chat" && lastRun.context?.researchThesisId) {
+      view.scope = "chat";
+      view.researchContext = { researchThesisId: lastRun.context.researchThesisId,
+        name: lastRun.context.researchTitle ?? null };
+    }
     if (lastRun.context?.scope === "review") {
       view.scope = "review";
       if (lastRun.context.reviewProtocol === "decision_cycle") {
-        view.reviewContext = {
+        view.reviewContext = mergeReviewSessionContext(persistedReviewBinding, {
           reviewProtocol: "decision_cycle",
           reviewCycleId: lastRun.context.reviewCycleId ?? null,
           reviewPhase: normalizeReviewPhase(lastRun.context.reviewPhase),
           cycleType: lastRun.context.cycleType ?? null,
-        };
+        });
       } else {
         const quarters = [...new Set((lastRun.analysisContext?.cases ?? [])
           .map((item) => String(item?.fiscalQuarter ?? "").trim())
           .filter(Boolean))];
-        view.reviewContext = {
+        view.reviewContext = mergeReviewSessionContext(persistedReviewBinding, {
           reviewProtocol: "earnings_case",
           reviewCaseIds: lastRun.context.reviewCaseIds ?? [],
           fiscalQuarter: quarters.length === 1 && lastRun.context.reviewMode === "single_event"
             ? quarters[0]
             : null,
           reviewMode: lastRun.context.reviewMode ?? null,
-        };
+        });
       }
     }
   }
@@ -554,13 +749,18 @@ function renderOpenedSession(payload) {
   const transcript = [...view.transcript];
   if (latestBody && transcript.at(-1)?.role === "assistant"
     && sameConversationText(transcript.at(-1).text, latestBody)) transcript.pop();
-  for (const entry of transcript) appendTranscriptEntry(entry);
+  for (const entry of transcript) {
+    if (entry?.role === "assistant" && view.unverifiedPartial?.text
+      && sameConversationText(entry.text, view.unverifiedPartial.text)) continue;
+    appendTranscriptEntry(entry);
+  }
 
   restoreSessionAgentResult({
     ...payload,
     activeSessionId: threadId,
     lastAgentResult: view.lastAgentResult,
   });
+  if (view.unverifiedPartial) renderUnverifiedAgentPartial(view.unverifiedPartial);
   const operation = activeOperationForThread(threadId);
   if (operation) restoreActiveAgent(operation);
   else finishActiveAgentUi(null, transcript.length || view.lastAgentResult ? "已打开原对话，可继续分析" : "新对话");
@@ -593,7 +793,26 @@ function sameConversationText(left, right) {
   const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
   const a = normalize(left);
   const b = normalize(right);
-  return a === b || (a.length > 200 && b.length > 200 && a.slice(0, 200) === b.slice(0, 200));
+  return a === b;
+}
+
+function markLatestThreadOperation(operation) {
+  const threadId = String(operation?.threadId ?? "").trim();
+  const operationId = String(operation?.operationId ?? "").trim();
+  if (!threadId || !operationId) return false;
+  const startedAtMs = Number.isFinite(Number(operation?.startedAtMs))
+    ? Number(operation.startedAtMs)
+    : Date.parse(String(operation?.startedAt ?? "")) || Date.now();
+  const previous = state.latestOperationByThread.get(threadId);
+  if (previous && previous.operationId !== operationId
+    && Number(previous.startedAtMs ?? 0) > startedAtMs) return false;
+  state.latestOperationByThread.set(threadId, { operationId, startedAtMs });
+  return true;
+}
+
+function isLatestThreadOperation(threadId, operationId) {
+  const latest = state.latestOperationByThread.get(String(threadId ?? ""));
+  return !latest || latest.operationId === String(operationId ?? "");
 }
 
 function summarizeConversationTitle(value) {
@@ -612,9 +831,9 @@ function summarizeConversationTitle(value) {
 }
 
 function restoreSessionComposer(view) {
-  const scope = ["position", "candidate", "portfolio", "review"].includes(view.scope)
+  const scope = ["chat", "position", "candidate", "portfolio", "review"].includes(view.scope)
     ? view.scope
-    : "position";
+    : state.portfolio ? "position" : "chat";
   state.analysisScope = scope;
   state.candidateSymbol = view.candidateSymbol ?? "";
   document.querySelectorAll(".scope-segmented [data-scope]").forEach((button) => {
@@ -641,6 +860,8 @@ function syncActiveAgents(activeAgents) {
     const operation = {
       operationId,
       threadId,
+      startedAt: active?.startedAt ?? null,
+      startedAtMs: Date.parse(String(active?.startedAt ?? "")) || Date.now(),
       status: "running",
       progress: "后台 Codex 分析仍在运行",
       task: String(active?.task ?? ""),
@@ -650,6 +871,7 @@ function syncActiveAgents(activeAgents) {
       streamOrder: [],
       toolEvents: new Map(),
     };
+    if (!markLatestThreadOperation(operation)) continue;
     state.operations.set(operationId, operation);
     scheduleAgentResultRecovery(operation, 5_000);
   }
@@ -669,7 +891,11 @@ function restoreSessionAgentResult(payload) {
 }
 
 function setAnalysisScope(scope) {
-  if (!["position", "candidate", "portfolio"].includes(scope) || scope === state.analysisScope) return;
+  if (!["chat", "position", "candidate", "portfolio"].includes(scope) || scope === state.analysisScope) return;
+  if (ensureSessionView(state.activeSessionId).researchContext?.researchThesisId) {
+    setSystemMessage("这条对话绑定研究主线。持仓或候选分析请新建对话；当前研究和历史会保留。", "warning");
+    return;
+  }
   state.analysisScope = scope;
   const view = ensureSessionView(state.activeSessionId);
   view.scope = scope;
@@ -680,6 +906,7 @@ function setAnalysisScope(scope) {
   elements.candidateSymbolField.hidden = scope !== "candidate";
   invalidateAgentRuns();
   renderAgentContext();
+  syncTechnicalLinkageEditorFromContext();
   if (scope === "candidate") requestAnimationFrame(() => elements.candidateSymbol.focus());
 }
 
@@ -957,7 +1184,164 @@ async function connectLongbridge() {
   }
 }
 
+function brokerName(value) {
+  return ({ all: "全部账户", longbridge: "长桥", ibkr: "IBKR", multiple: "长桥 + IBKR" })[value] ?? "";
+}
+
+function bindBrokerControls() {
+  $("#broker-tabs")?.addEventListener("click", (event) => {
+    const scope = event.target.closest("[data-broker-scope]")?.dataset.brokerScope;
+    if (!scope || scope === state.brokerScope) return;
+    state.brokerScope = scope;
+    invalidateAgentRuns("账户范围已切换；运行中的任务仍使用发送时的账户快照。", { preserveActiveRequest: true });
+    setBrokers(state.brokers);
+    if (scope === "ibkr" && !state.brokers?.views?.ibkr) $("#ibkr-setup").open = true;
+  });
+  $("#broker-overview")?.addEventListener("click", (event) => {
+    const broker = event.target.closest("[data-refresh-broker]")?.dataset.refreshBroker;
+    if (broker) refreshBrokerScope(broker);
+  });
+  $("#ibkr-login")?.addEventListener("click", async () => {
+    try { await api.brokers.loginIbkr({ transport: $("#ibkr-transport").value, port: $("#ibkr-port").value }); }
+    catch (error) { $("#ibkr-setup-message").textContent = error.message; }
+  });
+  $("#ibkr-transport")?.addEventListener("change", () => {
+    $("#ibkr-port").value = $("#ibkr-transport").value === "tws" ? 7496 : 5001;
+    $("#ibkr-account").innerHTML = '<option value="">先检查连接</option>';
+    renderIbkrTransport();
+  });
+  const configure = () => ({ transport: $("#ibkr-transport").value, port: Number($("#ibkr-port").value),
+    accountId: $("#ibkr-account").value, trustLocalCertificate: $("#ibkr-trust").checked, enabled: true });
+  $("#ibkr-discover")?.addEventListener("click", async () => {
+    await withIbkrSetup(async () => {
+      setBrokers(await api.brokers.configureIbkr(configure()));
+      const result = await api.brokers.discoverIbkr(); setBrokers(result.brokers);
+      if (!result.ok) throw new Error(result.error);
+      $("#ibkr-setup-message").textContent = "连接成功。确认下方账户后，点击“保存并同步”。";
+    });
+  });
+  $("#ibkr-sync")?.addEventListener("click", async () => {
+    await withIbkrSetup(async () => {
+      if (!$("#ibkr-account").value) throw new Error("请先检查连接并选择账户。");
+      setBrokers(await api.brokers.configureIbkr(configure()));
+      const result = await api.brokers.refresh("ibkr"); setBrokers(result.brokers);
+      if (!result.ok) throw new Error(result.results?.find((r) => !r.ok)?.error ?? "IBKR 同步失败");
+      $("#ibkr-setup-message").textContent = "真实持仓已同步；行情权限和延迟状态请展开持仓查看。";
+      $("#ibkr-setup").open = false;
+    });
+  });
+  $("#ibkr-disconnect")?.addEventListener("click", async () => {
+    await withIbkrSetup(async () => {
+      if (!window.confirm("从驾驶舱移除 IBKR 接入和当前持仓缓存？不会退出 IBKR 客户端或改变账户。")) return;
+      setBrokers(await api.brokers.configureIbkr({ ...configure(), enabled: false, accountId: "" }));
+      $("#ibkr-setup-message").textContent = "已移除当前 IBKR 缓存；可重新连接恢复。";
+    });
+  });
+}
+
+async function withIbkrSetup(work) {
+  const buttons = [...document.querySelectorAll(".ibkr-actions button")];
+  buttons.forEach((b) => { b.disabled = true; });
+  $("#ibkr-setup-message").textContent = "正在读取本机 IBKR 客户端…";
+  try { await work(); } catch (error) { $("#ibkr-setup-message").textContent = error.message; }
+  finally { buttons.forEach((b) => { b.disabled = false; }); }
+}
+
+function renderIbkrTransport() {
+  const tws = $("#ibkr-transport").value === "tws";
+  $("#ibkr-login").textContent = tws ? "打开 TWS" : "打开登录页";
+  $("#ibkr-trust").closest("label").hidden = tws;
+  $("#ibkr-connection-help").textContent = tws
+    ? "复用已登录的 Trader Workstation。启用 Socket API、保留只读 API。实盘常用 7496，模拟盘 7497；IB Gateway 常用 4001/4002。"
+    : "启动本机 Client Portal Gateway，在 IBKR 页面登录；端口以网关配置为准。Mac 的 5000 可能被系统占用，5001 是备选值。";
+}
+
+function setBrokers(value) {
+  if (!value?.views) return;
+  state.brokers = value;
+  const ib = value.ibkr;
+  if (ib && !$("#ibkr-port").dataset.loaded) {
+    $("#ibkr-port").value = ib.config.port;
+    $("#ibkr-port").dataset.loaded = "true";
+    $("#ibkr-trust").checked = ib.config.trustLocalCertificate;
+    $("#ibkr-transport").value = ib.config.transport ?? "gateway";
+    renderIbkrTransport();
+  }
+  const select = $("#ibkr-account");
+  const selected = select.value || ib?.config.accountId;
+  const accounts = ib?.accounts?.length ? ib.accounts : ib?.config.accountId
+    ? [{ id: ib.config.accountId, label: "已保存账户（检查连接可重选）" }] : [];
+  select.innerHTML = accounts.length
+    ? accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.label)}${a.currency ? ` · ${esc(a.currency)}` : ""}</option>`).join("")
+    : '<option value="">先检查连接</option>';
+  if (accounts.some((a) => a.id === selected)) select.value = selected;
+  $("#ibkr-connection-state").textContent = ({ connected: "已连接", syncing: "同步中", error: "连接待检查" })[ib?.state] ?? "未连接";
+  document.querySelectorAll("[data-broker-scope]").forEach((node) => node.setAttribute("aria-pressed", String(node.dataset.brokerScope === state.brokerScope)));
+  renderBrokerOverview();
+  setPortfolio(value.views[state.brokerScope] ?? null);
+  if (!state.portfolio) {
+    elements.accountCard.innerHTML = `<div class="account-empty"><strong>${state.brokerScope === "ibkr" ? "等待 IBKR 持仓" : "尚无真实持仓"}</strong><p>${state.brokerScope === "ibkr" ? "展开上方连接设置，启动并登录 TWS 或备用网关后同步。" : "可连接长桥或 IBKR；真实数据同步后显示。"}</p></div>`;
+  }
+}
+
+function renderBrokerOverview() {
+  if (!state.brokers) return;
+  $("#broker-overview").innerHTML = ["longbridge", "ibkr"].map((broker) => {
+    const p = state.brokers.views[broker];
+    const syncing = state.brokerBusy.has(broker) || broker === "ibkr" && state.brokers.ibkr?.syncing;
+    const fresh = p ? portfolioTrustSnapshot(p) : null;
+    const status = syncing ? "同步中" : !p ? "未同步" : fresh.state === "cached" ? "缓存" : fresh.state === "stale" ? "待刷新" : "已同步";
+    return `<div class="broker-summary-row"><span>${brokerName(broker)}</span><div><strong>${p ? money(p.account.netAssets, "USD") : "—"}</strong><small>${status}${p ? ` · 现金 ${percent(p.totals.cashRatio)}` : ""}</small></div><button type="button" data-refresh-broker="${broker}" ${syncing ? "disabled" : ""} aria-label="刷新${brokerName(broker)}持仓">↻</button></div>`;
+  }).join("");
+}
+
+async function refreshBrokerScope(scope) {
+  const brokers = scope === "all" ? ["longbridge", ...(state.brokers?.ibkr?.config.enabled ? ["ibkr"] : [])] : [scope];
+  if (brokers.some((b) => state.brokerBusy.has(b))) return;
+  if (scope === "ibkr" && !state.brokers?.ibkr?.config.enabled) {
+    $("#ibkr-setup").open = true;
+    $("#ibkr-setup-message").textContent = "请先启动并登录 TWS 或备用网关，再检查连接。";
+    return;
+  }
+  brokers.forEach((b) => state.brokerBusy.add(b)); renderBrokerOverview();
+  try {
+    const result = await api.brokers.refresh(scope); setBrokers(result.brokers);
+    const errors = result.results?.filter((r) => !r.ok).map((r) => `${brokerName(r.broker)}：${r.error}`) ?? [];
+    setSystemMessage(errors.length ? errors.join("；") : `${brokerName(scope)}持仓已更新`, errors.length ? "error" : "normal");
+  } catch (error) { setSystemMessage(error.message, "error"); }
+  finally { brokers.forEach((b) => state.brokerBusy.delete(b)); renderBrokerOverview(); }
+}
+
+function renderBrokerAccountCard(portfolio) {
+  const noteOpen = elements.accountCard.querySelector(".broker-account-note")?.open === true;
+  const account = portfolio.account;
+  const trust = portfolioTrustSnapshot(portfolio);
+  const missing = portfolio.missingBrokers ?? [];
+  elements.snapshotState.textContent = missing.length ? "PARTIAL" : trust.label;
+  elements.snapshotState.className = `snapshot-state ${trust.className}`;
+  elements.snapshotState.title = `${brokerName(state.brokerScope)}账户快照 ${trust.timestampLabel} · ${trust.ageLabel} · ${portfolioFxLabel(portfolio)} · 汇总仅供研究，不是统一实时执行校验`;
+  elements.accountCard.classList.add("broker-account-card");
+  const cash = money(account.totalCash, "USD");
+  elements.accountCard.innerHTML = `<div class="account-top"><div><span>${missing.length ? "汇总未完整" : "净资产 / USD"}</span><strong>${money(account.netAssets, "USD")}</strong></div><small>${esc(brokerName(state.brokerScope))} · ${esc(trust.ageLabel)}${missing.length ? ` · 缺少${esc(missing.map(brokerName).join("、"))}` : ""}</small></div>
+    <div class="metric-grid"><div><span>现金 / USD</span><strong>${cash}</strong></div><div><span>${state.brokerScope === "ibkr" ? "IBKR 购买力" : "购买力"}</span><strong>${state.brokerScope === "ibkr" ? money(account.buyPower, "USD") : "分账户查看"}</strong></div></div>
+    <details class="broker-account-note" ${noteOpen ? "open" : ""}><summary>估值口径 · 研究用，未完成执行校验</summary>${state.brokerScope === "ibkr" ? "账户估值与实时行情分开。展开期权查看报价、延迟状态与 Greeks。" : "同一股票合并市值，多空敞口分别保留；资金与保证金不跨券商抵扣。"}<p>${esc(portfolioFxLabel(portfolio))}。各券商 USD 值只汇总一次；来源时间不等于实时行情。</p></details>`;
+}
+
+function brokerPositionDetails(position, open) {
+  const legs = position.brokerLegs ?? [];
+  if (legs.length < 2 && position.broker !== "ibkr") return "";
+  const availability = (value) => ({ realtime: "实时", delayed: "延迟", frozen: "冻结收盘", frozen_delayed: "冻结延迟", not_subscribed: "未订阅", incomplete: "不完整" })[value] ?? "状态未知";
+  const option = position.option;
+  const md = position.marketData;
+  return `<details class="broker-position-details" data-position="${esc(position.positionId ?? position.symbol)}" ${open ? "open" : ""}><summary>${option ? "期权报价与 Greeks" : "账户明细与来源"}${position.hasOffsettingLegs ? " · 跨账户多空" : ""}</summary>
+    ${legs.map((leg) => `<div class="broker-leg">${esc(leg.label)} · ${number(leg.quantity)}${position.instrumentType === "option" ? " 张" : " 股"}<br />成本 ${price(leg.costPrice, leg.currency)} · 市值 ${money(leg.marketValueBase, "USD")}<br />账户同步 ${esc(leg.syncedAt ? new Date(leg.syncedAt).toLocaleString() : "未知")}</div>`).join("")}
+    ${md ? `<div class="broker-leg">行情：${availability(md.availability)} · ${md.observedAt ? esc(new Date(md.observedAt).toLocaleString()) : "未返回更新时间"}<br />Bid ${price(md.bid, position.currency)} / Ask ${price(md.ask, position.currency)}<br />Last ${price(md.last, position.currency)}${md.lastPrefix === "C" ? "（昨收）" : md.lastPrefix === "H" ? "（停牌）" : ""}</div>` : ""}
+    ${option ? `<div class="broker-leg">${esc(option.expiry ?? "到期待核验")} · ${esc(option.right ?? "方向待核验")} ${number(option.strike)} · 乘数 ${number(option.multiplier)}</div><div class="broker-option-grid">${[["Delta", option.delta], ["Gamma", option.gamma], ["Theta", option.theta], ["Vega", option.vega], ["IV %", option.ivPercent], ["OI", option.openInterest]].map(([label, value]) => `<span>${label} <strong>${number(value, 4)}</strong></span>`).join("")}</div><p>Greeks 为 IBKR 报价单位值，不是组合汇总风险；缺失保持 —。市值为权利金，不等于标的名义敞口。</p>` : ""}
+  </details>`;
+}
+
 async function refreshPortfolio() {
+  if (api.brokers) return refreshBrokerScope(state.brokerScope);
   if (state.busy) return;
   setBusy(true);
   try {
@@ -987,7 +1371,7 @@ function setPortfolio(portfolio) {
   const previousSnapshot = state.portfolio?.syncedAt ?? null;
   const nextSnapshot = portfolio?.syncedAt ?? null;
   if (previousSnapshot && previousSnapshot !== nextSnapshot) {
-    invalidateAgentRuns("长桥快照已更新，旧结论仅保留用于回看。", {
+    invalidateAgentRuns("账户快照已更新，旧结论仅保留用于回看。", {
       preserveActiveRequest: Boolean(state.activeRequestId),
     });
   }
@@ -1000,6 +1384,7 @@ function setPortfolio(portfolio) {
   renderPortfolio();
   renderAgentContext();
   updateAgentSubmitState();
+  syncTechnicalLinkageEditorFromContext();
 }
 
 function renderPortfolio() {
@@ -1023,26 +1408,37 @@ function renderPortfolio() {
 
 function renderPortfolioTrustUi(portfolio = state.portfolio) {
   if (!portfolio) return;
+  if (portfolio.brokerScope === "ibkr" || portfolio.brokerAccounts?.length > 1 || portfolio.missingBrokers?.length) {
+    renderBrokerAccountCard(portfolio);
+    return;
+  }
+  elements.accountCard.classList.remove("broker-account-card");
+  const previousIssues = elements.accountCard.querySelector(".portfolio-data-issues");
+  const issuesOpen = previousIssues?.open === true;
+  const issuesScrollTop = previousIssues?.querySelector(".portfolio-data-issues-body")?.scrollTop ?? 0;
   const account = portfolio.account;
   const trust = portfolioTrustSnapshot(portfolio);
   const marks = portfolioMarkRange(portfolio);
+  const valuationGate = portfolioValuationGateView(portfolio);
   elements.snapshotState.textContent = trust.label;
   elements.snapshotState.className = `snapshot-state ${trust.className}`;
-  elements.snapshotState.title = `账户快照 ${trust.timestampLabel} · 年龄 ${trust.ageLabel} · 行情标记 ${marks.label}`;
+  elements.snapshotState.title = `账户快照 ${trust.timestampLabel} · 年龄 ${trust.ageLabel} · 行情标记 ${marks.label} · ${valuationGate.detail}`;
   const fxStatus = portfolio.dataQuality?.fxStatus ?? "unavailable";
-  const fxAvailable = ["live", "reference", "reference_cached"].includes(fxStatus);
+  const fxAvailable = ["live", "reference", "reference_cached", "not_required"].includes(fxStatus);
   const fxReference = ["reference", "reference_cached"].includes(fxStatus);
   const fxLabel = fxReference
     ? `${portfolio.fx?.providerCode ?? "ECB"} ${portfolio.fx?.asOf ?? "最新"} 参考汇率${fxStatus === "reference_cached" ? "（缓存）" : ""}`
-    : fxStatus === "live"
-      ? "长桥账户汇率"
+    : fxStatus === "live" || fxStatus === "not_required"
+      ? fxStatus === "not_required" ? "USD 单币种，无需换算" : "长桥账户汇率"
       : "汇率不可用";
   const accountSummary = trust.state === "cached"
     ? "本地加密缓存 · 只供回看"
     : trust.state === "stale"
       ? "持仓快照已过期 · 禁止据此新增风险"
-      : trust.state === "unknown"
+    : trust.state === "unknown"
         ? "持仓快照状态未知 · 先刷新再评估仓位"
+    : !trust.freshForSizing
+      ? "账户与持仓数量已同步 · 报价或估值待核验"
     : !fxAvailable
       ? "已同步持仓 · 汇率降级，跨币种估值暂停"
       : fxReference
@@ -1055,21 +1451,37 @@ function renderPortfolioTrustUi(portfolio = state.portfolio) {
       <div><span>净资产 / ${esc(account.baseCurrency)}</span><strong>${money(account.netAssets, account.baseCurrency)}</strong></div>
       <small>${esc(accountSummary)}</small>
     </div>
-    <div class="data-passport ${esc(trust.className)}">
+    <div class="data-passport ${esc(trust.className)} gate-${esc(valuationGate.status)}">
       <span>SNAPSHOT ${esc(trust.timestampLabel)}</span>
       <span>AGE ${esc(trust.ageLabel)}</span>
       <span>MARKS ${esc(marks.label)}</span>
-      <strong>${trust.freshForSizing ? "账户快照时间新鲜" : "不可用于新增仓位"}</strong>
+      <span>GATE ${esc(valuationGate.status.toUpperCase())}</span>
+      <strong>${trust.freshForSizing
+        ? "账户、逐标的报价与估值校验通过"
+        : trust.state !== "fresh"
+          ? "当前是过期或缓存快照，请刷新持仓"
+          : `仓位测算暂停 · ${esc(valuationGate.shortReason)}`}</strong>
+      ${valuationGate.issues.length ? `
+        <details class="portfolio-data-issues" ${issuesOpen ? "open" : ""}>
+          <summary>查看原因与处理方式（${valuationGate.issues.length}）</summary>
+          <div class="portfolio-data-issues-body">
+            <p>同步成功不代表行情完整。仍可查看真实持仓与研究候选标的；完整仓位及杠杆测算需先补齐以下证据。</p>
+            <ul>${valuationGate.issues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul>
+          </div>
+        </details>` : ""}
     </div>
     <div class="metric-grid">
       <div><span>现金</span><strong>${money(account.totalCash, account.baseCurrency)}</strong></div>
       <div><span>购买力</span><strong>${money(account.buyPower, account.baseCurrency)}</strong></div>
       <div><span>风险等级</span><strong>${esc(account.riskLevel)}</strong></div>
     </div>`;
+  const issuesBody = elements.accountCard.querySelector(".portfolio-data-issues-body");
+  if (issuesBody) issuesBody.scrollTop = issuesScrollTop;
 }
 
 function refreshPortfolioTrustUi() {
   if (!state.portfolio) return;
+  renderBrokerOverview();
   renderPortfolioTrustUi(state.portfolio);
   renderAgentContext();
   refreshCurrentRunTrustUi();
@@ -1117,7 +1529,77 @@ function portfolioTrustSnapshot(portfolio, now = Date.now()) {
     ageMs: measuredAge,
     ageLabel: formatSnapshotAge(measuredAge),
     timestampLabel: portfolio?.syncedAt ? shortDateTime(portfolio.syncedAt) : "未知",
-    freshForSizing: trustState === "fresh" && portfolio?.freshness?.freshForSizing !== false,
+    freshForSizing: trustState === "fresh" && portfolio?.freshness?.freshForSizing === true,
+  };
+}
+
+function portfolioValuationGateView(portfolio) {
+  const outcome = portfolio?.valuationGate?.outcome;
+  const status = ["pass", "degraded", "block"].includes(String(outcome?.status))
+    ? String(outcome.status)
+    : "missing";
+  const codes = Array.isArray(outcome?.reasonCodes) ? outcome.reasonCodes : [];
+  const labels = {
+    quote_stale_active_session: "存在过期行情",
+    quote_timestamp_missing: "存在报价时间缺口",
+    quote_older_than_latest_completed_session: "存在落后于最近收盘的行情",
+    cross_symbol_quote_skew_exceeded: "持仓报价时间差过大",
+    net_asset_reconciliation_failed: "净资产勾稽失败",
+    net_asset_reconciliation_degraded: "净资产勾稽存在差异",
+    position_native_market_value_mismatch: "持仓市值与价格数量不一致",
+    position_market_value_base_missing: "持仓折算市值缺失",
+    reconciliation_position_values_missing: "持仓市值不完整，暂不能核对组合净值",
+    option_contract_multiplier_missing: "期权乘数缺失",
+    position_valuation_unpriced: "存在未定价持仓",
+    account_sync_expired: "账户同步已过期",
+    portfolio_valuation_completeness_failed: "组合估值证据不完整",
+    account_valuation_incomplete: "账户估值字段不完整",
+    quote_price_missing: "报价缺失",
+    quote_price_zero: "报价为零，不能用于仓位测算",
+    quote_price_negative: "报价异常",
+    quote_timestamp_in_future: "报价时间异常",
+    quote_missing_current_trading_session: "缺少本交易时段行情",
+    active_session_quote_session_mismatch: "报价交易时段不匹配",
+    reconciliation_missing_position_values: "部分持仓市值未能核验",
+  };
+  const labelFor = (code) => labels[code] ?? `其他估值校验异常（${code}）`;
+  const reasons = codes.map(labelFor);
+  const quoteErrors = (portfolio?.dataQuality?.quoteErrors ?? []).map(String);
+  const permissionErrors = quoteErrors.filter((error) => /301604|no quote access|OPRA.*permission/i.test(error));
+  const issues = [...new Set([
+    ...permissionErrors.map((error) => {
+      const symbol = error.split(":")[0].trim();
+      return `${symbol} 行情权限不足：长桥未授权此合约/市场的 API 行情。请在长桥核对行情订阅及 OpenAPI 权限；反复刷新或重新登录不能补齐该权限。`;
+    }),
+    ...quoteErrors.filter((error) => !permissionErrors.includes(error)),
+    ...(portfolio?.positions ?? [])
+      .filter((position) => position.valuationLimitation
+        && !quoteErrors.some((error) => error.startsWith(`${position.symbol}:`)))
+      .map((position) => String(position.valuationLimitation)),
+  ])];
+  // Present the actionable source failure first, not the umbrella gate code.
+  const hasSourceIssue = issues.length > 0;
+  const genericCodes = new Set(["portfolio_valuation_completeness_failed", "position_valuation_unpriced",
+    "quote_price_missing", "quote_timestamp_missing", "option_contract_multiplier_missing"]);
+  const gateIssues = portfolio?.valuationGate?.issues ?? [];
+  issues.push(...new Set(gateIssues.length
+    ? gateIssues.filter((issue) => !hasSourceIssue || !genericCodes.has(issue.code))
+      .map((issue) => `${issue.symbol ? `${issue.symbol} · ` : ""}${labelFor(issue.code)}`)
+    : hasSourceIssue ? [] : reasons));
+  return {
+    status,
+    label: status === "pass"
+      ? "报价与估值校验通过"
+      : status === "degraded"
+        ? "报价或估值校验降级"
+        : status === "block"
+          ? "报价或估值校验未通过"
+          : "缺少报价与估值校验",
+    shortReason: permissionErrors.length
+      ? `${permissionErrors[0].split(":")[0].trim()} 行情权限不足`
+      : issues[0] ?? (status === "pass" ? "通过" : "证据不完整"),
+    detail: issues.length ? issues.join("\n") : status === "pass" ? "逐标的报价与账户估值一致" : "缺少可核验原因",
+    issues,
   };
 }
 
@@ -1189,7 +1671,7 @@ function clearPortfolioUI() {
   elements.accountCard.innerHTML = `<div class="account-empty">
     <span class="empty-orbit" aria-hidden="true"></span>
     <strong>等待长桥授权</strong>
-    <p>连接后直接显示账户净资产、现金、购买力与真实持仓；应用不具备下单能力。</p>
+    <p>券商连接仅提供账户与行情查询；本机 Codex 工具权限独立管理。真实交易请到券商确认。</p>
   </div>`;
   elements.positionList.replaceChildren();
   elements.positionCount.textContent = "0";
@@ -1214,14 +1696,17 @@ function invalidateAgentRuns(message, { preserveActiveRequest = false } = {}) {
     button.textContent = "快照已失效 · 请重新运行";
   });
   if (state.runsById.size && message) {
-    elements.agentThread.insertAdjacentHTML(
+    const previous = elements.agentThread.querySelector("[data-agent-invalidation]");
+    if (previous) previous.querySelector("[data-invalidation-message]").textContent = message;
+    else elements.agentThread.insertAdjacentHTML(
       "beforeend",
-      `<div class="run-state"><span class="evidence-dot degraded"></span><span>${esc(message)}</span></div>`,
+      `<div class="run-state" data-agent-invalidation><span class="evidence-dot degraded"></span><span data-invalidation-message>${esc(message)}</span></div>`,
     );
   }
 }
 
 function renderPositions() {
+  const expanded = new Set([...elements.positionList.querySelectorAll(".broker-position-details[open]")].map((node) => node.dataset.position));
   const positions = state.portfolio?.positions ?? [];
   const filtered = positions.filter((position) =>
     !state.filter || `${position.symbol} ${position.name}`.toUpperCase().includes(state.filter),
@@ -1231,12 +1716,591 @@ function renderPositions() {
     const changeClass = tone(position.changePercent);
     const pnlClass = tone(position.pnlPercent);
     const session = sessionLabel(position.quoteSession);
+    const costAvailable = position.costBasisStatus !== "missing"
+      && position.costPrice != null
+      && position.costPrice !== ""
+      && Number.isFinite(Number(position.costPrice));
+    const costLimitation = String(position.costBasisLimitation
+      ?? `${position.symbol} 的成本价未由长桥提供；市值与权重仍可查看，成本及盈亏不可据此判断。`);
+    const costDisplay = costAvailable
+      ? `<span>成本 ${number(position.costPrice)}</span>`
+      : `<span class="cost-basis-missing" title="${esc(costLimitation)}" aria-label="${esc(costLimitation)}">成本 未提供</span>`;
     return `<button class="position-row ${selected ? "selected" : ""}" type="button" data-symbol="${esc(position.symbol)}" aria-pressed="${selected}">
-      <span class="position-id"><i class="ticker">${esc(position.ticker.slice(0, 4))}</i><span><strong>${esc(position.ticker)}</strong><small>${esc(position.name)}</small></span></span>
-      <span class="position-price"><strong>${price(position.lastPrice, position.currency)}</strong><small class="${changeClass}">${signedPercent(position.changePercent)}${session ? ` · ${esc(session)}` : ""}</small></span>
-      <span class="position-meta"><span>Q ${number(position.quantity)}</span><span>成本 ${number(position.costPrice)}</span><span>权重 ${percent(position.weight)}</span><span class="${pnlClass}">${signedPercent(position.pnlPercent)}</span></span>
-    </button>`;
+      <span class="position-id"><i class="ticker">${esc(position.ticker.slice(0, 4))}</i><span><strong>${esc(position.ticker)}</strong><small>${esc(position.name)} <span class="broker-badge">${esc(brokerName(position.broker))}</span></small></span></span>
+      <span class="position-price"><strong>${position.broker === "multiple" ? money(position.marketValueBase, "USD") : price(position.lastPrice, position.currency)}</strong><small class="${changeClass}">${position.broker === "multiple" ? "合计市值 · 分账户报价" : `${signedPercent(position.changePercent)}${session ? ` · ${esc(session)}` : ""}`}</small></span>
+      <span class="position-meta"><span>Q ${number(position.quantity)}</span>${costDisplay}<span>权重 ${percent(position.weight)}</span><span class="${pnlClass}">${signedPercent(position.pnlPercent)}</span></span>
+    </button>${brokerPositionDetails(position, expanded.has(position.positionId ?? position.symbol))}`;
   }).join("");
+}
+
+async function loadTechnicalRadar() {
+  if (!api.technicalRadar?.snapshot || state.technicalRadarLoading) return;
+  state.technicalRadarLoading = true;
+  renderTechnicalRadar();
+  try {
+    const result = await api.technicalRadar.snapshot();
+    setTechnicalRadar(result?.radar);
+  } catch (error) {
+    setTechnicalRadar({
+      ...state.technicalRadar,
+      running: false,
+      lastError: error?.message || "技术雷达读取失败",
+    });
+  } finally {
+    state.technicalRadarLoading = false;
+    renderTechnicalRadar();
+  }
+}
+
+function setTechnicalRadar(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const watchlist = value.watchlist && typeof value.watchlist === "object"
+    ? value.watchlist
+    : { items: [], revision: 0, updatedAt: null };
+  const linkage = value.linkage && typeof value.linkage === "object"
+    ? value.linkage
+    : { profiles: [], revision: 0, updatedAt: null };
+  state.technicalRadar = {
+    schemaVersion: value.schemaVersion ?? null,
+    running: value.running === true,
+    lastError: value.lastError == null ? null : String(value.lastError),
+    watchlist: {
+      items: Array.isArray(watchlist.items) ? watchlist.items : [],
+      revision: Number.isInteger(Number(watchlist.revision)) ? Number(watchlist.revision) : 0,
+      updatedAt: watchlist.updatedAt ?? null,
+    },
+    linkage: {
+      profiles: Array.isArray(linkage.profiles) ? linkage.profiles : [],
+      revision: Number.isInteger(Number(linkage.revision)) ? Number(linkage.revision) : 0,
+      updatedAt: linkage.updatedAt ?? null,
+    },
+    latestBatch: value.latestBatch && typeof value.latestBatch === "object"
+      ? value.latestBatch
+      : null,
+  };
+  if (!state.technicalLinkageDraft.dirty && !state.radarUi.settings) syncTechnicalLinkageEditorFromContext({ force: true });
+  renderTechnicalRadar();
+}
+
+function toggleTechnicalRadar() {
+  setPortfolioView(state.radarUi.view === "radar" ? "portfolio" : "radar");
+}
+
+function setPortfolioView(view) {
+  const expanded = view === "radar";
+  state.radarUi.view = expanded ? "radar" : "portfolio";
+  elements.portfolioPane.classList.toggle("radar-focused", expanded);
+  $("#portfolio-heading").textContent = expanded ? "技术雷达" : "真实账户";
+  document.querySelectorAll("[data-portfolio-view]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.portfolioView === state.radarUi.view)));
+  elements.technicalRadarToggle.setAttribute("aria-expanded", String(expanded));
+  elements.technicalRadarBody.hidden = !expanded;
+  elements.technicalRadar.classList.toggle("collapsed", !expanded);
+  elements.technicalRadarToggle.querySelector(".technical-radar-chevron").textContent = "›";
+  queueTvBoundsSync();
+}
+
+function setRadarSettings(open) {
+  const key = state.radarUi.settings ? "settings" : "results";
+  state.radarUi.scroll[key] = elements.technicalRadarBody.scrollTop;
+  state.radarUi.settings = Boolean(open);
+  renderTechnicalRadar();
+  elements.technicalRadarBody.scrollTop = state.radarUi.scroll[open ? "settings" : "results"];
+}
+
+async function runTechnicalRadar() {
+  if (!api.technicalRadar?.run || state.technicalRadar.running || state.technicalRadarLoading) return;
+  state.technicalRadarLoading = true;
+  state.radarUi.notice = null;
+  renderTechnicalRadar();
+  try {
+    const result = await api.technicalRadar.run();
+    setTechnicalRadar(result?.radar);
+    setSystemMessage("技术雷达已按已完成日线更新");
+  } catch (error) {
+    setTechnicalRadar({
+      ...state.technicalRadar,
+      running: false,
+      lastError: error?.message || "技术雷达扫描失败",
+    });
+    setSystemMessage(error?.message || "技术雷达扫描失败", "warning");
+  } finally {
+    state.technicalRadarLoading = false;
+    renderTechnicalRadar();
+  }
+}
+
+async function addTechnicalWatchlistSymbol(event) {
+  event.preventDefault();
+  const symbol = elements.technicalWatchlistSymbol.value.trim();
+  if (!symbol || !api.technicalRadar?.addWatchlist || state.technicalRadarMutationBusy) return;
+  state.technicalRadarMutationBusy = true;
+  renderTechnicalRadar();
+  try {
+    const result = await api.technicalRadar.addWatchlist(symbol);
+    elements.technicalWatchlistSymbol.value = "";
+    if (result?.radar) setTechnicalRadar(result.radar);
+    else await loadTechnicalRadar();
+    state.radarUi.notice = `${normalizeCandidateSymbol(symbol)} 已加入自选，更新扫描后查看结果。`;
+  } catch (error) {
+    state.radarUi.notice = error?.message || "添加技术自选失败";
+    setSystemMessage(error?.message || "添加技术自选失败", "warning");
+  } finally {
+    state.technicalRadarMutationBusy = false;
+    renderTechnicalRadar();
+  }
+}
+
+async function removeTechnicalWatchlistSymbol(symbol) {
+  if (!symbol || !api.technicalRadar?.removeWatchlist || state.technicalRadarMutationBusy) return;
+  state.technicalRadarMutationBusy = true;
+  renderTechnicalRadar();
+  try {
+    const result = await api.technicalRadar.removeWatchlist(symbol);
+    if (result?.radar) setTechnicalRadar(result.radar);
+    else await loadTechnicalRadar();
+    state.radarUi.notice = `${symbol} 已从自选移除；旧扫描结果保留到下次更新。`;
+  } catch (error) {
+    setSystemMessage(error?.message || "移除技术自选失败", "warning");
+  } finally {
+    state.technicalRadarMutationBusy = false;
+    renderTechnicalRadar();
+  }
+}
+
+function updateTechnicalLinkageDraft() {
+  state.technicalLinkageDraft = {
+    symbol: normalizeCandidateSymbol(elements.technicalLinkageSymbol.value),
+    sectorSymbol: sanitizeCandidateSymbol(elements.technicalLinkageSector.value),
+    peerSymbols: elements.technicalLinkagePeers.value.toUpperCase(),
+    rationale: elements.technicalLinkageRationale.value,
+    dirty: true,
+  };
+  state.technicalLinkageMessage = null;
+  renderTechnicalLinkageEditor();
+}
+
+function syncTechnicalLinkageEditorFromContext({ force = false } = {}) {
+  if (state.technicalLinkageBusy) return;
+  if (state.radarUi.settings && !force) return;
+  if (state.technicalLinkageDraft.dirty && !force) return;
+  const symbol = state.analysisScope === "candidate"
+    ? normalizeCandidateSymbol(state.candidateSymbol)
+    : normalizeCandidateSymbol(state.selectedSymbol);
+  if (!symbol) return;
+  setTechnicalLinkageEditorSymbol(symbol, { force });
+}
+
+function setTechnicalLinkageEditorSymbol(value, { force = false, expand = false } = {}) {
+  const symbol = normalizeCandidateSymbol(value);
+  if (!force && symbol === normalizeCandidateSymbol(state.technicalLinkageDraft.symbol)) return;
+  const previous = state.technicalLinkageDraft;
+  if (previous.dirty && previous.symbol) state.technicalLinkageDrafts.set(previous.symbol, { ...previous });
+  const profile = technicalLinkageProfile(symbol);
+  state.technicalLinkageDraft = state.technicalLinkageDrafts.get(symbol) ?? {
+    symbol,
+    sectorSymbol: String(profile?.sectorSymbol ?? ""),
+    peerSymbols: Array.isArray(profile?.peerSymbols) ? profile.peerSymbols.join(", ") : "",
+    rationale: String(profile?.rationale ?? ""),
+    dirty: false,
+  };
+  state.technicalLinkageMessage = null;
+  if (expand) elements.technicalLinkageEditor.open = true;
+  renderTechnicalLinkageEditor();
+}
+
+function technicalLinkageProfile(symbolValue) {
+  const symbol = normalizeCandidateSymbol(symbolValue);
+  const profiles = Array.isArray(state.technicalRadar.linkage?.profiles)
+    ? state.technicalRadar.linkage.profiles
+    : [];
+  return profiles.find((profile) => normalizeCandidateSymbol(profile?.symbol) === symbol) ?? null;
+}
+
+function parseTechnicalLinkagePeers(value) {
+  return [...new Set(String(value ?? "")
+    .split(/[,，;；\s]+/)
+    .map(normalizeCandidateSymbol)
+    .filter(Boolean))];
+}
+
+async function confirmTechnicalLinkage(event) {
+  event.preventDefault();
+  if (!api.technicalRadar?.confirmLinkage || state.technicalLinkageBusy) return;
+  const symbol = normalizeCandidateSymbol(state.technicalLinkageDraft.symbol);
+  const sectorSymbol = normalizeCandidateSymbol(state.technicalLinkageDraft.sectorSymbol) || null;
+  const peerSymbols = parseTechnicalLinkagePeers(state.technicalLinkageDraft.peerSymbols);
+  if (!symbol) {
+    state.technicalLinkageMessage = { tone: "error", text: "请先填写目标标的。" };
+    renderTechnicalLinkageEditor();
+    return;
+  }
+  if (!sectorSymbol && !peerSymbols.length) {
+    state.technicalLinkageMessage = { tone: "error", text: "至少填写行业 ETF 或同行标的。" };
+    renderTechnicalLinkageEditor();
+    return;
+  }
+  if (peerSymbols.length > 5) {
+    state.technicalLinkageMessage = { tone: "error", text: "同行标的最多 5 个。" };
+    renderTechnicalLinkageEditor();
+    return;
+  }
+  if (peerSymbols.length === 1) {
+    state.technicalLinkageMessage = { tone: "error", text: "同行比较需要 2–5 个标的；也可以清空同行，只保留行业 ETF。" };
+    renderTechnicalLinkageEditor();
+    return;
+  }
+  state.technicalLinkageBusy = true;
+  state.technicalLinkageMessage = { tone: "loading", text: "正在确认…" };
+  state.technicalLinkageDraft = {
+    ...state.technicalLinkageDraft,
+    symbol,
+    sectorSymbol: sectorSymbol ?? "",
+    peerSymbols: peerSymbols.join(", "),
+  };
+  renderTechnicalLinkageEditor();
+  try {
+    const result = await api.technicalRadar.confirmLinkage({
+      symbol,
+      sectorSymbol,
+      peerSymbols,
+      rationale: state.technicalLinkageDraft.rationale.trim() || null,
+    });
+    if (result?.radar) setTechnicalRadar(result.radar);
+    else await loadTechnicalRadar();
+    state.technicalLinkageDraft.dirty = false;
+    state.technicalLinkageDrafts.delete(symbol);
+    setTechnicalLinkageEditorSymbol(symbol, { force: true });
+    state.technicalLinkageMessage = { tone: "complete", text: "已由你确认" };
+    setSystemMessage(`${symbol} 行业与同行映射已确认`);
+  } catch (error) {
+    state.technicalLinkageMessage = { tone: "error", text: error?.message || "联动映射确认失败" };
+    setSystemMessage(error?.message || "联动映射确认失败", "warning");
+  } finally {
+    state.technicalLinkageBusy = false;
+    renderTechnicalLinkageEditor();
+  }
+}
+
+async function removeTechnicalLinkage() {
+  const symbol = normalizeCandidateSymbol(state.technicalLinkageDraft.symbol);
+  if (!symbol || !technicalLinkageProfile(symbol)
+    || !api.technicalRadar?.removeLinkage || state.technicalLinkageBusy) return;
+  state.technicalLinkageBusy = true;
+  state.technicalLinkageMessage = { tone: "loading", text: "正在删除…" };
+  renderTechnicalLinkageEditor();
+  try {
+    const result = await api.technicalRadar.removeLinkage(symbol);
+    if (result?.radar) setTechnicalRadar(result.radar);
+    else await loadTechnicalRadar();
+    state.technicalLinkageDraft = {
+      symbol,
+      sectorSymbol: "",
+      peerSymbols: "",
+      rationale: "",
+      dirty: false,
+    };
+    state.technicalLinkageDrafts.delete(symbol);
+    state.technicalLinkageMessage = { tone: "complete", text: "映射已删除" };
+    setSystemMessage(`${symbol} 技术联动映射已删除`);
+  } catch (error) {
+    state.technicalLinkageMessage = { tone: "error", text: error?.message || "联动映射删除失败" };
+    setSystemMessage(error?.message || "联动映射删除失败", "warning");
+  } finally {
+    state.technicalLinkageBusy = false;
+    renderTechnicalLinkageEditor();
+  }
+}
+
+function renderTechnicalLinkageEditor() {
+  const draft = state.technicalLinkageDraft;
+  const profile = technicalLinkageProfile(draft.symbol);
+  const busy = state.technicalLinkageBusy;
+  for (const [input, value] of [[elements.technicalLinkageSymbol, draft.symbol], [elements.technicalLinkageSector, draft.sectorSymbol], [elements.technicalLinkagePeers, draft.peerSymbols], [elements.technicalLinkageRationale, draft.rationale]]) {
+    if (document.activeElement !== input && input.value !== value) input.value = value;
+  }
+  const stateLabel = busy
+    ? "处理中"
+    : draft.dirty
+      ? "未保存"
+      : profile?.state === "confirmed"
+        ? "用户已确认"
+        : profile?.state === "proposed"
+          ? "建议待确认"
+          : "未配置";
+  elements.technicalLinkageState.textContent = stateLabel;
+  elements.technicalLinkageState.className = `technical-linkage-state ${busy
+    ? "loading"
+    : draft.dirty || profile?.state === "proposed"
+      ? "pending"
+      : profile?.state === "confirmed"
+        ? "complete"
+        : ""}`;
+  for (const input of [
+    elements.technicalLinkageSymbol,
+    elements.technicalLinkageSector,
+    elements.technicalLinkagePeers,
+    elements.technicalLinkageRationale,
+  ]) input.disabled = busy;
+  elements.technicalLinkageSave.disabled = busy;
+  elements.technicalLinkageSave.textContent = busy
+    ? "处理中…"
+    : profile?.state === "proposed"
+      ? "确认建议"
+      : "确认映射";
+  elements.technicalLinkageRemove.disabled = busy || !profile;
+  const message = state.technicalLinkageMessage;
+  elements.technicalLinkageMessage.textContent = message?.text ?? "";
+  elements.technicalLinkageMessage.className = message?.tone ?? "";
+}
+
+function renderTechnicalRadar() {
+  const scrollTop = elements.technicalRadarBody.scrollTop;
+  const focus = document.activeElement;
+  const focusKey = focus?.dataset?.radarExpand ?? focus?.dataset?.radarOpen ?? null;
+  const focusAction = focus?.dataset?.radarExpand ? "radarExpand" : "radarOpen";
+  const radar = state.technicalRadar;
+  const batch = radar.latestBatch;
+  const summary = batch?.summary && typeof batch.summary === "object" ? batch.summary : {};
+  const coverage = summary.coverage && typeof summary.coverage === "object" ? summary.coverage : {};
+  const cards = Array.isArray(batch?.items) ? batch.items : [];
+  const watchlist = Array.isArray(radar.watchlist?.items) ? radar.watchlist.items : [];
+  const status = radar.running
+    ? "scanning"
+    : state.technicalRadarLoading
+      ? "loading"
+      : radarUiStatus(summary.status ?? (batch ? "degraded" : "unavailable"));
+  const selectedCount = radarFiniteInteger(coverage.selectedSymbolCount);
+  const requestedCount = radarFiniteInteger(coverage.requestedSymbolCount);
+  const coverageLabel = selectedCount == null
+    ? "N/A"
+    : requestedCount == null
+      ? String(selectedCount)
+      : `${selectedCount}/${requestedCount}`;
+
+  elements.technicalRadarToggleState.textContent = {
+    scanning: "扫描中",
+    loading: "读取中",
+    complete: "数据完整",
+    degraded: "部分缺失",
+    unavailable: batch ? "暂无数据" : "待扫描",
+  }[status] ?? "待扫描";
+  elements.technicalRadarToggleState.className = `technical-radar-toggle-state ${status}`;
+  elements.technicalRadarSummary.innerHTML = `
+    <div><span>已完成交易日</span><strong>${esc(batch?.tradingDate ?? "尚未扫描")}</strong></div>
+    <div><span>扫描覆盖</span><strong>${esc(coverageLabel)}</strong></div>
+    <div><span>数据状态</span><strong>${esc(radarStatusLabel(status))}</strong></div>`;
+  elements.technicalRadarComputed.textContent = batch?.computedAt
+    ? `更新于 ${shortDateTime(batch.computedAt)}`
+    : "扫描只使用已完成日线";
+  elements.technicalRadarRun.disabled = radar.running || state.technicalRadarLoading;
+  elements.technicalRadarRun.textContent = radar.running
+    ? "正在扫描…"
+    : state.technicalRadarLoading
+      ? "正在读取…"
+      : batch ? "更新扫描" : "开始扫描";
+  elements.technicalWatchlistSymbol.disabled = state.technicalRadarMutationBusy;
+  elements.technicalWatchlistAdd.disabled = state.technicalRadarMutationBusy;
+  renderTechnicalLinkageEditor();
+
+  const changeRows = Array.isArray(summary.rankings?.changes?.rows)
+    ? summary.rankings.changes.rows
+    : [];
+  const anomalyRows = Array.isArray(summary.rankings?.anomalies?.rows)
+    ? summary.rankings.anomalies.rows
+    : [];
+  const changesBySymbol = new Map(changeRows.map((row) => [String(row?.symbol ?? ""), row]));
+  const anomalyRankBySymbol = new Map(anomalyRows.map((row, index) => [
+    String(row?.symbol ?? ""),
+    { row, rank: index + 1 },
+  ]));
+  const changedCount = cards.filter((card) => radarChanges(card, changesBySymbol)).length;
+  const gapCount = cards.filter(radarHasGap).length;
+  $("#radar-tab-count").textContent = cards.length ? String(cards.length) : "";
+  $("#technical-radar-title").textContent = changedCount ? `技术雷达 · ${changedCount} 项变化` : "打开技术雷达";
+  const counts = { all: cards.length, changed: changedCount, gaps: gapCount };
+  for (const button of document.querySelectorAll("[data-radar-filter]")) {
+    const filter = button.dataset.radarFilter;
+    button.setAttribute("aria-pressed", String(filter === state.radarUi.filter));
+    button.textContent = `${({ all: "全部", changed: "有变化", gaps: "待补数据" })[filter]} ${counts[filter]}`;
+  }
+  const settings = state.radarUi.settings;
+  $("#radar-view-heading").textContent = settings ? "自选与联动管理" : "日线结构观察";
+  $("#radar-view-description").textContent = settings ? "联动修改后请确认映射；返回后更新扫描。" : "长桥持仓 + 技术自选 · 非实时行情";
+  $("#radar-settings-back").hidden = !settings;
+  elements.technicalRadarRun.hidden = settings;
+  elements.technicalRadarSummary.hidden = settings;
+  $(".technical-radar-actions").hidden = settings;
+  $("#radar-settings").hidden = !settings;
+  $("#radar-filters").hidden = settings;
+  elements.technicalRadarList.hidden = settings;
+  $("#radar-settings-toggle").textContent = settings ? "返回扫描结果" : "管理自选与联动";
+  $("#radar-settings-toggle").setAttribute("aria-expanded", String(settings));
+  const changedWatchlist = radar.watchlist.updatedAt && (!batch?.computedAt || Date.parse(radar.watchlist.updatedAt) > Date.parse(batch.computedAt));
+  const notice = radar.lastError ? `${radar.lastError}${batch ? "；仍显示上次扫描，不是本次新结果。" : ""}`
+    : state.radarUi.notice ?? (changedWatchlist ? "自选已变更，更新扫描后纳入结果。" : null);
+  $("#radar-notice").textContent = notice ?? "";
+  $("#radar-notice").hidden = !notice;
+  elements.technicalRadarList.setAttribute("aria-busy", String(radar.running || state.technicalRadarLoading));
+  const watchlistHtml = watchlist.length
+    ? `<div class="technical-watchlist-strip"><span>自选 ${watchlist.length}</span><div>${watchlist.map((item) => {
+      const symbol = String(item?.symbol ?? "");
+      return `<span class="technical-watchlist-chip"><button type="button" data-radar-linkage="${esc(symbol)}" title="配置 ${esc(symbol)} 的行业与同行">${esc(symbol)}</button><button type="button" data-radar-remove="${esc(symbol)}" ${state.technicalRadarMutationBusy ? "disabled" : ""} aria-label="从技术自选移除 ${esc(symbol)}">×</button></span>`;
+    }).join("")}</div></div>`
+    : '<p class="technical-radar-empty">还没有技术自选；上方输入代码即可添加。</p>';
+  $("#radar-watchlist-items").innerHTML = watchlistHtml;
+  const visible = radarVisibleCards(cards, { filter: state.radarUi.filter, query: state.radarUi.query, changes: changesBySymbol });
+  const cardsHtml = cards.length
+    ? visible.length ? visible.map((card) => technicalRadarCard(card, {
+      change: radarChanges(card, changesBySymbol),
+      anomaly: anomalyRankBySymbol.get(String(card?.symbol ?? "")) ?? null,
+    })).join("") : `<div class="technical-radar-empty"><strong>${state.radarUi.query ? "没有匹配的标的" : state.radarUi.filter === "changed" ? "本轮没有记录到状态变化" : "当前没有待补数据的标的"}</strong><p>${state.radarUi.query ? "试试股票代码，或清除筛选查看全部。" : "这只描述本轮证据，不代表价格未波动或适合买入。"}</p><button type="button" data-radar-clear>查看全部</button></div>`
+    : `<div class="technical-radar-empty">${radar.lastError
+      ? esc(radar.lastError)
+      : watchlist.length
+        ? "自选已保存；运行扫描后显示结构，当前指标为 N/A。"
+        : "运行扫描后显示可核验的结构变化；缺失指标保持 N/A。"}</div>`;
+  elements.technicalRadarList.innerHTML = cardsHtml;
+  if (focusKey) [...elements.technicalRadarList.querySelectorAll("button")].find((button) => button.dataset[focusAction] === focusKey)?.focus({ preventScroll: true });
+  elements.technicalRadarBody.scrollTop = scrollTop;
+}
+
+function technicalRadarCard(card, { change, anomaly }) {
+  const symbol = String(card?.symbol ?? "");
+  const memberships = Array.isArray(card?.memberships) ? card.memberships : [];
+  const status = radarUiStatus(card?.status);
+  const qqq20 = card?.metrics?.qqqExcessReturns?.["20"];
+  const qqq20Available = qqq20?.status === "available" && finiteUiNumber(qqq20.value) != null;
+  const qqq20Value = qqq20Available ? Number(qqq20.value) : null;
+  const changedCount = radarFiniteInteger(change?.changedFieldCount)
+    ?? (Array.isArray(change?.changedFields) ? change.changedFields.length : null);
+  const changeHint = change
+    ? `<span class="radar-observation change">${change.kind === "new_symbol" ? "新增观察" : `变化 ${changedCount ?? "N/A"}`}</span>`
+    : "";
+  const degradedCount = Array.isArray(card?.degradedReasons) ? card.degradedReasons.length : 0;
+  const limitationHint = degradedCount
+    ? `<span class="radar-observation degraded" title="${esc(card.degradedReasons.join(" · "))}">证据缺口 ${degradedCount}</span>`
+    : "";
+  const membership = memberships.map((item) => item === "holding" ? "持仓" : item === "watchlist" ? "自选" : item).join(" + ") || "观察";
+  const expanded = state.radarUi.expanded === symbol;
+  const detailId = `radar-detail-${encodeURIComponent(symbol)}`;
+  const changedFields = Array.isArray(change?.changedFields) ? change.changedFields : [];
+  const changesHtml = changedFields.length ? `<section><h3>与上次扫描相比</h3>${changedFields.map((field) => `<p class="radar-change-row"><span>${esc(radarFieldLabel(field.field))}</span><span>${esc(radarStateLabel(field.from))} → <strong>${esc(radarStateLabel(field.to))}</strong></span></p>`).join("")}</section>`
+    : '<p class="radar-detail-note">暂无可展示的状态对比；不等于期间没有价格变化。</p>';
+  const gapsHtml = degradedCount ? `<section class="radar-gap-details"><h3>哪些数据还不完整</h3><ul>${card.degradedReasons.map((reason) => `<li>${esc(radarReasonLabel(reason))}</li>`).join("")}</ul><p>刷新可重试获取；历史长度或权限不足不能靠重复扫描补齐。</p></section>` : "";
+  const emaHtml = [3, 5, 8, 13, 21, 144, 169].map((period) => {
+    const metric = card?.ema?.[period];
+    const value = metric?.status === "available" && finiteUiNumber(metric.value) != null ? Number(metric.value).toFixed(2) : "—";
+    const maturityNote = value === "—" ? "" : radarEmaNote(metric);
+    return `<div><dt>EMA ${period}</dt><dd>${esc(value)}${maturityNote ? `<small>${esc(maturityNote)}</small>` : ""}</dd></div>`;
+  }).join("");
+  return `<article class="technical-radar-card ${status} ${expanded ? "expanded" : ""}">
+    <button class="technical-radar-card-main" type="button" data-radar-expand="${esc(symbol)}" aria-expanded="${expanded}" aria-controls="${detailId}" title="展开 ${esc(symbol)} 的结构与数据说明">
+      <span class="technical-radar-card-head"><strong>${esc(symbol || "N/A")}</strong><small>${esc(membership)}</small><i>${esc(radarStatusLabel(status))}</i></span>
+      <span class="radar-card-thesis">${esc(radarDisplay(card?.structure?.short))}<small>长线 · ${esc(radarDisplay(card?.structure?.long))}</small></span>
+      <span class="technical-radar-observations">${changeHint}${limitationHint}${!changeHint && !limitationHint ? '<span class="radar-observation quiet">查看指标与证据</span>' : ""}<span class="radar-expand-label">${expanded ? "收起" : "详情"}</span></span>
+    </button>
+    <div class="radar-card-detail" id="${detailId}" ${expanded ? "" : "hidden"}>
+      <div class="radar-card-actions"><button type="button" data-radar-open="${esc(symbol)}">同步到 TV / Agent</button><button type="button" data-radar-linkage="${esc(symbol)}">配置联动</button></div>
+      <p class="radar-detail-note">同步只选择分析标的，不自动运行 Agent。</p>
+      <div class="technical-radar-metrics"><span>价格 / EMA21<strong>${esc(radarRelationLabel(card?.structure?.priceVsEma21))}</strong></span><span>QQQ 超额 · 20日<strong class="${tone(qqq20Value)}">${qqq20Available ? signedPercent(qqq20Value) : "N/A"}</strong></span></div>
+      ${changesHtml}
+      <section><h3>均线数值 · 日线</h3><dl class="radar-ema-values">${emaHtml}</dl><p class="radar-detail-note">沿用宿主已完成 K 线计算；数值不代表买卖条件。</p></section>
+      ${gapsHtml}
+      ${anomaly ? `<p class="radar-detail-note">观察排序 #${anomaly.rank}：先考虑数据缺口，再参考波幅、量能等变化；不是投资机会排名。</p>` : ""}
+    </div>
+  </article>`;
+}
+
+function radarReasonLabel(value) {
+  return ({ weekly_structure_incomplete: "周线结构不完整：检查历史长度或周线覆盖。", cost_profile_14_28_incomplete: "14 / 28 日筹码分布不完整。", benchmark_exact_cutoff_unavailable: "QQQ 缺少同一截止日的数据，不能作可靠比较。", sector_exact_cutoff_unavailable: "行业 ETF 缺少同一截止日的数据。", benchmark_excess_partial: "QQQ 超额收益仅部分周期可用。", benchmark_excess_unavailable: "QQQ 超额收益暂不可用。" })[value] ?? String(value);
+}
+
+async function handleTechnicalRadarClick(event) {
+  if (event.target.closest("[data-radar-clear]")) {
+    state.radarUi.filter = "all"; state.radarUi.query = ""; $("#radar-search").value = ""; renderTechnicalRadar(); return;
+  }
+  const expand = event.target.closest("[data-radar-expand]");
+  if (expand) { state.radarUi.expanded = state.radarUi.expanded === expand.dataset.radarExpand ? null : expand.dataset.radarExpand; renderTechnicalRadar(); return; }
+  const linkage = event.target.closest("[data-radar-linkage]");
+  if (linkage) {
+    if (state.technicalLinkageBusy) return;
+    setTechnicalLinkageEditorSymbol(linkage.dataset.radarLinkage, { force: true, expand: true });
+    setRadarSettings(true); elements.technicalLinkageEditor.scrollIntoView({ block: "nearest" }); return;
+  }
+  const remove = event.target.closest("[data-radar-remove]");
+  if (remove) {
+    event.preventDefault();
+    event.stopPropagation();
+    await removeTechnicalWatchlistSymbol(remove.dataset.radarRemove);
+    return;
+  }
+  const target = event.target.closest("[data-radar-open]");
+  if (!target) return;
+  setTechnicalLinkageEditorSymbol(target.dataset.radarOpen, { force: true });
+  await openTechnicalRadarSymbol(target.dataset.radarOpen);
+}
+
+async function openTechnicalRadarSymbol(value) {
+  const symbol = normalizeCandidateSymbol(value);
+  if (!symbol) return;
+  const position = state.portfolio?.positions?.find((item) => item.symbol === symbol) ?? null;
+  if (position) {
+    if (state.analysisScope !== "position") setAnalysisScope("position");
+    selectPosition(symbol);
+    await syncSelectedToTv();
+    return;
+  }
+  if (state.analysisScope !== "candidate") setAnalysisScope("candidate");
+  state.candidateSymbol = symbol;
+  elements.candidateSymbol.value = symbol;
+  setTechnicalLinkageEditorSymbol(symbol, { force: true });
+  renderAgentContext();
+  invalidateAgentRuns("技术雷达已切换候选标的，请重新运行 Agent。 ");
+  try {
+    await api.tv.loadSymbol(technicalRadarTvSymbol(symbol));
+    setSystemMessage(`${symbol} 已切换到 TradingView 与候选分析`);
+  } catch (error) {
+    setSystemMessage(error?.message || "切换 TradingView 标的失败", "warning");
+  }
+}
+
+function technicalRadarTvSymbol(symbol) {
+  const ticker = String(symbol ?? "").split(".")[0];
+  if (String(symbol).endsWith(".HK")) return `HKEX:${ticker}`;
+  if (String(symbol).endsWith(".SG")) return `SGX:${ticker}`;
+  if (String(symbol).endsWith(".SH")) return `SSE:${ticker}`;
+  if (String(symbol).endsWith(".SZ")) return `SZSE:${ticker}`;
+  return ticker;
+}
+
+function radarUiStatus(value) {
+  const status = String(value ?? "").toLowerCase();
+  if (status === "complete") return "complete";
+  if (["partial", "degraded"].includes(status)) return "degraded";
+  return "unavailable";
+}
+
+function radarStatusLabel(value) {
+  return {
+    scanning: "扫描中",
+    loading: "读取中",
+    complete: "完整",
+    degraded: "部分缺失",
+    unavailable: "暂无数据",
+  }[value] ?? "不可用";
+}
+
+function radarRelationLabel(value) {
+  return { above: "价格在上", below: "价格在下", at: "价格贴合" }[value] ?? "N/A";
+}
+
+function radarDisplay(value) {
+  if (value == null || value === "" || String(value).toUpperCase() === "N/A") return "N/A";
+  return String(value);
+}
+
+function radarFiniteInteger(value) {
+  return radarInteger(value);
 }
 
 function selectPosition(symbol) {
@@ -1249,6 +2313,7 @@ function selectPosition(symbol) {
   renderPositions();
   renderAgentContext();
   updateSelectedMapping();
+  setTechnicalLinkageEditorSymbol(symbol, { force: true });
   appendContextDirty();
 }
 
@@ -1259,7 +2324,7 @@ function updateSelectedMapping() {
     elements.syncTv.disabled = true;
     return;
   }
-  if (position.instrumentType === "option") {
+  if (position.instrumentType === "option" || !position.tvSymbol) {
     elements.mapping.textContent = `${position.symbol} · 期权标的映射尚未启用`;
     elements.syncTv.disabled = true;
     return;
@@ -1282,9 +2347,34 @@ async function syncSelectedToTv() {
   }
 }
 
+function portfolioFxLabel(portfolio) {
+  if (!portfolio) return "—";
+  const describe = (status, fx, broker) => {
+    const label = brokerName(broker) || "账户";
+    if (status === "not_required") return `${label} USD 单币种 · 无需换汇`;
+    if (status === "live") return `${label} 账户汇率${fx?.asOf ? ` · ${fx.asOf}` : " · 时间待核对"}`;
+    if (status === "reference" || status === "reference_cached") {
+      return `${label} ${fx?.providerCode ?? "参考来源"} ${fx?.asOf ?? "日期未知"} 参考汇率${status === "reference_cached" ? "（缓存）" : ""}`;
+    }
+    return `${label} 汇率不可用`;
+  };
+  if (Array.isArray(portfolio.fx?.sources) && portfolio.fx.sources.length) {
+    return portfolio.fx.sources.map((source) => describe(source.status, source, source.broker)).join(" / ");
+  }
+  return describe(portfolio.dataQuality?.fxStatus, portfolio.fx, portfolio.brokerScope ?? state.brokerScope);
+}
+
 function renderAgentContext() {
   if (state.analysisScope === "review") {
     renderReviewAgentContext(ensureSessionView(state.activeSessionId).reviewContext ?? {});
+    return;
+  }
+  if (state.analysisScope === "chat") {
+    const research = ensureSessionView(state.activeSessionId).researchContext;
+    elements.agentContext.innerHTML = `
+      <div><span>研究范围</span><strong>${research?.researchThesisId ? `${esc(research.name || "已关联研究主线")} · 最新已保存版本` : "自由研究 · 无需账户快照"}</strong></div>
+      <div><span>工具边界</span><strong>以当前对话工具状态为准</strong></div>
+      <div><span>账户数据</span><strong>需要组合或仓位分析时，请切换对应范围</strong></div>`;
     return;
   }
   const position = selectedPosition();
@@ -1292,14 +2382,7 @@ function renderAgentContext() {
   const asOf = state.portfolio?.syncedAt;
   const trust = state.portfolio ? portfolioTrustSnapshot(state.portfolio) : null;
   const marks = state.portfolio ? portfolioMarkRange(state.portfolio) : null;
-  const fxStatus = state.portfolio?.dataQuality?.fxStatus;
-  const quality = !state.portfolio
-    ? "—"
-    : fxStatus === "live"
-      ? "长桥汇率"
-      : fxStatus === "reference" || fxStatus === "reference_cached"
-        ? `${state.portfolio.fx?.providerCode ?? "ECB"} ${state.portfolio.fx?.asOf ?? "参考"}${fxStatus === "reference_cached" ? " 缓存" : ""}`
-        : "汇率不可用";
+  const quality = portfolioFxLabel(state.portfolio);
   const contextLabel = scope === "portfolio"
     ? `全部组合 · ${number(state.portfolio?.positions?.length ?? 0, 0)} 项`
     : scope === "candidate"
@@ -1308,7 +2391,7 @@ function renderAgentContext() {
         ? `${position.symbol} · ${percent(position.weight)}`
         : "未选择持仓";
   elements.agentContext.innerHTML = `
-    <div><span>${scope === "portfolio" ? "组合范围" : scope === "candidate" ? "候选标的" : "持仓上下文"}</span><strong>${esc(contextLabel)}</strong></div>
+    <div><span>${scope === "portfolio" ? "组合范围" : scope === "candidate" ? "候选标的" : "持仓上下文"} · ${esc(brokerName(state.brokerScope))}</span><strong>${esc(contextLabel)}</strong></div>
     <div><span>周期</span><strong>1D</strong></div>
     <div><span>持仓快照 / 行情标记</span><strong>${asOf && trust ? `${esc(trust.label)} · ${esc(trust.ageLabel)} · MARKS ${esc(marks?.label ?? "UNKNOWN")} · ${esc(quality)}` : "—"}</strong></div>`;
 }
@@ -1328,11 +2411,16 @@ async function submitAgentTask(event) {
   event.preventDefault();
   closePromptSuggestions();
   const scope = state.analysisScope;
-  if (scope !== "review" && !state.portfolio) {
-    setSystemMessage("请先连接长桥并同步真实组合", "warning");
+  if (!["chat", "review"].includes(scope) && !state.portfolio) {
+    setSystemMessage("该分析范围需要先连接券商并同步真实组合；无需账户的问题可切换“自由研究”。", "warning");
+    return;
+  }
+  if (!state.codexAvailable) {
+    setSystemMessage("当前对话的研究运行时或只读隔离尚未就绪；请查看上方状态，或新建受限研究对话。", "warning");
     return;
   }
   const reviewContext = ensureSessionView(state.activeSessionId).reviewContext;
+  const researchContext = ensureSessionView(state.activeSessionId).researchContext;
   if (scope === "review"
     && !reviewContext?.reviewCycleId
     && !reviewContext?.reviewCaseIds?.length) {
@@ -1353,6 +2441,7 @@ async function submitAgentTask(event) {
   state.candidateSymbol = candidateSymbol;
   elements.candidateSymbol.value = candidateSymbol;
   const defaultTasks = {
+    chat: "",
     position: "分析当前持仓的技术结构、组合风险和条件计划",
     candidate: "为未持有候选标的生成买入计划，包括触发、失效条件和风险预算",
     portfolio: "检查全部持仓的集中度、重复暴露、下行情景和组合健康度",
@@ -1363,6 +2452,11 @@ async function submitAgentTask(event) {
       : "继续基于当前已关联订单、财报事件与事前记录分析，并更新验证或规避建议",
   };
   const task = elements.agentInput.value.trim() || defaultTasks[scope];
+  if (!task) {
+    setSystemMessage("请输入你想研究的问题。", "warning");
+    elements.agentInput.focus();
+    return;
+  }
   const riskBudgetPercent = Number(elements.riskBudget.value || 0.8);
   const targetSymbol = scope === "position" ? position?.symbol : scope === "candidate" ? candidateSymbol : null;
   // The prepared-review entry points create and bind the independent Codex
@@ -1394,8 +2488,33 @@ async function submitAgentTask(event) {
           fiscalQuarter: reviewContext.fiscalQuarter ?? null,
           reviewMode: reviewContext.reviewMode ?? null,
         }
-      : {},
+      : scope === "chat" && researchContext?.researchThesisId
+        ? { researchThesisId: researchContext.researchThesisId, researchIntent: "discuss" }
+        : {},
   });
+}
+
+async function submitPreparedResearchAnalysis(detail) {
+  const researchThesisId = String(detail?.researchThesisId ?? "").trim();
+  if (!researchThesisId) return;
+  const threadId = await createAgentSession();
+  if (!threadId || String(state.activeSessionId ?? "") !== String(threadId)) {
+    setSystemMessage("未能创建独立研究对话；研究记录未改变，请稍后重试。", "error");
+    return;
+  }
+  const view = ensureSessionView(threadId);
+  view.scope = "chat";
+  view.reviewContext = null;
+  view.researchContext = { researchThesisId, name: detail?.name ?? null };
+  state.analysisScope = "chat";
+  restoreSessionComposer(view);
+  document.querySelector("#workspace-cockpit")?.click();
+  if (state.layout.agentCollapsed) setPaneCollapsed("agent", false);
+  const task = String(detail?.task ?? "").trim() ||
+    "$analyze-market-narratives 依据当前已保存的研究记录，检查我的因果判断、市场当前预期、预期差和反证。核对最新可用一手资料与数据时间，缺失的一致预期不得猜测；提出下一验证点。生成可编辑研究草案，保留用户原判断，待我确认。";
+  startAgentOperation({ scope: "chat", targetLabel: detail?.name || "研究主线", task,
+    riskBudgetPercent: Number(elements.riskBudget.value || 0.8),
+    requestExtras: { researchThesisId, researchIntent: "update" } });
 }
 
 async function submitPreparedReviewAnalysis(detail) {
@@ -1546,8 +2665,12 @@ function startAgentOperation({
   const operation = {
     operationId: requestId,
     threadId,
+    startedAt: new Date().toISOString(),
+    startedAtMs: Date.now(),
     status: "running",
-    progress: scope === "review"
+    progress: scope === "chat"
+      ? "正在通过 Codex 研究你的问题…"
+      : scope === "review"
       ? requestExtras.reviewCycleId
         ? requestExtras.reviewPhase === "retrospective"
           ? "正在汇总周期内真实订单、成交与结果证据…"
@@ -1563,6 +2686,13 @@ function startAgentOperation({
     streamOrder: [],
     toolEvents: new Map(),
   };
+  markLatestThreadOperation(operation);
+  for (const previous of [...state.operations.values()]) {
+    if (previous.threadId !== threadId || previous.operationId === requestId) continue;
+    if (["running", "cancelling"].includes(previous.status)) continue;
+    rememberSettledOperation(previous.operationId);
+    stopAgentResultRecovery(previous);
+  }
   state.operations.set(requestId, operation);
   state.activeRequestId = requestId;
   elements.agentInput.value = "";
@@ -1576,7 +2706,7 @@ function startAgentOperation({
   elements.agentThread.insertAdjacentHTML("beforeend", `<div class="user-message">${esc(task)}</div>`);
   state.activeRunNode = createOperationNode(operation);
   elements.agentThread.append(state.activeRunNode);
-  const displayTarget = targetLabel ?? (scope === "portfolio" ? "全部组合" : targetSymbol);
+  const displayTarget = targetLabel ?? (scope === "chat" ? "自由研究" : scope === "portfolio" ? "全部组合" : targetSymbol);
   elements.agentLiveStatus.textContent = `正在分析 ${displayTarget}`;
   elements.agentCancel.hidden = false;
   updateAgentSubmitState();
@@ -1590,6 +2720,7 @@ function startAgentOperation({
     symbol: targetSymbol,
     task,
     riskBudgetPercent,
+    brokerScope: state.brokerScope,
     ...requestExtras,
   }).then((run) => {
     acceptAgentResult({ threadId, operationId: requestId, run });
@@ -1643,7 +2774,13 @@ function handleAgentResult(envelope) {
   const operationId = String(envelope?.operationId ?? "");
   const operation = state.operations.get(operationId);
   if (!envelope?.error || !operationId) return;
-  if (operation) failAgentOperation(operation, envelope.error);
+  if (operation) {
+    const diagnostics = envelope?.contextDiagnostics;
+    const detail = diagnostics?.deliveryStatus === "rejected_budget"
+      ? `${envelope.error}（证据包 ${number(diagnostics.totalBlockCount, 0)} 块 / ${contextBytesLabel(diagnostics.totalUtf8Bytes)}，未静默截断）`
+      : envelope.error;
+    failAgentOperation(operation, detail, { continueRecovery: envelope?.retryable !== false, failure: envelope });
+  }
 }
 
 function scheduleAgentResultRecovery(operation, delayMs = 900) {
@@ -1690,6 +2827,13 @@ async function recoverAgentResult(operation) {
       acceptAgentResult(recovered.result, { restored: true });
       return;
     }
+    if (recovered?.recoveryFailure) {
+      failAgentOperation(operation, recovered.recoveryFailure.error || "持久对话尚未完整取回", {
+        continueRecovery: false,
+        failure: recovered.recoveryFailure,
+      });
+      return;
+    }
     if (recovered?.historicalTurn?.status === "completed"
       && recovered.historicalTurn.text
       && recovered.active === false) {
@@ -1730,6 +2874,10 @@ async function recoverAgentResult(operation) {
 function settleAgentFromRecoveredTurn(operation, value) {
   const text = String(value ?? "").trim();
   if (!text || !state.operations.has(operation.operationId)) return;
+  if (!isLatestThreadOperation(operation.threadId, operation.operationId)) {
+    stopAgentResultRecovery(operation);
+    return;
+  }
   const node = elements.agentThread.querySelector(
     `[data-operation-id="${CSS.escape(operation.operationId)}"]`,
   );
@@ -1779,7 +2927,25 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
   const resultThreadId = envelopeThreadId || activeThreadId;
   if (!resultThreadId) return false;
   const operation = operationId ? state.operations.get(operationId) : null;
+  if ((operationId && !isLatestThreadOperation(resultThreadId, operationId))
+    || (!operationId && state.latestOperationByThread.has(resultThreadId))) {
+    // A provisional recovery lets the user start another turn. A late result
+    // from that superseded operation remains in native Codex history, but must
+    // not replace the newer turn's card, transcript tail, or session preview.
+    if (operation?.recoveryTimer) clearTimeout(operation.recoveryTimer);
+    if (operation) state.operations.delete(operation.operationId);
+    if (operationId) rememberSettledOperation(operationId);
+    return false;
+  }
+  if (operationId && !state.latestOperationByThread.has(resultThreadId)) {
+    markLatestThreadOperation({
+      operationId,
+      threadId: resultThreadId,
+      startedAt: envelope?.completedAt ?? run?.createdAt ?? null,
+    });
+  }
   const view = ensureSessionView(resultThreadId);
+  if (view.unverifiedPartial?.operationId === operationId) view.unverifiedPartial = null;
   view.lastAgentResult = { ...envelope, threadId: resultThreadId };
   const session = state.agentSessions.find((item) => item.id === resultThreadId);
   if (session) {
@@ -1830,6 +2996,8 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
   }
   const resultLabel = runScope === "portfolio"
     ? "全部组合"
+    : runScope === "chat"
+      ? "自由研究"
     : runScope === "review"
       ? "复盘"
       : run.context.symbol || "目标";
@@ -1848,7 +3016,7 @@ function acceptAgentResult(envelope, { restored = false } = {}) {
     }));
   }
   renderAgentSessions();
-  if (resultThreadId === activeThreadId) scrollAgentToEnd();
+  if (resultThreadId === activeThreadId) scrollAgentToEnd({ force: false });
   return true;
 }
 
@@ -1856,6 +3024,7 @@ function isRunStale(run, now = Date.now()) {
   if (!run?.context) return true;
   const runScope = run.context.scope ?? (run.context.symbol ? "position" : "portfolio");
   if (runScope === "review") return reviewRunEvidenceStale(run);
+  if (runScope === "chat") return state.analysisScope !== "chat";
   if (!state.portfolio) return true;
   const activeTarget = state.analysisScope === "position"
     ? normalizeCandidateSymbol(state.selectedSymbol)
@@ -1917,7 +3086,7 @@ function finishAgentOperation(operation, message) {
   if (!elements.historyPanel.hidden) loadAgentHistory();
 }
 
-function failAgentOperation(operation, message, { continueRecovery = true } = {}) {
+function failAgentOperation(operation, message, { continueRecovery = true, failure = null } = {}) {
   if (!state.operations.has(operation.operationId)
     && state.settledOperationIds.has(operation.operationId)) return;
   if (!state.operations.has(operation.operationId)) return;
@@ -1925,6 +3094,24 @@ function failAgentOperation(operation, message, { continueRecovery = true } = {}
   operation.recoveryStopAt ??= Date.now() + POST_TERMINAL_RECOVERY_WINDOW_MS;
   if (operation.recoveryTimer) clearTimeout(operation.recoveryTimer);
   const isActive = operation.threadId === state.activeSessionId;
+  const failureCode = failure?.errorCode ?? failure?.code ?? failure?.deliveryStatus?.state ?? failure?.deliveryStatus;
+  const terminalUnverified = ["terminal_unverified", "history_incomplete"].includes(failureCode);
+  if (terminalUnverified) {
+    continueRecovery = false;
+    operation.terminalUnverified = true;
+    message = failureCode === "history_incomplete"
+      ? "历史正文尚未完整取回，可打开原对话继续 / 恢复；暂存文本不是完整结果，不能用于保存计划。"
+      : "终态未核验，可打开原对话继续 / 恢复；暂存文本不是完整结果，不能用于保存计划。";
+    const text = [failure?.partialText, operation.finalText, operation.streamText]
+      .map((value) => String(value ?? "").trim()).find(Boolean) ?? "";
+    ensureSessionView(operation.threadId).unverifiedPartial = {
+      operationId: operation.operationId,
+      threadId: operation.threadId,
+      turnId: failure?.turnId ?? null,
+      text,
+      message,
+    };
+  }
   const session = state.agentSessions.find((item) => item.id === operation.threadId);
   if (session) {
     session.runState = "error";
@@ -1933,7 +3120,9 @@ function failAgentOperation(operation, message, { continueRecovery = true } = {}
   if (isActive) {
     const node = elements.agentThread.querySelector(`[data-operation-id="${CSS.escape(operation.operationId)}"]`)
       ?? state.activeRunNode;
-    if (node) {
+    if (terminalUnverified) {
+      renderUnverifiedAgentPartial(ensureSessionView(operation.threadId).unverifiedPartial, node);
+    } else if (node) {
       node.className = "run-state negative";
       node.innerHTML = `<span class="evidence-dot failed"></span><span>${esc(message)}</span>`;
     }
@@ -1945,6 +3134,30 @@ function failAgentOperation(operation, message, { continueRecovery = true } = {}
   setSystemMessage(message, "error");
   if (continueRecovery) scheduleAgentResultRecovery(operation, 5_000);
   else stopAgentResultRecovery(operation);
+}
+
+function renderUnverifiedAgentPartial(partial, existingNode = null) {
+  if (!partial || partial.threadId !== state.activeSessionId) return;
+  const node = existingNode ?? elements.agentThread.querySelector(`[data-operation-id="${CSS.escape(partial.operationId)}"]`);
+  const article = document.createElement("article");
+  article.className = "agent-card transcript-message provisional-fallback";
+  article.dataset.operationId = partial.operationId;
+  article.dataset.partial = "true";
+  const notice = document.createElement("div");
+  notice.className = "provisional-fallback-notice";
+  notice.textContent = partial.message;
+  const body = document.createElement("div");
+  body.className = "agent-card-body model-response";
+  if (partial.text && window.CockpitMarkdown?.renderMarkdown) window.CockpitMarkdown.renderMarkdown(body, partial.text);
+  else body.textContent = partial.text || "尚未收到可展示文本；原对话与工具记录仍由 Codex 保留。";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "save-plan";
+  open.dataset.openOriginalThread = partial.threadId;
+  open.textContent = "打开原对话 / 重新读取";
+  article.append(notice, body, open);
+  if (node) node.replaceWith(article);
+  else elements.agentThread.append(article);
 }
 
 function finishActiveAgentUi(operationId, message) {
@@ -1984,6 +3197,8 @@ function restoreActiveAgent(activeAgent) {
     operation = {
       operationId,
       threadId,
+      startedAt: activeAgent?.startedAt ?? null,
+      startedAtMs: Date.parse(String(activeAgent?.startedAt ?? "")) || Date.now(),
       status: "running",
       progress: "正在重新接入后台 Codex 分析…",
       task: String(activeAgent?.task ?? ""),
@@ -1993,7 +3208,10 @@ function restoreActiveAgent(activeAgent) {
       streamOrder: [],
       toolEvents: new Map(),
     };
+    if (!markLatestThreadOperation(operation)) return;
     state.operations.set(operationId, operation);
+  } else if (!markLatestThreadOperation(operation)) {
+    return;
   }
   if (operation.threadId !== state.activeSessionId) return;
   const node = createOperationNode(operation);
@@ -2063,7 +3281,9 @@ function renderAgentRun(run, { stale = false } = {}) {
     plan: () => planCard(run.plan),
     evidence: () => evidenceCard(run),
   };
-  const requestedSections = run.sections ?? Object.keys(renderers);
+  const requestedSections = run.context?.scope === "chat"
+    ? ["conclusion"]
+    : run.sections ?? Object.keys(renderers);
   const conclusion = requestedSections.includes("conclusion") ? conclusionCard(run) : "";
   const structuredSections = requestedSections
     .filter((name) => name !== "conclusion" && renderers[name])
@@ -2075,6 +3295,8 @@ function renderAgentRun(run, { stale = false } = {}) {
       ? run.context?.reviewPhasePersistence === "failed"
         ? "分析已返回，但没有写入不可变审计台账；该结果不能登记验证草案，请重新运行。"
         : "关联订单的证据版本已经变化；此结果已标记为历史产物，请基于最新关联完整重跑。"
+      : run.context?.scope === "chat"
+        ? "分析范围已切换；这条自由研究结论保留在原对话中供回看。"
       : "账户快照、仓位裁决有效期或分析选择已失效；此结果仅供回看，不能保存为当前计划。"}</span></div>`);
   }
   if (run.plan?.available && requestedSections.includes("plan")) {
@@ -2087,7 +3309,16 @@ function renderAgentRun(run, { stale = false } = {}) {
     ? candidateAdjudicationCard(run.risk, { stale: runStale })
     : "";
   const learning = run.learningProposal ? learningProposalCard(run, { stale: runStale }) : "";
-  wrapper.innerHTML = `${notices.join("")}${conclusion}${learning}${adjudication}${structured}`;
+  const research = run.context?.researchThesisId ? `<article class="agent-card">
+    <h3>研究主线 · ${esc(run.context.researchTitle || "已关联记录")}</h3>
+    <p>${run.context.researchProposalPersistence === "recorded_pending_confirmation"
+      ? "AI 草案已保存，尚未替换你的判断；回到研究主线编辑并确认。"
+      : run.context.researchProposalPersistence === "not_saved"
+        ? "回答已返回，但草案未保存。原判断未改变，请刷新研究记录后重试。"
+        : "本轮讨论已保留在当前对话中，不会自动改写研究记录。"}</p>
+    <button class="save-plan" type="button" data-open-research="${esc(run.context.researchThesisId)}">查看研究记录${run.context.researchProposalId ? "与草案" : ""}</button>
+  </article>` : "";
+  wrapper.innerHTML = `${notices.join("")}${conclusion}${research}${learning}${adjudication}${structured}`;
   const response = wrapper.querySelector(".model-response");
   if (response) {
     if (window.CockpitMarkdown?.renderMarkdown) {
@@ -2115,10 +3346,60 @@ function learningProposalCard(run, { stale = false } = {}) {
   </article>`;
 }
 
+function contextDeliveryPresentation(value) {
+  return ({
+    complete: { label: "完整交付", tone: "complete" },
+    complete_with_declared_omissions: { label: "有声明省略", tone: "degraded" },
+    rejected_budget: { label: "超限拒绝", tone: "rejected" },
+  })[String(value ?? "")] ?? { label: "状态未知", tone: "unknown" };
+}
+
+function contextBytesLabel(value) {
+  const bytes = finiteUiNumber(value);
+  if (bytes == null) return "—";
+  if (bytes < 1024) return `${number(bytes, 0)} B`;
+  return `${number(bytes / 1024, 1)} KiB`;
+}
+
+function shortContextBundleHash(value) {
+  const hash = String(value ?? "").trim().replace(/^sha256:/i, "");
+  return hash ? hash.slice(0, 12).toUpperCase() : "—";
+}
+
+function evidencePassport(model) {
+  const diagnostics = model?.contextDiagnostics;
+  const requestedSkills = [...new Set((Array.isArray(model?.requestedSkills) ? model.requestedSkills : [])
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean))];
+  if (!diagnostics && !requestedSkills.length) return "";
+  const delivery = contextDeliveryPresentation(diagnostics?.deliveryStatus);
+  const blocks = firstFiniteUi(diagnostics?.totalBlockCount, diagnostics?.payloadBlockCount);
+  const bytes = firstFiniteUi(diagnostics?.totalUtf8Bytes, diagnostics?.payloadUtf8Bytes);
+  const omissions = Array.isArray(diagnostics?.semanticOmissions)
+    ? diagnostics.semanticOmissions.filter((item) => finiteUiNumber(item?.omittedCount) > 0)
+    : [];
+  const omittedRecords = omissions.reduce(
+    (sum, item) => sum + (finiteUiNumber(item?.omittedCount) ?? 0),
+    0,
+  );
+  const omissionLabel = omissions.length
+    ? `${number(omissions.length, 0)} 项 / ${number(omittedRecords, 0)} 条`
+    : "无声明省略";
+  const skillLabel = requestedSkills.length
+    ? requestedSkills.join(" · ")
+    : "本轮未显式请求 Skill";
+  return `<section class="evidence-passport ${esc(delivery.tone)}">
+    <div class="evidence-passport-head"><span>EVIDENCE PASSPORT</span><strong>${esc(delivery.label)}</strong></div>
+    <div class="evidence-passport-grid"><span>${blocks == null ? "—" : number(blocks, 0)} BLOCKS</span><span>${esc(contextBytesLabel(bytes))}</span><span>OMISSIONS ${esc(omissionLabel)}</span><span>BUNDLE ${esc(shortContextBundleHash(diagnostics?.bundleHash))}</span></div>
+    <p><strong>本轮 Skills</strong><span>${esc(skillLabel)}</span></p>
+  </section>`;
+}
+
 function conclusionCard(run) {
   const model = run.modelAnalysis;
-  const toolLabels = (model?.toolEvents ?? [])
-    .filter((item) => item.lifecycle === "completed")
+  const completedToolEvents = (model?.toolEvents ?? [])
+    .filter((item) => item.lifecycle === "completed");
+  const toolLabels = completedToolEvents
     .slice(-8)
     .map((item) => `<span>${esc(item.label)}</span>`)
     .join("");
@@ -2133,14 +3414,15 @@ function conclusionCard(run) {
       <h3>${esc(run.conclusion.headline)}</h3>
       <div class="model-response"></div>
       <span class="posture">${esc(run.conclusion.posture)}</span>
-      <div class="workspace-meta"><span>PERSISTENT</span><span>${esc(model?.threadId?.slice(0, 12) ?? "THREAD")}</span>${firstActivityMeta}<span>${number(model?.skillCount, 0)} SKILLS</span><span>${number(model?.mcpServerCount, 0)} MCP</span><span>${number(model?.appCount, 0)} APPS</span>${toolLabels}</div>
+      ${evidencePassport(model)}
+      <div class="workspace-meta"><span>PERSISTENT</span><span>${esc(model?.threadId?.slice(0, 12) ?? "THREAD")}</span>${firstActivityMeta}<span>${number(completedToolEvents.length, 0)} TOOL EVENTS</span>${toolLabels}</div>
     </div>
   </article>`;
 }
 
 function technicalCard(technical) {
   if (!technical?.ema || !Object.keys(technical.ema).length) {
-    return `<article class="agent-card"><div class="agent-card-head"><span>EMA STRUCTURE</span><strong class="negative">DEGRADED</strong></div><div class="agent-card-body"><p>${esc(technical?.reason || "无行情数据")}</p></div></article>`;
+    return `<article class="agent-card"><div class="agent-card-head"><span>EMA STRUCTURE</span><strong class="negative">DEGRADED</strong></div><div class="agent-card-body"><p>${esc(technical?.reason || "无行情数据")}</p></div></article>${dailySequenceCard(technical)}${technicalV2Card(technical)}${tierBTechnicalCard(technical)}`;
   }
   const periods = [3, 5, 8, 13, 21, 144, 169];
   const lastBarStatus = String(technical.lastBar?.status ?? "UNKNOWN").toUpperCase();
@@ -2214,6 +3496,199 @@ function technicalCard(technical) {
       <div class="ema-grid">${emaCells}</div>
       <div class="cycle-verdict"><div><span>时点层 · 3/5/8/13/21</span><strong>${esc(technical.shortStructure)}</strong></div><div><span>核心周期 · 144/169</span><strong>${esc(technical.longStructure)}</strong></div></div>
       <div class="long-ema-maturity"><strong>LONG EMA MATURITY</strong>${longMaturity}</div>
+    </div>
+  </article>${dailySequenceCard(technical)}${technicalV2Card(technical)}${tierBTechnicalCard(technical)}`;
+}
+
+function dailySequenceCard(technical) {
+  const sequence = technical?.dailySequence ?? null;
+  const market = technical?.marketData ?? null;
+  const matrix = technical?.capabilityMatrix ?? {};
+  const gate = market?.freshForSizing
+    ? { label: "SIZING READY", className: "positive" }
+    : market?.freshForDecision
+      ? { label: "DECISION READY", className: "warning" }
+      : market?.freshForResearch
+        ? { label: "RESEARCH ONLY", className: "warning" }
+        : { label: "UNAVAILABLE", className: "negative" };
+  const metric = (value, kind = "number") => {
+    if (value?.status !== "available" || !Number.isFinite(Number(value?.value))) return "N/A";
+    if (kind === "percent") return signedPercent(Number(value.value));
+    if (kind === "multiple") return `${number(Number(value.value), 2)}×`;
+    return number(Number(value.value), 2);
+  };
+  const cells = [
+    ["1D RETURN", metric(sequence?.metrics?.returns?.["1"], "percent")],
+    ["5D RETURN", metric(sequence?.metrics?.returns?.["5"], "percent")],
+    ["20D RETURN", metric(sequence?.metrics?.returns?.["20"], "percent")],
+    ["CLV", metric(sequence?.metrics?.closeLocationValue)],
+    ["TR / ATR14", metric(sequence?.metrics?.normalizedTrueRangeAtr14, "multiple")],
+    ["GAP", metric(sequence?.metrics?.gapPercent, "percent")],
+    ["REL VOL20", metric(sequence?.metrics?.relativeVolume20, "multiple")],
+    ["EFFICIENCY20", metric(sequence?.metrics?.directionalEfficiency?.["20"])],
+    ["5D VS QQQ", metric(technical?.benchmarkRelativeStrength?.excessReturns?.windows?.["5"], "percent")],
+    ["20D VS QQQ", metric(technical?.benchmarkRelativeStrength?.excessReturns?.windows?.["20"], "percent")],
+  ].map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
+  const capabilities = Object.entries(matrix).map(([key, status]) => (
+    `<span class="capability-${esc(String(status))}">${esc(key)} · ${esc(String(status).toUpperCase())}</span>`
+  )).join("");
+  const source = market?.source ?? "unknown";
+  const latest = market?.latestTradeDate ?? technical?.asOfTradingDate ?? "—";
+  const expected = market?.expectedLatestTradeDate ?? "—";
+  const hash = sequence?.inputHash ? String(sequence.inputHash).slice(0, 12) : "—";
+  return `<article class="agent-card sequence-evidence-card">
+    <div class="agent-card-head"><span>DAILY SEQUENCE & DATA PASSPORT</span><strong class="${esc(gate.className)}">${esc(gate.label)}</strong></div>
+    <div class="agent-card-body">
+      <div class="calculation-passport">
+        <span>${esc(String(source).toUpperCase())}</span>
+        <span>LATEST ${esc(latest)}</span>
+        <span>EXPECTED ${esc(expected)}</span>
+        <span>${esc(sequence?.methodVersion ?? "daily-sequence unavailable")}</span>
+        <span>HASH ${esc(hash)}</span>
+      </div>
+      <div class="sequence-grid">${cells}</div>
+      <div class="capability-matrix">${capabilities}</div>
+      ${Array.isArray(market?.reasonCodes) && market.reasonCodes.length
+        ? `<p class="sequence-limitation">${esc(market.reasonCodes.join(" · "))}</p>`
+        : ""}
+    </div>
+  </article>`;
+}
+
+function technicalV2Card(technical) {
+  const value = technical?.technicalV2;
+  if (!value) return "";
+  const weeklyCapability = value.capabilityMatrix?.weeklyStructure ?? {};
+  const hourlyCapability = value.capabilityMatrix?.execution60m ?? {};
+  const weekly = value.weekly ?? {};
+  const hourly = value.execution60m ?? {};
+  const costCapability = value.capabilityMatrix?.costProfile14d28d ?? {};
+  const cost = value.costProfile14d28d ?? {};
+  const cost14 = cost.profiles?.["14"] ?? {};
+  const cost28 = cost.profiles?.["28"] ?? {};
+  const avwapCapability = value.capabilityMatrix?.anchoredVwap ?? {};
+  const avwapReview = value.anchoredVwap ?? {};
+  const avwap = avwapReview.evidence ?? {};
+  const hourlyLoad = value.loads?.hourly60m ?? {};
+  const statusClass = (status) => status === "complete"
+    ? "positive"
+    : status === "warming" || status === "partial"
+      ? "warning"
+      : "negative";
+  const statusLabel = (status) => String(status ?? "unavailable").toUpperCase();
+  const metricRows = (items) => items.map(([label, metric]) => (
+    `<div><span>${esc(label)}</span><strong>${esc(metric == null ? "N/A" : String(metric))}</strong></div>`
+  )).join("");
+  const weeklyMetrics = [
+    ["4W", signedPercent(weekly.metrics?.return4WeeksPercent)],
+    ["12W", signedPercent(weekly.metrics?.return12WeeksPercent)],
+    ["SWING", weekly.swing ?? "N/A"],
+    ["DIRECTION", weekly.direction ?? "N/A"],
+  ];
+  const hourlyMetrics = [
+    ["STATE", hourly.executionState ?? "N/A"],
+    ["1 BAR", signedPercent(hourly.metrics?.return1BarPercent)],
+    ["3 BARS", signedPercent(hourly.metrics?.return3BarsPercent)],
+    ["EMA 3/5/8/13/21", hourly.ema
+      ? [3, 5, 8, 13, 21].map((period) => number(hourly.ema?.[period]?.value)).join(" / ")
+      : "N/A"],
+  ];
+  const priceRange = (low, high) => low == null || high == null
+    ? "N/A"
+    : `${number(low)} – ${number(high)}`;
+  const costMetrics = [
+    ["14D POC", cost14.poc == null ? "N/A" : number(cost14.poc)],
+    ["14D VA", priceRange(cost14.val, cost14.vah)],
+    ["28D POC", cost28.poc == null ? "N/A" : number(cost28.poc)],
+    ["MIGRATION", cost.comparison?.migrationState ?? "N/A"],
+    ["14D ACCEPT", cost14.acceptance?.state ?? "N/A"],
+    ["28D ACCEPT", cost28.acceptance?.state ?? "N/A"],
+    ["PRICE LOC 14", cost14.currentPriceLocation ?? "N/A"],
+    ["PRICE LOC 28", cost28.currentPriceLocation ?? "N/A"],
+  ];
+  const avwapMetrics = [
+    ["ANCHOR", avwap.anchor?.barId ? String(avwap.anchor.barId).slice(0, 10) : "N/A"],
+    ["AVWAP", avwap.vwap == null ? "N/A" : number(avwap.vwap)],
+    ["CLOSE", avwap.asOfClose == null ? "N/A" : number(avwap.asOfClose)],
+    ["DIST", signedPercent(avwap.priceRelation?.differencePercent)],
+  ];
+  const finality = hourlyLoad.finality;
+  const coverage = hourlyLoad.coverage;
+  const hourlyLimitation = hourlyLoad.error?.message
+    ?? (hourlyCapability.status === "complete"
+      ? `完结证明：${finality?.method ?? "host_attested"}；末根：${finality?.terminalBarStatus ?? "unknown"}`
+      : "60 分钟证据未达到本轮实时、完整、可证明完结的执行标准。");
+  return `<article class="agent-card multi-timeframe-card">
+    <div class="agent-card-head"><span>MULTI-TIMEFRAME · V2</span><strong>${esc(String(value.schemaVersion ?? ""))}</strong></div>
+    <div class="agent-card-body">
+      <section class="timeframe-layer">
+        <header><span>1W STRUCTURE</span><strong class="${esc(statusClass(weeklyCapability.status))}">${esc(statusLabel(weeklyCapability.status))}</strong></header>
+        <div class="sequence-grid">${metricRows(weeklyMetrics)}</div>
+        <p>${esc(`来源 ${weeklyCapability.source ?? "unavailable"} · ${weeklyCapability.barCount ?? 0} 根已完成周 K · 末周固定排除`)}</p>
+      </section>
+      <section class="timeframe-layer">
+        <header><span>60M EXECUTION</span><strong class="${esc(statusClass(hourlyCapability.status))}">${esc(statusLabel(hourlyCapability.status))}</strong></header>
+        <div class="sequence-grid">${metricRows(hourlyMetrics)}</div>
+        <p>${esc(`${hourlyLimitation}${coverage?.fetchedAt ? ` · fetched ${shortTime(coverage.fetchedAt)}` : ""}`)}</p>
+      </section>
+      <section class="timeframe-layer proxy-layer">
+        <header><span>14/28D COST CONCENTRATION</span><strong class="warning">${esc(costCapability.status === "unavailable" ? "UNAVAILABLE" : "PROXY · LOW")}</strong></header>
+        <div class="sequence-grid">${metricRows(costMetrics)}</div>
+        <p>${esc(costCapability.status === "unavailable"
+          ? `代理不可用 · ${(costCapability.reasonCodes ?? []).join(", ") || "样本不足"}`
+          : `80 bins · uniform range · 70% value area · ${String(cost.input?.inputHash ?? "").slice(0, 12)} · 仅为日线 OHLCV 价格-成交量集中估算，不是逐笔筹码、机构持仓或真实持有人成本。`)}</p>
+      </section>
+      <section class="timeframe-layer avwap-layer">
+        <header><span>ANCHORED VWAP</span><strong class="${esc(avwapReview.status === "selected" ? "positive" : avwapReview.status === "invalid" ? "negative" : "warning")}">${esc(avwapReview.status === "selected" ? "HOST VERIFIED" : avwapReview.status === "invalid" ? "HOST REJECTED" : avwapReview.status === "ignored" ? "LLM IGNORED" : "AWAITING LLM")}</strong></header>
+        <div class="sequence-grid">${metricRows(avwapMetrics)}</div>
+        <p>${esc(avwapReview.status === "selected"
+          ? `${avwap.anchor?.reason ?? "显式锚点"} · HLC3×volume · ${avwap.inputHash ? `HASH ${String(avwap.inputHash).slice(0, 12)} · ` : ""}辅助证据，无 sizing / invalidation 权限`
+          : avwapReview.reason ?? "只有 LLM 从本轮已完成 priceBars 显式选择锚点后，宿主才会复算；不会自动挑锚。")}</p>
+      </section>
+    </div>
+  </article>`;
+}
+
+function tierBTechnicalCard(technical) {
+  const value = technical?.tierB;
+  if (!value) return "";
+  const layerNames = [
+    ["daily", "1D"],
+    ["weekly", "1W"],
+    ["execution60m", "60M"],
+    ["benchmark", "QQQ"],
+    ["sector", "SECTOR"],
+    ["peers", "PEERS"],
+    ["anchoredVwap", "AVWAP"],
+    ["options", "OPTIONS"],
+    ["catalyst", "EVENTS"],
+  ];
+  const layerClass = (status) => status === "available"
+    ? "positive"
+    : status === "partial" ? "warning" : "negative";
+  const layers = layerNames.map(([key, label]) => {
+    const layer = value.layers?.[key] ?? {};
+    const reason = Array.isArray(layer.reasonCodes) ? layer.reasonCodes.join(" · ") : "";
+    return `<span class="tier-b-layer ${esc(layerClass(layer.status))}" title="${esc(reason || "无额外限制")}"><b>${esc(label)}</b><i>${esc(String(layer.status ?? "unavailable").toUpperCase())}</i></span>`;
+  }).join("");
+  const linkage = value.linkage ?? {};
+  const linkageText = linkage.status === "confirmed"
+    ? `${linkage.sectorSymbol ?? "无行业ETF"}${Array.isArray(linkage.peerSymbols) && linkage.peerSymbols.length ? ` · ${linkage.peerSymbols.join(" / ")}` : ""}`
+    : "未确认行业 / 同行映射";
+  const errors = Array.isArray(value.relatedLoadErrors) ? value.relatedLoadErrors : [];
+  const inputHash = value.inputHash ? String(value.inputHash).slice(0, 12) : "N/A";
+  const cutoff = value.cutoff?.tradingDate ?? "N/A";
+  const optionsStatus = value.layers?.options?.status ?? "unavailable";
+  const catalystStatus = value.layers?.catalyst?.status ?? "unavailable";
+  return `<article class="agent-card tier-b-card">
+    <div class="agent-card-head"><span>SELECTED SYMBOL · TIER-B EVIDENCE</span><strong class="${esc(value.status === "complete" ? "positive" : value.status === "partial" ? "warning" : "negative")}">${esc(String(value.status ?? "unavailable").toUpperCase())}</strong></div>
+    <div class="agent-card-body">
+      <div class="calculation-passport"><span>CUTOFF ${esc(cutoff)}</span><span>NO FORWARD-FILL</span><span>COMPLETED BARS</span><span>HASH ${esc(inputHash)}</span></div>
+      <div class="tier-b-layer-grid">${layers}</div>
+      <div class="tier-b-notes">
+        <p><strong>确认联动</strong>${esc(linkageText)}${errors.length ? ` · ${esc(String(errors.length))} 个读取缺口` : ""}</p>
+        <p><strong>证据边界</strong>${esc(`Options ${String(optionsStatus).toUpperCase()} · Events ${String(catalystStatus).toUpperCase()} · 无显式锚点则 AVWAP=N/A · 不由 OI 推断 dealer gamma`)}</p>
+      </div>
     </div>
   </article>`;
 }
@@ -2447,8 +3922,10 @@ function candidateAdjudicationCard(risk, { stale = false } = {}) {
       <div class="${historical ? "historical" : ""}"><span>${historical ? "HOST ACCEPTED · HISTORICAL" : "HOST ACCEPTED"}</span><strong>初始 ${percent(acceptedInitial)} · 最大 ${percent(acceptedMaxTotal)}</strong></div>
       <div><span>HARD MAX</span><strong>${percent(hardMaxTotal)}</strong></div>
       <div><span>主题 / Stage</span><strong>${esc(group)} · ${esc(stage)}</strong></div>
+      <div><span>持有周期</span><strong>${esc(sizingReview.holdingHorizon ?? risk.holdingHorizon ?? "unknown")}</strong></div>
       <div><span>置信度 · 分类 / 仓位</span><strong>${esc(sizingReview.classificationConfidence ?? "unknown")} / ${esc(sizingReview.sizingConfidence ?? "unknown")}</strong></div>
       <div><span>失效依据</span><strong>${esc(invalidation)}</strong></div>
+      <div><span>PLANNED / STRESS LOSS</span><strong>${percent(risk.plannedRiskLossPercent)} / ${percent(risk.stressRiskLossPercent)}</strong></div>
       <div><span>DECISION AT</span><strong>${decisionAt ? esc(shortDateTime(decisionAt)) : "—"}</strong></div>
       <div><span>VALID UNTIL</span><strong>${validUntil ? esc(shortDateTime(validUntil)) : "—"}</strong></div>
       <div><span>决策时快照</span><strong>${sizingReview.snapshotFreshAtDecision === true ? "FRESH" : sizingReview.snapshotFreshAtDecision === false ? "STALE" : "UNKNOWN"}</strong></div>
@@ -2563,6 +4040,9 @@ function candidateRiskCard(risk) {
         <div><span>主机接受最大新增 / ${esc(risk.baseCurrency)}</span><strong>${money(risk.recommendedMaxAdditionalNotionalBase, risk.baseCurrency)}</strong></div>
         <div><span>风险预算</span><strong>${percent(risk.riskBudgetPercent)}</strong></div>
         <div><span>失效距离</span><strong>${percent(risk.riskDistancePercent)}</strong></div>
+        <div><span>PLANNED RISK · 含滑点</span><strong>${percent(risk.plannedRiskLossPercent)}</strong></div>
+        <div><span>STRESS RISK</span><strong>${percent(risk.stressRiskLossPercent)}</strong></div>
+        <div><span>压力组合影响</span><strong>${signedPercent(risk.portfolioStressImpactPercent)}</strong></div>
         <div><span>${esc(risk.referenceLabel)}</span><strong>${number(risk.referenceLevel)}</strong></div>
         <div><span>新增融资权重</span><strong>${percent(leverage.maxAdditionalBorrowedWeightPercent ?? 0)}</strong></div>
         <div><span>杠杆上限</span><strong>${number(leverage.maxLeverageMultiple, 2)}×</strong></div>
@@ -2630,6 +4110,7 @@ function candidateBindingLabel(binding) {
     account_and_concentration: "账户 / 集中度硬上限",
     group_exposure: "主题暴露硬上限",
     risk_budget: "风险预算硬上限",
+    stress_risk_budget: "压力风险预算硬上限",
     initial_additional: "初始新增不得超过可接受新增仓位",
   };
   return labels[binding] ?? binding;
@@ -2658,7 +4139,44 @@ function evidenceCard(run) {
   </article>`;
 }
 
+function renderStorageHealth(health) {
+  if (!health || typeof health !== "object") return;
+  const degraded = health.encrypted === false || health.state === "degraded";
+  const recovered = health.recoveredUnreadableState === true;
+  const stores = Array.isArray(health.stores) ? health.stores : [];
+  let chip = document.querySelector("#storage-chip");
+  if (!chip) {
+    chip = document.createElement("span");
+    chip.id = "storage-chip";
+    chip.className = "status-chip";
+    chip.setAttribute("role", "status");
+    elements.longbridgeChip.after(chip);
+  }
+  chip.hidden = !degraded && !recovered;
+  chip.style.display = chip.hidden ? "none" : "";
+  chip.textContent = degraded ? "本机存储降级" : "存在待恢复副本";
+  chip.title = [
+    degraded ? "部分本机加密状态未能读取或保存；未确认保存的更改不应视为已持久化。" : "存在原始恢复副本；请核对恢复状态，不会把空状态当作原记录。",
+    ...stores.map((item) => `${item.file ?? "业务存储"} · ${item.state ?? "未知"}${item.errorCode ? ` · ${item.errorCode}` : ""}${item.lastSavedAt ? ` · 最近保存 ${item.lastSavedAt}` : ""}${item.recoveryAvailable ? " · 有恢复副本" : ""}`),
+  ].join("\n");
+  const key = JSON.stringify([degraded, recovered, stores.map((item) => [item.file, item.state, item.errorCode])]);
+  if (degraded && key !== state.storageHealthKey) setSystemMessage("本机存储降级：请查看状态提示；本次未确认保存的变更不会冒充已落盘。", "warning");
+  state.storageHealthKey = key;
+}
+
+function isLongbridgeConnectionStatus(status) {
+  if (status?.domain != null) return status.domain === "longbridge";
+  // Compatibility for older hosts only. Business-task messages must never
+  // change connection truth or dismiss the explicit reauthorization state.
+  return new Set([
+    "connected", "ready", "degraded", "service_degraded", "syncing",
+    "awaiting_auth", "connecting", "disconnected", "network_error",
+    "reauth_required", "scope_upgrade_required", "permission_error", "error",
+  ]).has(status?.state);
+}
+
 function setLongbridgeStatus(status) {
+  if (!isLongbridgeConnectionStatus(status)) return;
   const connectedStates = new Set([
     "connected",
     "ready",
@@ -2676,34 +4194,198 @@ function setLongbridgeStatus(status) {
     : connected ? "长桥已连接" : "连接长桥";
 }
 
+function agentNetworkModeLabel(mode) {
+  return mode === "system" ? "跟随系统代理（实验性）"
+    : mode === "inherit" ? "沿用启动环境" : "未启动／模式未知";
+}
+
+function agentNetworkRuntimeView(network) {
+  if (network == null) return null; // Older hosts do not publish network evidence.
+  const knownStatus = ["idle", "checking", "ready", "failed"].includes(network?.status);
+  const blocked = !knownStatus || network.status === "failed";
+  return {
+    blocked,
+    label: blocked ? "网络设置需检查"
+      : network.status === "checking" ? "正在检查网络能力"
+        : network.status === "ready" ? "网络配置已应用" : "等待启动",
+    message: typeof network.message === "string" && network.message.trim()
+      ? network.message
+      : blocked ? "无法确认 Codex 网络状态，暂不能发起分析；请检查连接设置。"
+        : network.status === "ready" ? "网络配置已应用；实际连通性以请求结果为准。"
+          : "正在等待 Codex 网络能力检查。",
+  };
+}
+
+function setAgentNetworkPreferences(value) {
+  if (!elements.agentNetworkSettings) return;
+  if (typeof api.setAgentNetworkPreferences !== "function" || !value || typeof value !== "object") {
+    state.agentNetworkPreferences = null;
+    elements.agentNetworkSettings.hidden = true;
+    return;
+  }
+  const mode = ["inherit", "system"].includes(value.mode) ? value.mode : "unsupported";
+  const effectiveMode = ["inherit", "system"].includes(value.effectiveMode) ? value.effectiveMode : "unsupported";
+  state.agentNetworkPreferences = {
+    mode, effectiveMode,
+    requiresRestart: value.requiresRestart === true || mode !== effectiveMode,
+  };
+  state.agentNetworkDraft = mode === "unsupported" ? "" : mode;
+  state.agentNetworkError = null;
+  renderAgentNetworkPreferences();
+}
+
+function renderAgentNetworkPreferences() {
+  if (!elements.agentNetworkSettings) return;
+  const preferences = state.agentNetworkPreferences;
+  const supported = typeof api.setAgentNetworkPreferences === "function" && Boolean(preferences);
+  elements.agentNetworkSettings.hidden = !supported;
+  if (!supported) return;
+  const draftValid = ["inherit", "system"].includes(state.agentNetworkDraft);
+  const dirty = draftValid && state.agentNetworkDraft !== preferences.mode;
+  const runtime = agentNetworkRuntimeView(state.agentNetworkRuntime);
+  const pending = preferences.requiresRestart;
+  elements.agentNetworkMode.value = draftValid ? state.agentNetworkDraft : "";
+  elements.agentNetworkMode.disabled = state.agentNetworkSaving;
+  elements.agentNetworkSave.disabled = state.agentNetworkSaving || !dirty;
+  elements.agentNetworkSave.textContent = state.agentNetworkSaving ? "保存中…" : "保存";
+  elements.agentNetworkSettings.dataset.state = state.agentNetworkError || runtime?.blocked ? "failed"
+    : dirty || pending ? "pending" : "normal";
+  elements.agentNetworkSummary.textContent = state.agentNetworkSaving ? "正在保存"
+    : state.agentNetworkError ? "保存失败"
+      : dirty ? "未保存"
+        : pending ? "已保存 · 重启后生效"
+          : runtime?.blocked ? runtime.label : agentNetworkModeLabel(preferences.effectiveMode);
+  elements.agentNetworkEffective.textContent = `本次启动：${agentNetworkModeLabel(preferences.effectiveMode)}`;
+  elements.agentNetworkRuntime.textContent = runtime?.message ?? "尚未收到运行时网络状态，不代表连接已通过。";
+  const feedback = state.agentNetworkError
+    || (state.agentNetworkSaving ? "正在保存；当前网络路径与任务保持不变。" : "")
+    || (dirty ? `选择尚未保存。${pending ? "之前保存的模式仍将在下次启动生效。" : "当前任务不会改变。"}` : "")
+    || (pending ? `已保存：${agentNetworkModeLabel(preferences.mode)}。下次重启应用后生效，当前任务未中断。` : "");
+  elements.agentNetworkFeedback.hidden = !feedback;
+  elements.agentNetworkFeedback.textContent = feedback;
+  elements.agentNetworkFeedback.className = `agent-network-feedback${state.agentNetworkError ? " error" : ""}`;
+}
+
+async function saveAgentNetworkPreferences(event) {
+  event?.preventDefault();
+  const requestedMode = state.agentNetworkDraft;
+  if (state.agentNetworkSaving || typeof api.setAgentNetworkPreferences !== "function"
+    || !state.agentNetworkPreferences || !["inherit", "system"].includes(requestedMode)
+    || requestedMode === state.agentNetworkPreferences.mode) return;
+  state.agentNetworkSaving = true;
+  state.agentNetworkError = null;
+  renderAgentNetworkPreferences();
+  try {
+    const saved = await api.setAgentNetworkPreferences({ mode: requestedMode });
+    if (saved?.mode !== requestedMode || !["inherit", "system", "unsupported"].includes(saved?.effectiveMode)) {
+      throw new Error("invalid_network_preferences_response");
+    }
+    setAgentNetworkPreferences(saved);
+  } catch {
+    // Keep the confirmed setting, current runtime and selection; do not expose
+    // arbitrary host errors which may include environment or proxy details.
+    state.agentNetworkError = "保存未获确认，当前有效模式未改变；选择已保留，可重试。";
+  } finally {
+    state.agentNetworkSaving = false;
+    renderAgentNetworkPreferences();
+  }
+}
+
 function setCodexStatus(status) {
+  state.codexStatus = status;
   state.codexRuntimeAvailable = status?.available === true;
-  const readOnlyGuardReady = status?.readOnlyGuardReady !== false
+  state.agentNetworkRuntime = status?.network ?? null;
+  const network = agentNetworkRuntimeView(state.agentNetworkRuntime);
+  const researchMode = status?.researchMode;
+  const restricted = researchMode?.kind === "restricted";
+  const readOnlyGuardReady = status?.readOnlyGuardReady === true
     && status?.readOnlyGuard?.ready !== false;
-  state.codexAvailable = status?.ready === true && readOnlyGuardReady;
+  state.codexAvailable = status?.ready === true && readOnlyGuardReady
+    && researchMode?.available !== false && !network?.blocked;
   elements.codexBadge.textContent = state.codexAvailable
-    ? "CODEX READY"
+    ? restricted ? "CODEX LIMITED" : "CODEX READY"
     : status?.ready === true && !readOnlyGuardReady
       ? "CODEX GUARD"
+      : network?.blocked ? "CODEX NETWORK"
       : state.codexRuntimeAvailable ? "CODEX STARTING" : "CODEX OFF";
-  elements.codexBadge.classList.toggle("unavailable", !state.codexRuntimeAvailable);
-  elements.codexBadge.classList.toggle("starting", state.codexRuntimeAvailable && !state.codexAvailable);
+  elements.codexBadge.classList.toggle("unavailable", !state.codexRuntimeAvailable || Boolean(network?.blocked));
+  elements.codexBadge.classList.toggle("starting", state.codexRuntimeAvailable && !state.codexAvailable && !network?.blocked);
+  elements.codexBadge.classList.toggle("limited", state.codexAvailable && restricted);
   elements.codexBadge.title = state.codexAvailable
-    ? `持久项目：${status?.workspaceDirectory ?? "stock_agent"}；Codex App Server 已就绪；交易写工具与破坏性 App 动作被禁用`
+    ? restricted
+      ? "研究可用·外部工具受限；本对话关闭外部 MCP / Apps，Skills、Web、项目文件与驾驶舱只读券商数据仍可使用"
+      : `持久项目：${status?.workspaceDirectory ?? "stock_agent"}；Codex App Server 已就绪；交易写工具与破坏性 App 动作被禁用`
     : status?.ready === true && !readOnlyGuardReady
-      ? "检测到未受保护的长桥交易写能力；Agent 已停止启动分析，行情、Skills 与其他工具未被限制"
+      ? "券商交易写工具尚未完成隔离；Agent 已停止启动分析，持仓刷新与看盘不受影响"
+    : network?.blocked ? network.message
     : state.codexRuntimeAvailable
       ? "Codex App Server 正在恢复持久项目线程"
       : "未检测到本机 Codex 运行时";
+  if (elements.agentAvailability) {
+    const diagnostic = status?.readOnlyGuardDiagnostic ?? status?.readOnlyGuard?.diagnostic;
+    const blocked = !readOnlyGuardReady && (status?.ready === true || Boolean(diagnostic));
+    elements.agentAvailability.hidden = !blocked && !network?.blocked && !(state.codexAvailable && restricted);
+    elements.agentAvailability.textContent = [
+      blocked ? diagnostic
+        ? `${diagnostic.title}：${diagnostic.message}${diagnostic.tools?.length ? ` 涉及工具：${diagnostic.tools.slice(0, 4).map(item => `${item.server}/${item.tool}`).join("、")}。` : ""} 持仓刷新与看盘仍可使用；请勿关闭防护。`
+        : "Agent 暂停：券商写工具只读隔离尚未通过。请先点“重新检查只读隔离”；若仍失败，查看系统状态。持仓刷新与看盘仍可使用，请勿关闭防护。" : "",
+      blocked && !restricted ? "也可新建受限研究对话：仅该新对话关闭外部 MCP / Apps，保留 Skills、Web、项目文件及驾驶舱提供的只读券商数据；原对话保留。" : "",
+      state.codexAvailable && restricted ? "研究可用·外部工具受限。本对话的外部 MCP / Apps 已关闭；Skills、Web、项目文件及驾驶舱提供的只读券商数据仍可使用。可继续聊天，或新建完整工具对话重新核验；原对话保留。这不表示券商账户断开。" : "",
+      network?.blocked ? `网络配置需检查：${network.message}` : "",
+    ].filter(Boolean).join(" ");
+    if (elements.agentGuardActions) {
+      elements.agentGuardActions.hidden = !blocked && !restricted;
+      elements.agentGuardRecheck.disabled = state.guardRepairBusy === true || diagnostic?.state === "checking"
+        || typeof api.recheckAgentReadOnlyGuard !== "function";
+      elements.agentGuardRecheck.textContent = state.guardRepairBusy || diagnostic?.state === "checking"
+        ? "正在检查…" : "重新检查只读隔离";
+      elements.agentGuardNewSession.hidden = diagnostic?.action !== "new_session";
+      elements.agentGuardNewSession.disabled = state.guardRepairBusy === true || state.sessionsLoading === true;
+      if (elements.agentRestrictedSession) {
+        elements.agentRestrictedSession.hidden = !blocked || restricted;
+        elements.agentRestrictedSession.disabled = state.guardRepairBusy === true || state.sessionsLoading === true
+          || diagnostic?.state === "checking"
+          || typeof api.agentSessions?.create !== "function";
+      }
+      if (elements.agentFullSession) {
+        elements.agentFullSession.hidden = !restricted || researchMode?.recoveryAction !== "new_full_session";
+        elements.agentFullSession.disabled = state.guardRepairBusy === true || state.sessionsLoading === true
+          || diagnostic?.state === "checking"
+          || typeof api.agentSessions?.create !== "function";
+      }
+    }
+  }
+  renderAgentNetworkPreferences();
   updateAgentSubmitState();
   renderAgentSessions();
+}
+
+async function recheckAgentReadOnlyGuard() {
+  if (state.guardRepairBusy || typeof api.recheckAgentReadOnlyGuard !== "function") return;
+  state.guardRepairBusy = true;
+  if (elements.agentGuardFeedback) elements.agentGuardFeedback.textContent = "仅重新核验配置与工具清单；不发送分析、不修改授权、不重启正在运行的任务。";
+  setCodexStatus(state.codexStatus);
+  try {
+    const capabilities = await api.recheckAgentReadOnlyGuard();
+    setAgentCapabilities(capabilities);
+    if (elements.agentGuardFeedback) elements.agentGuardFeedback.textContent = capabilities?.readOnlyGuardReady === true
+      ? capabilities?.researchMode?.kind === "restricted"
+        ? "本对话受限研究隔离已通过；外部 MCP / Apps 仍关闭。要重新启用，请显式新建完整工具对话。"
+        : "只读隔离已通过，可以继续分析。"
+      : "检查完成，仍未通过；请按上方原因处理。未放宽任何权限。";
+  } catch {
+    if (elements.agentGuardFeedback) elements.agentGuardFeedback.textContent = "检查请求未完成。请确认 Codex 已登录、网络可用后重试；若仍失败，在所有任务结束后退出并重新打开驾驶舱。原对话保留。";
+  } finally {
+    state.guardRepairBusy = false;
+    setCodexStatus(state.codexStatus);
+  }
 }
 
 function updateAgentSubmitState() {
   const active = activeOperationForThread(state.activeSessionId);
   const activeSession = state.agentSessions.find((session) => session.id === state.activeSessionId);
   elements.agentSubmit.disabled = state.busy
-    || (state.analysisScope !== "review" && !state.portfolio)
+    || (!["chat", "review"].includes(state.analysisScope) && !state.portfolio)
     || !state.codexAvailable
     || !state.activeSessionId
     || Boolean(activeSession?.provisioning)
@@ -2730,6 +4412,7 @@ function setAgentCapabilities(capabilities) {
 function capabilityItems() {
   const capabilities = state.agentCapabilities;
   if (!capabilities) return [];
+  const restricted = (state.codexStatus?.researchMode ?? capabilities.researchMode)?.kind === "restricted";
   const commands = (capabilities.commands ?? []).map((item) => ({
     kind: "COMMAND",
     token: item.name,
@@ -2748,16 +4431,22 @@ function capabilityItems() {
     kind: "APP",
     token: `$${item.id}`,
     label: `$${item.id}`,
-    description: item.description || item.name,
-    available: true,
+    description: restricted ? "本对话已关闭外部 Apps" : item.description || item.name,
+    available: !restricted,
   }));
   const mcp = (capabilities.mcpServers ?? []).flatMap((server) => {
-    const available = server.authStatus !== "notLoggedIn";
+    const available = !restricted && server.authStatus !== "notLoggedIn" && !server.toolsUnavailable
+      && (server.runtimeStatus == null ? server.tools.length > 0 : server.runtimeStatus === "connected");
+    const connectionLabel = restricted ? "本对话已关闭外部 MCP" : server.toolsUnavailable ? "工具发现失败"
+      : server.authStatus === "notLoggedIn" ? "待授权"
+        : ({ notStarted: "未启动", starting: "连接中", connected: "已连接", authenticationRequired: "待授权",
+          failed: "连接失败", cancelled: "已取消", disabled: "已停用" })[server.runtimeStatus]
+          ?? (server.tools.length ? server.authStatus : "工具尚不可用");
     const serverItem = {
       kind: "MCP",
       token: `@${server.name}`,
       label: `@${server.name}`,
-      description: `${server.tools.length} tools · ${server.authStatus}`,
+      description: `${server.tools.length} tools · ${connectionLabel}`,
       available,
     };
     const tools = server.tools.map((tool) => ({
@@ -2931,7 +4620,7 @@ function renderAgentStream(event) {
     }
     scheduleAgentResultRecovery(operation, 900);
   }
-  if (isActive) scrollAgentToEnd();
+  if (isActive) scrollAgentToEnd({ force: false });
 }
 
 function renderToolChip(tools, event) {
@@ -3047,11 +4736,37 @@ function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function scrollAgentToEnd() {
+function agentThreadNearEnd(threshold = 64) {
+  return elements.agentThread.scrollHeight
+    - elements.agentThread.clientHeight
+    - elements.agentThread.scrollTop <= threshold;
+}
+
+function updateAgentJumpLatest() {
+  elements.agentJumpLatest.hidden = state.agentFollowTail || agentThreadNearEnd();
+}
+
+function handleAgentThreadScroll() {
+  state.agentFollowTail = agentThreadNearEnd();
+  updateAgentJumpLatest();
+}
+
+function scrollAgentToEnd({ force = true } = {}) {
+  if (!force && !state.agentFollowTail) {
+    updateAgentJumpLatest();
+    return;
+  }
+  if (force) state.agentFollowTail = true;
   if (state.scrollFrame != null) return;
   state.scrollFrame = requestAnimationFrame(() => {
     state.scrollFrame = null;
+    if (!force && !state.agentFollowTail) {
+      updateAgentJumpLatest();
+      return;
+    }
     elements.agentThread.scrollTop = elements.agentThread.scrollHeight;
+    state.agentFollowTail = true;
+    updateAgentJumpLatest();
   });
 }
 

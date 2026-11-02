@@ -1,0 +1,19 @@
+# Trading Cockpit only; no credentials and no changes to global Codex config.
+# Official TradingView MCP beta. Market data may be delayed.
+[mcp_servers.tradingview]
+url = "https://mcp.tradingview.com/mcp"
+enabled = true
+required = false
+startup_timeout_sec = 15
+tool_timeout_sec = 30
+# Do not expose writes or get_active_watchlist (which can create/activate lists).
+enabled_tools = [
+  "list_watchlists", "get_watchlist", "get_ohlcv",
+  "get_economic_data", "get_economic_symbols", "search_symbols",
+  "get_symbol_data", "run_screener", "get_symbol_data_batch",
+  "get_screener_columns", "get_technicals_rating",
+  "get_news", "get_news_story", "get_forecasts", "get_financials",
+  "get_financial_history", "get_documents", "get_document_view",
+  "get_earnings_calendar", "get_economic_calendar", "get_dividends_calendar",
+  "list_alerts", "get_alerts", "get_alerts_log",
+]

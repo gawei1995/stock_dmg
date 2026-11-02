@@ -5,8 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <title>交易驾驶舱</title>
-    <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./radar.css" />
     <link rel="stylesheet" href="./review.css" />
+    <link rel="stylesheet" href="./research.css" />
+    <link rel="stylesheet" href="./health.css" />
   </head>
   <body>
     <header class="topbar">
@@ -17,14 +20,15 @@
       <div class="system-strip" aria-live="polite">
         <nav class="workspace-switch" aria-label="工作区切换">
           <button id="workspace-cockpit" type="button" data-workspace-mode="cockpit" aria-pressed="true">驾驶舱</button>
-          <button id="workspace-review" type="button" data-workspace-mode="review" aria-pressed="false">复盘</button>
+          <button id="workspace-review" type="button" data-workspace-mode="review" aria-pressed="false">研究 / 复盘</button>
         </nav>
         <span class="status-chip" id="longbridge-chip"><i></i>长桥未连接</span>
         <span class="status-chip tv" id="tv-chip"><i></i>TradingView 启动中</span>
-        <span class="status-chip readonly"><i></i>READ ONLY</span>
+        <span class="status-chip readonly" title="券商数据桥接仅提供查询；Agent 的研究文件和命令工具不属于通用只读沙箱。"><i></i>券商只读桥接</span>
         <span class="status-message" id="system-message">本地安全边界已启用</span>
       </div>
       <div class="top-actions">
+        <button class="ghost-button" id="system-health-open" type="button" aria-haspopup="dialog" aria-controls="system-health-dialog">系统状态</button>
         <button class="ghost-button" id="refresh-button" type="button">刷新持仓</button>
         <button class="primary-button" id="connect-button" type="button">连接长桥</button>
       </div>
@@ -33,9 +37,36 @@
     <main class="cockpit-grid" id="cockpit-grid">
       <aside class="portfolio-pane" id="portfolio-pane" aria-labelledby="portfolio-heading">
         <div class="pane-heading">
-          <div><span>LONG BRIDGE</span><h1 id="portfolio-heading">真实账户</h1></div>
+          <div><span>MULTI BROKER / USD</span><h1 id="portfolio-heading">真实账户</h1></div>
           <span class="snapshot-state" id="snapshot-state">NO DATA</span>
         </div>
+
+        <nav class="portfolio-view-tabs" aria-label="左栏工作区">
+          <button type="button" data-portfolio-view="portfolio" aria-pressed="true">持仓</button>
+          <button type="button" data-portfolio-view="radar" aria-pressed="false">技术雷达 <span id="radar-tab-count"></span></button>
+        </nav>
+
+        <nav class="broker-tabs" id="broker-tabs" aria-label="持仓账户范围">
+          <button type="button" data-broker-scope="all" aria-pressed="true">全部账户</button>
+          <button type="button" data-broker-scope="longbridge" aria-pressed="false">长桥</button>
+          <button type="button" data-broker-scope="ibkr" aria-pressed="false">IBKR</button>
+        </nav>
+        <div class="broker-overview" id="broker-overview" aria-label="各券商资产与同步状态"></div>
+        <details class="ibkr-setup" id="ibkr-setup">
+          <summary>IBKR 连接设置 <span id="ibkr-connection-state">未连接</span></summary>
+          <div class="ibkr-setup-body">
+            <p id="ibkr-connection-help">复用已登录的 Trader Workstation。TWS 中启用 Socket API、保留只读 API；仅连接本机，不保存密码，不提交订单。</p>
+            <label>连接方式 <select id="ibkr-transport"><option value="tws">Trader Workstation / IB Gateway</option><option value="gateway">Client Portal 网页网关（备用）</option></select></label>
+            <label>本机端口 <input id="ibkr-port" type="number" min="1024" max="65535" value="7496" /></label>
+            <label class="ibkr-trust" hidden><input id="ibkr-trust" type="checkbox" />仅信任本机该端口的自签名证书</label>
+            <div class="ibkr-actions"><button type="button" id="ibkr-login">打开 TWS</button><button type="button" id="ibkr-discover">检查连接</button></div>
+            <label>账户 <select id="ibkr-account" aria-label="选择 IBKR 账户"><option value="">先检查连接</option></select></label>
+            <div class="ibkr-actions"><button type="button" id="ibkr-sync">保存并同步</button><button type="button" id="ibkr-disconnect">移除接入</button></div>
+            <p id="ibkr-setup-message" role="status" aria-live="polite"></p>
+            <p>期权可读取 Bid/Ask、IV、Delta/Gamma/Theta/Vega；取决于登录会话与订阅。不会抢占交易会话。当前复盘与自动收盘快照仍仅覆盖长桥。</p>
+            <a href="https://www.interactivebrokers.com/campus/trading-lessons/installing-configuring-tws-for-the-api/">IBKR 官方连接说明 ↗</a>
+          </div>
+        </details>
 
         <section class="account-card" id="account-card">
           <div class="account-empty">
@@ -50,6 +81,86 @@
           <input id="position-search" type="search" placeholder="搜索代码" autocomplete="off" />
         </div>
         <div class="position-list" id="position-list" aria-live="polite"></div>
+
+        <section class="technical-radar collapsed" id="technical-radar" aria-labelledby="technical-radar-title">
+          <button class="technical-radar-toggle" id="technical-radar-toggle" type="button" aria-expanded="false" aria-controls="technical-radar-body">
+            <span><i aria-hidden="true"></i><strong id="technical-radar-title">技术雷达</strong></span>
+            <span class="technical-radar-toggle-state" id="technical-radar-toggle-state">待扫描</span>
+            <span class="technical-radar-chevron" aria-hidden="true">›</span>
+          </button>
+          <div class="technical-radar-body" id="technical-radar-body" hidden>
+            <div class="radar-toolbar">
+              <div><strong id="radar-view-heading">日线结构观察</strong><span id="radar-view-description">长桥持仓 + 技术自选 · 非实时行情</span></div>
+              <button id="technical-radar-run" type="button">更新扫描</button>
+              <button id="radar-settings-back" type="button" hidden>返回雷达</button>
+            </div>
+            <div class="technical-radar-summary" id="technical-radar-summary">
+              <div><span>截止交易日</span><strong>N/A</strong></div>
+              <div><span>覆盖</span><strong>N/A</strong></div>
+              <div><span>扫描状态</span><strong>待扫描</strong></div>
+            </div>
+            <div class="technical-radar-actions">
+              <span id="technical-radar-computed">尚未扫描</span>
+              <button id="radar-settings-toggle" type="button" aria-expanded="false" aria-controls="radar-settings">管理自选与联动</button>
+            </div>
+            <p id="radar-notice" class="radar-notice" role="status" aria-live="polite" hidden></p>
+            <div class="radar-filters" id="radar-filters">
+              <div role="group" aria-label="筛选雷达结果">
+                <button type="button" data-radar-filter="all" aria-pressed="true">全部</button>
+                <button type="button" data-radar-filter="changed" aria-pressed="false">有变化</button>
+                <button type="button" data-radar-filter="gaps" aria-pressed="false">待补数据</button>
+              </div>
+              <label class="sr-only" for="radar-search">搜索雷达标的</label>
+              <input id="radar-search" type="search" placeholder="搜索雷达标的" autocomplete="off" />
+            </div>
+            <div id="radar-settings" class="radar-settings" hidden>
+            <h2>技术自选</h2>
+            <p>加入后点击“更新扫描”。不改变真实持仓，也不自动运行 Agent。</p>
+            <form class="technical-watchlist-form" id="technical-watchlist-form">
+              <label class="sr-only" for="technical-watchlist-symbol">添加技术自选标的</label>
+              <input id="technical-watchlist-symbol" type="text" maxlength="32" placeholder="添加自选，例如 NVDA 或 700.HK" autocomplete="off" spellcheck="false" />
+              <button id="technical-watchlist-add" type="submit">添加</button>
+            </form>
+            <div id="radar-watchlist-items"></div>
+            <details class="technical-linkage-editor" id="technical-linkage-editor">
+              <summary>
+                <span>行业 / 同行联动</span>
+                <span class="technical-linkage-state" id="technical-linkage-state">未配置</span>
+              </summary>
+              <form id="technical-linkage-form">
+                <div class="technical-linkage-grid">
+                  <label>
+                    <span>目标标的</span>
+                    <input id="technical-linkage-symbol" type="text" maxlength="32" placeholder="例如 NVDA.US" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label>
+                    <span>行业 ETF</span>
+                    <input id="technical-linkage-sector" type="text" maxlength="32" placeholder="例如 SMH.US" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="technical-linkage-wide">
+                    <span>同行标的</span>
+                    <input id="technical-linkage-peers" type="text" maxlength="180" placeholder="逗号分隔，例如 AMD.US, AVGO.US" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="technical-linkage-wide">
+                    <span>联动理由</span>
+                    <textarea id="technical-linkage-rationale" maxlength="1000" rows="2" placeholder="为什么采用这个行业与同行组（可选）"></textarea>
+                  </label>
+                </div>
+                <p>同行比较如启用，必须填写 2–5 个（也可只填行业 ETF）。模型建议不会自动确认；只有你确认的映射才会触发宿主行情请求。</p>
+                <div class="technical-linkage-actions">
+                  <button id="technical-linkage-save" type="submit">确认映射</button>
+                  <button class="danger" id="technical-linkage-remove" type="button" disabled>删除映射</button>
+                  <span id="technical-linkage-message" role="status" aria-live="polite"></span>
+                </div>
+              </form>
+            </details>
+            </div>
+            <div class="technical-radar-list" id="technical-radar-list" aria-live="polite">
+              <div class="technical-radar-empty">运行扫描后显示可核验的结构变化；缺失指标保持 N/A。</div>
+            </div>
+            <p class="technical-radar-advisory">变化优先展示 · 点击展开证据 · 不代表买卖信号</p>
+          </div>
+        </section>
 
         <section class="portfolio-foot" id="portfolio-foot">
           <div><span>TOP 1</span><strong>—</strong></div>
@@ -110,8 +221,27 @@
             <span>CODEX APP SERVER · SINGLE HARNESS</span>
             <h2 id="agent-heading">交易 Agent</h2>
           </div>
-          <div class="agent-badges"><button id="history-toggle" type="button" aria-expanded="false" aria-controls="agent-history">本机对话</button><span id="codex-badge">CODEX</span><span>只读</span></div>
+          <div class="agent-badges"><button id="history-toggle" type="button" aria-expanded="false" aria-controls="agent-history">本机对话</button><span id="codex-badge">CODEX</span><span title="保持研究工具可用；禁止已识别券商交易写工具，真实交易仍由你手动执行。">研究模式</span></div>
         </div>
+
+        <details class="agent-network-settings" id="agent-network-settings" hidden>
+          <summary>连接设置 <span id="agent-network-summary">仅本应用</span></summary>
+          <form id="agent-network-form" class="agent-network-form">
+            <label for="agent-network-mode">Codex 网络路径</label>
+            <div class="agent-network-controls">
+              <select id="agent-network-mode" aria-describedby="agent-network-help agent-network-feedback">
+                <option value="" disabled>请选择网络模式</option>
+                <option value="inherit">沿用启动环境</option>
+                <option value="system">跟随系统代理（实验性）</option>
+              </select>
+              <button id="agent-network-save" type="submit" disabled>保存</button>
+            </div>
+            <p id="agent-network-effective"></p>
+            <p id="agent-network-runtime" role="status" aria-live="polite"></p>
+            <p id="agent-network-feedback" role="status" aria-live="polite" hidden></p>
+            <p id="agent-network-help" class="agent-network-help">保存后下次启动应用生效，不中断当前任务。仅配置本应用的 Codex，不修改全局配置、模型或 MCP 授权；系统代理由 Codex 原生处理，不向所有工具注入代理环境。实验性能力不保证 PAC 或所有工具链路可用。</p>
+          </form>
+        </details>
 
         <div class="agent-session-bar" aria-label="Agent 会话">
           <label for="agent-session-select">会话</label>
@@ -144,13 +274,24 @@
             </div>
           </article>
         </div>
+        <button class="agent-jump-latest" id="agent-jump-latest" type="button" hidden>跳到最新 ↓</button>
         <div class="sr-only" id="agent-live-status" role="status" aria-live="polite"></div>
 
         <form class="agent-composer" id="agent-form">
+          <p id="agent-availability" class="agent-availability" role="status" aria-live="polite" hidden></p>
+          <div id="agent-guard-actions" class="agent-guard-actions" hidden>
+            <button id="agent-guard-recheck" type="button">重新检查只读隔离</button>
+            <button id="agent-guard-new-session" type="button" hidden>新建安全对话</button>
+            <button id="agent-restricted-session" type="button" hidden>新建受限研究对话</button>
+            <button id="agent-full-session" type="button" hidden>新建完整工具对话</button>
+            <button id="agent-guard-details" type="button">查看系统状态</button>
+            <span id="agent-guard-feedback" role="status" aria-live="polite"></span>
+          </div>
           <div class="analysis-scope">
             <span>分析范围</span>
             <div class="scope-segmented" role="radiogroup" aria-label="选择分析范围">
-              <button type="button" data-scope="position" role="radio" aria-checked="true">当前持仓</button>
+              <button type="button" data-scope="chat" role="radio" aria-checked="true">自由研究</button>
+              <button type="button" data-scope="position" role="radio" aria-checked="false">当前持仓</button>
               <button type="button" data-scope="candidate" role="radio" aria-checked="false">候选买入</button>
               <button type="button" data-scope="portfolio" role="radio" aria-checked="false">全部组合</button>
             </div>
@@ -181,39 +322,102 @@
       </aside>
     </main>
 
-    <main class="review-workspace" id="review-workspace" aria-label="复盘与规则实验室" hidden>
+    <main class="review-workspace" id="review-workspace" aria-label="研究主线与复盘验证" hidden>
       <header class="review-overview">
         <div>
           <span class="review-kicker">DECISION LEARNING SYSTEM</span>
-          <h1>复盘与规则实验室</h1>
-          <p>按“记录判断 → 关联事实 → AI 复盘与验证草案 → 人工确认”沉淀可验证准则。AI 主导整理与测试设计，规则迁移仍由你确认。</p>
+          <h1>研究主线与复盘验证</h1>
+          <p>记录判断与市场预期，跟踪证据和反证，再关联真实交易与复盘。AI 整理更新草案，原判断与历史版本始终保留，采纳仍由你确认。</p>
         </div>
         <div class="review-summary" id="review-summary" aria-live="polite">
           <div><span>周期</span><strong>0</strong></div>
-          <div><span>案例</span><strong>0</strong></div>
+          <div><span>历史案例</span><strong>0</strong></div>
           <div><span>测试中</span><strong>0</strong></div>
           <div><span>有效规则</span><strong>0</strong></div>
-          <div><span>待Review</span><strong>0</strong></div>
+          <div><span>待决策</span><strong>0</strong></div>
         </div>
         <div class="review-overview-actions">
-          <span class="review-snapshot-ledger-status" id="review-snapshot-ledger-status" title="应用保持运行且长桥已连接时，会保存版本化的常规收盘重估；证券使用 16:00 ET regular mark，数量与现金来自收盘后抓取，因此是 partial，不能作为确定性收益端点。">组合历史尚未开始 · 等待下一次收盘重估</span>
+          <span class="review-snapshot-ledger-status" id="review-snapshot-ledger-status" title="应用保持运行且长桥已连接时，会保存版本化的常规收盘重估；证券使用该交易日常规交易时段的收盘 mark，提前收盘日遵循实际收盘时间；数量与现金来自收盘后抓取，因此是 partial，不能作为确定性收益端点。">组合历史尚未开始 · 等待下一次收盘重估</span>
+          <button class="review-button secondary" id="review-background-capture" type="button" aria-pressed="false">无人值守：关闭</button>
           <button class="review-button secondary" id="review-capture-snapshot" type="button">保存组合快照</button>
           <button class="review-button secondary" id="review-sync-history" type="button">同步长桥历史</button>
-          <button class="review-button secondary" id="review-batch-analyze" type="button" disabled>复盘所选案例</button>
+          <button class="review-button secondary" id="review-batch-analyze" type="button">组合复盘 → 周期</button>
           <button class="review-button primary" id="review-new-cycle" type="button">新建复盘周期</button>
-          <button class="review-button primary" id="review-new-case" type="button">从订单建立案例</button>
+          <button class="review-button primary" id="review-new-case" type="button">选择订单证据</button>
         </div>
       </header>
 
-      <nav class="review-tabs" role="tablist" aria-label="复盘流程">
+      <section class="review-recovery-controls" aria-label="本机加密恢复包">
+        <div class="review-recovery-copy">
+          <strong>本机恢复包</strong>
+          <small>按清单保存加密业务数据、应用内对话索引与最近结果；不含登录凭证、TradingView 登录状态或 Codex 外部完整对话。原对话仍依赖原服务，同一 macOS 钥匙串身份才可恢复，不是跨设备灾备。后台运行、登录启动和账户身份校验沿用本机设置；旧版四文件包保留当前应用索引，不会将其清空。</small>
+        </div>
+        <div class="review-recovery-actions">
+          <button class="review-button secondary" id="review-export-backup" type="button">导出本机恢复包</button>
+          <button class="review-button secondary" id="review-restore-backup" type="button">恢复本机恢复包</button>
+        </div>
+        <details class="review-ledger-archive" id="review-ledger-archive">
+          <summary>整理历史存储（不删除记录）</summary>
+          <p>仅手动执行，不会自动归档。作用于本机该类账本的所有账户，按追加顺序保留最近记录，不按行情日期排序。旧记录仍可查询，并随本机恢复包保留；这是整理活跃存储，不会腾出全部历史记录占用的磁盘空间。</p>
+          <form class="review-ledger-archive-row" data-ledger-archive-kind="portfolio">
+            <strong>组合快照</strong>
+            <label for="review-archive-portfolio-retain">保留最近追加条数</label>
+            <input id="review-archive-portfolio-retain" name="retainActiveCount" type="number" min="1" step="1" value="500" required inputmode="numeric">
+            <button class="review-button secondary" type="submit">预览归档</button>
+          </form>
+          <form class="review-ledger-archive-row" data-ledger-archive-kind="radar">
+            <strong>技术雷达</strong>
+            <label for="review-archive-radar-retain">保留最近追加条数</label>
+            <input id="review-archive-radar-retain" name="retainActiveCount" type="number" min="1" step="1" value="60" required inputmode="numeric">
+            <button class="review-button secondary" type="submit">预览归档</button>
+          </form>
+          <small>雷达每批记录计为一条。点击后先由本机预检容量，再在系统窗口预览并确认；不会调用券商或交易 Agent。</small>
+          <p class="review-ledger-archive-status" id="review-ledger-archive-status" role="status" aria-live="polite" hidden></p>
+        </details>
+      </section>
+
+      <details class="review-snapshot-coverage" id="review-snapshot-coverage">
+        <summary>
+          <span><strong>每日组合快照覆盖</strong><small id="review-snapshot-coverage-summary">等待建立交易日记录</small></span>
+          <em>查看最近交易日</em>
+        </summary>
+        <div class="review-snapshot-coverage-legend" aria-label="快照覆盖状态图例">
+          <span data-status="confirmed">已确认</span>
+          <span data-status="degraded">降级</span>
+          <span data-status="attempting">尝试中</span>
+          <span data-status="gap">明确缺口</span>
+          <span data-status="missing">未捕获</span>
+        </div>
+        <div class="review-snapshot-coverage-days" id="review-snapshot-coverage-days" aria-live="polite"></div>
+        <p>只有实际保存成功的常规收盘快照会显示“已确认”；应用关闭、休眠或断连期间不会用未来数据补造过去。</p>
+      </details>
+
+      <nav class="review-tabs" role="tablist" aria-label="研究与复盘流程">
+        <button id="review-tab-research" type="button" role="tab" data-review-tab="research" aria-controls="review-panel-research" aria-selected="false">研究主线 <span id="research-tab-count">0</span></button>
         <button id="review-tab-cycles" type="button" role="tab" data-review-tab="cycles" aria-controls="review-panel-cycles" aria-selected="true">复盘周期 <span id="review-cycle-count">0</span></button>
-        <button id="review-tab-cases" type="button" role="tab" data-review-tab="cases" aria-controls="review-panel-cases" aria-selected="false">案例复盘 <span id="review-case-count">0</span></button>
+        <button id="review-tab-cases" type="button" role="tab" data-review-tab="cases" aria-controls="review-panel-cases" aria-selected="false">订单证据 / 历史案例 <span id="review-case-count">0</span></button>
         <button id="review-tab-tests" type="button" role="tab" data-review-tab="tests" aria-controls="review-panel-tests" aria-selected="false">验证中心 <span id="review-test-count">0</span></button>
-        <button id="review-tab-rules" type="button" role="tab" data-review-tab="rules" aria-controls="review-panel-rules" aria-selected="false" hidden>候选规则 <span id="review-rule-count">0</span></button>
-        <button id="review-tab-governance" type="button" role="tab" data-review-tab="governance" aria-controls="review-panel-governance" aria-selected="false" hidden>人工确认 <span id="review-due-count">0</span></button>
       </nav>
 
       <div class="review-notice" id="review-notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="review-panel research-panel" id="review-panel-research" role="tabpanel" aria-labelledby="review-tab-research" hidden>
+        <aside class="research-sidebar" aria-label="研究主线列表">
+          <div class="research-section-heading"><div><span>THESIS &amp; EVIDENCE</span><h2>研究主线</h2></div><button type="button" id="research-refresh" class="review-button secondary">刷新</button></div>
+          <p class="research-muted">从一句判断开始，不要求持有，也不先填长表。</p>
+          <form id="research-create-form" class="research-create-form">
+            <label>标的（主题研究可留空）<input name="symbol" id="research-create-symbol" type="text" maxlength="40" placeholder="例如 NVDA.US" autocomplete="off" /></label>
+            <label>我目前的判断<textarea name="myView" id="research-create-view" rows="3" maxlength="5000" placeholder="一句话即可；不确定的部分可以留给研究。" required></textarea></label>
+            <button class="review-button primary" type="submit">记录判断，开始跟踪</button>
+          </form>
+          <div class="research-list-controls"><label class="sr-only" for="research-search">搜索研究主线</label><input id="research-search" type="search" placeholder="搜索标的、标题或判断" /><label>状态<select id="research-status-filter"><option value="all">跟踪中与观察中</option><option value="active">跟踪中</option><option value="watching">观察中</option></select></label><label><input id="research-due-only" type="checkbox" /> 只看待检查</label><label><input id="research-show-archived" type="checkbox" /> 显示已归档</label></div>
+          <div id="research-list" class="research-list" aria-label="已保存研究"></div>
+        </aside>
+        <div class="research-detail-scroll" tabindex="0" aria-label="研究详情，可上下滚动">
+          <p id="research-notice" class="research-notice" role="status" aria-live="polite" hidden></p>
+          <div id="research-detail" class="research-detail"><div class="research-empty"><h2>让研究有一条连续的主线</h2><p>记录“我信什么”，再由 Agent 补充市场预期、可核验证据、反证与下一个验证点。草案不会覆盖原判断。</p><p>未持仓的候选标的也可以研究；这里不会调用券商下单。</p></div></div>
+        </div>
+      </section>
 
       <section class="review-panel review-cycle-panel" id="review-panel-cycles" role="tabpanel" aria-labelledby="review-tab-cycles">
         <aside class="review-cycle-list-pane">
@@ -299,6 +503,11 @@
               <div><span>订单</span><strong>0</strong></div><div><span>成交</span><strong>0</strong></div><div><span>检查点</span><strong>0</strong></div><div><span>阶段一</span><strong>待开始</strong></div><div><span>阶段二</span><strong>锁定</strong></div>
             </div>
             <p class="review-cycle-coverage" id="review-cycle-portfolio-coverage">组合历史覆盖将在这里显示；缺少起点或终点快照时，系统不会计算完整月度收益。</p>
+            <section class="review-technical-validation" id="review-cycle-reconciliation" aria-labelledby="review-cycle-reconciliation-heading">
+              <div class="review-card-heading"><div><span>EVIDENCE RECONCILIATION</span><h3 id="review-cycle-reconciliation-heading">收益证据核对</h3></div><strong id="review-cycle-reconciliation-status">待复盘</strong></div>
+              <p class="review-card-note" id="review-cycle-reconciliation-note">完成复盘后，逐项显示库存、资金流与费用的证据状态；净资产变化不等同于投资收益。</p>
+              <dl class="review-trade-path-summary" id="review-cycle-reconciliation-fields"></dl>
+            </section>
 
             <section class="review-trade-path" id="review-cycle-trade-path" aria-labelledby="review-cycle-trade-path-heading" hidden>
               <div class="review-card-heading">
@@ -309,6 +518,16 @@
               <div class="review-trade-path-anchors" id="review-cycle-trade-path-anchors"></div>
               <dl class="review-trade-path-summary" id="review-cycle-trade-path-summary"></dl>
               <div class="review-trade-path-segments" id="review-cycle-trade-path-segments"></div>
+            </section>
+
+            <section class="review-technical-validation" id="review-cycle-technical-validation" aria-labelledby="review-cycle-technical-validation-heading" hidden>
+              <div class="review-card-heading">
+                <div><span>PRE-BUY RADAR → VERIFIED OUTCOME</span><h3 id="review-cycle-technical-validation-heading">入场前技术样本</h3></div>
+                <strong id="review-cycle-technical-validation-status">等待结果</strong>
+              </div>
+              <p class="review-card-note">只关联首个框选 BUY 之前已经计算且已经写入台账的最后一批技术雷达；当前复盘默认属于历史校准，不会自动形成胜率或晋级规则。</p>
+              <dl class="review-technical-validation-summary" id="review-cycle-technical-validation-summary"></dl>
+              <p class="review-technical-validation-note" id="review-cycle-technical-validation-note"></p>
             </section>
 
             <form class="review-form review-cycle-reflection" id="review-cycle-retrospective-form" hidden>
@@ -388,7 +607,7 @@
         <aside class="review-list-pane">
           <div class="review-list-switch" role="group" aria-label="复盘资料">
             <button id="review-show-intake" type="button" aria-pressed="true">待关联订单 <span id="review-intake-count">0</span></button>
-            <button id="review-show-cases" type="button" aria-pressed="false">已有案例 <span id="review-list-case-count">0</span></button>
+            <button id="review-show-cases" type="button" aria-pressed="false">历史案例 · 只读 <span id="review-list-case-count">0</span></button>
           </div>
           <div class="review-list-toolbar">
             <label class="sr-only" for="review-case-search">筛选</label>
@@ -413,8 +632,8 @@
             <div class="review-stepper" aria-label="财报复盘流程">
               <span class="active"><b>1</b>同步并选择订单</span>
               <span><b>2</b>确认财报事件</span>
-              <span><b>3</b>补充当时判断</span>
-              <span><b>4</b>交给 Agent 复盘</span>
+              <span><b>3</b>记录三段原话</span>
+              <span><b>4</b>建立周期并复盘</span>
             </div>
 
             <section class="review-card review-intake-card">
@@ -452,7 +671,7 @@
               <div class="review-derived-context" id="review-derived-context"></div>
               <div class="review-form-actions review-intake-actions">
                 <span>选择订单会联带其全部逐笔成交；选择成交会联带父订单与同单成交。系统会在确认后显示补齐数量，且不会修改或提交任何券商订单。</span>
-                <button class="review-button primary" id="review-create-from-records" type="button" disabled>建立财报复盘案例</button>
+                <button class="review-button primary" id="review-create-from-records" type="button" disabled>记录并建立财报周期</button>
               </div>
             </section>
           </section>
@@ -460,7 +679,7 @@
           <section class="review-case-detail" id="review-case-detail" hidden>
           <form class="review-form" id="review-case-form">
             <div class="review-section-heading">
-              <div><span>HUMAN CONTEXT · EX-ANTE RECORD</span><h2 id="review-case-heading">财报案例</h2></div>
+              <div><span>LEGACY CASE · READ ONLY</span><h2 id="review-case-heading">历史财报案例</h2></div>
               <span class="review-state-badge draft" id="review-case-status">DRAFT</span>
             </div>
             <input id="review-case-id" type="hidden" />
@@ -470,7 +689,7 @@
               <label><span>财报时间 · 来自事件</span><input id="review-case-event-at" name="eventAt" type="datetime-local" required readonly /></label>
               <div><span>已关联记录</span><strong id="review-case-linked-count">0 条</strong></div>
             </div>
-            <p class="review-human-note">下面四项由你保留当时的主观信息。Agent 会区分“当时可知事实、你的原始判断、事后结果”，不会用结果倒推一个看似完美的理由。</p>
+            <p class="review-human-note">这里保留旧版原始记录，只读且不覆盖。继续分析请先预览迁移到周期；迁移不会把旧草稿、回忆或旧分析自动变成新的事前证据。</p>
             <div class="review-form-grid narrative">
               <label><span>我的判断</span><textarea id="review-case-thesis" name="thesis" rows="4" maxlength="4000" placeholder="当时认为价值由什么驱动，预期差在哪里？"></textarea></label>
               <label><span>市场当时相信什么</span><textarea id="review-case-market-belief" name="marketBelief" rows="4" maxlength="4000" placeholder="价格、预期、定位与消息反应隐含了什么？"></textarea></label>
@@ -488,17 +707,26 @@
               </div>
             </details>
             <div class="review-form-actions">
-              <span id="review-freeze-note">草稿可编辑；封存后只能追加事后记录。</span>
+              <span id="review-freeze-note">旧记录只读保留；原 Codex 对话仍可从 Agent 历史打开。</span>
               <button class="review-button secondary" id="review-link-records" type="button" disabled hidden>确认关联成交</button>
-              <button class="review-button secondary" id="review-case-analyze" type="button">用复盘 Skill 分析</button>
-              <button class="review-button secondary" id="review-freeze-case" type="button" disabled>封存财报前判断</button>
-              <button class="review-button primary" id="review-save-case" type="submit">保存案例</button>
+              <button class="review-button secondary" id="review-case-analyze" type="button" disabled hidden>旧分析入口已停用</button>
+              <button class="review-button secondary" id="review-freeze-case" type="button" disabled hidden>旧封存入口已停用</button>
+              <button class="review-button primary" id="review-save-case" type="submit" disabled hidden>旧保存入口已停用</button>
+              <button class="review-button primary" id="review-case-migrate-preview" type="button">预览迁移到周期</button>
             </div>
           </form>
 
+          <section class="review-card review-case-migration" id="review-case-migration" aria-labelledby="review-case-migration-heading" hidden>
+            <div class="review-card-heading"><div><span>EXPLICIT MIGRATION</span><h3 id="review-case-migration-heading">核对迁移预览</h3></div><strong>原案例保留</strong></div>
+            <div id="review-case-migration-summary"></div>
+            <ul id="review-case-migration-limitations"></ul>
+            <p class="review-card-note">确认仅新增一个来源可追踪的周期，不删除原案例、不改写封存版本，也不会自动运行分析或批量迁移。</p>
+            <div class="review-form-actions"><button class="review-button secondary" id="review-case-migrate-cancel" type="button">暂不迁移</button><button class="review-button primary" id="review-case-migrate-confirm" type="button">确认迁移并打开周期</button></div>
+          </section>
+
           <section class="review-card broker-match-card" aria-labelledby="review-broker-match-heading">
-            <div class="review-card-heading"><div><span>BROKER EVIDENCE</span><h3 id="review-broker-match-heading">已确认关联的长桥订单与成交</h3></div><div class="review-card-heading-actions"><strong id="review-broker-match-count">0 条</strong><button class="review-button secondary" id="review-edit-broker-links" type="button">重新选择订单</button></div></div>
-            <p class="review-card-note" id="review-broker-link-note">这些记录构成事实层。选错或漏选时可重新增删；每次修改都会保留关联版本，重新复盘使用最新版本。</p>
+            <div class="review-card-heading"><div><span>BROKER EVIDENCE</span><h3 id="review-broker-match-heading">历史关联的长桥订单与成交</h3></div><div class="review-card-heading-actions"><strong id="review-broker-match-count">0 条</strong><button class="review-button secondary" id="review-edit-broker-links" type="button" disabled hidden>旧关联入口已停用</button></div></div>
+            <p class="review-card-note" id="review-broker-link-note">原关联版本只读保留；迁移后可在周期中修正，不覆盖旧案例。</p>
             <div class="review-record-list" id="review-broker-matches"></div>
           </section>
 
@@ -513,7 +741,7 @@
       <section class="review-panel" id="review-panel-tests" role="tabpanel" aria-labelledby="review-tab-tests" hidden>
         <section class="review-validation-journey" aria-label="验证流程">
           <strong>一条验证路径</strong>
-          <span>1 · AI 生成草案</span><span>2 · 你确认开始观察</span><span>3 · 复盘自动成为候选</span><span>4 · 你确认纳入</span><span>5 · 达标后由你决策</span>
+          <span>1 · AI 生成草案</span><span>2 · 你确认开始观察</span><span>3 · 复盘进入候选池</span><span>4 · 宿主核验前向证据</span><span>5 · 达标后由你决策</span>
         </section>
         <section class="review-card review-learning-proposal" id="review-learning-proposal" hidden>
           <div class="review-card-heading"><div><span>AI PREFILL · HUMAN EDIT</span><h3>检查并微调验证草案</h3></div><strong id="review-learning-confidence">—</strong></div>
@@ -521,9 +749,11 @@
           <div class="review-learning-editor">
             <label class="wide"><span>可证伪假设</span><textarea id="review-learning-hypothesis" rows="3" maxlength="4000"></textarea></label>
             <label class="wide"><span>证据与限制</span><textarea id="review-learning-evidence" rows="3" maxlength="6000"></textarea></label>
-            <label><span>主指标</span><input id="review-learning-metric" maxlength="500" /></label>
+            <label><span>主指标</span><select id="review-learning-metric"><option value="net_r">累计净R</option><option value="expectancy_r">平均期望R</option><option value="win_rate">胜率 %</option><option value="payoff_ratio">赔率</option></select></label>
             <label><span>观察窗口</span><input id="review-learning-window" maxlength="500" /></label>
             <label><span>首轮样本门槛</span><input id="review-learning-min-cases" type="number" min="1" max="10000" /></label>
+            <label><span>成功比较符</span><select id="review-learning-success-operator"><option value="gt">大于 &gt;</option><option value="gte">大于等于 ≥</option><option value="lt">小于 &lt;</option><option value="lte">小于等于 ≤</option></select></label>
+            <label><span>成功数值门槛</span><input id="review-learning-success-threshold" type="number" step="any" required /></label>
             <label class="wide"><span>纳入条件</span><textarea id="review-learning-inclusion" rows="2" maxlength="3000"></textarea></label>
             <label class="wide"><span>排除条件</span><textarea id="review-learning-exclusion" rows="2" maxlength="2000"></textarea></label>
             <label class="wide"><span>成功标准</span><textarea id="review-learning-success" rows="2" maxlength="2000"></textarea></label>
@@ -534,73 +764,21 @@
           </div>
           <div class="review-form-actions"><span>确认后立即进入观察；任何候选样本仍需你逐条确认。</span><button class="review-button secondary" id="review-learning-dismiss" type="button">暂不开始</button><button class="review-button primary" id="review-learning-accept" type="button">开始观察</button></div>
         </section>
-        <div class="review-validation-list-heading"><div><span>ACTIVE VALIDATIONS</span><h2>正在观察与待决策</h2></div><p>系统寻找后续已完成复盘；你确认是否纳入。达到门槛只会进入“待你决策”，绝不自动晋级。</p></div>
+        <div class="review-validation-list-heading"><div><span>ACTIVE VALIDATIONS</span><h2>正在观察与待决策</h2></div><p>系统寻找后续已完成复盘；只有宿主核验的前向唯一案例推进正式门槛，历史校准与人工输入单列。达到门槛只会进入“待你决策”。</p></div>
         <div class="review-flow-list review-validation-list" id="review-test-list"></div>
         <details class="review-validation-archive" id="review-validation-archive" hidden>
           <summary>已停止的观察 <span id="review-archived-test-count">0</span></summary>
           <p class="review-card-note">停止观察不会删除假设、来源、样本或操作记录；这里只作为审计档案保留。</p>
           <div class="review-flow-list review-validation-list archived" id="review-archived-test-list"></div>
         </details>
-        <details class="review-validation-advanced">
-          <summary>高级工具 · 手动登记独立测试</summary>
-        <div class="review-flow-grid">
-          <details class="review-manual-entry">
-            <summary>高级：手动登记测试</summary>
-          <form class="review-form review-flow-form" id="review-test-form">
-            <div class="review-section-heading"><div><span>REGISTERED TEST</span><h2>登记测试</h2></div><span class="review-state-badge testing">PRE-REGISTER</span></div>
-            <label><span>可证伪假设</span><textarea id="review-test-hypothesis" rows="4" maxlength="4000" required placeholder="例如：Stage 3且财报前出现好消息不涨时，减仓策略能改善净期望并降低尾部亏损。"></textarea></label>
-            <div class="review-form-grid compact">
-              <label><span>关联案例</span><select id="review-test-case"><option value="">不限定单一案例</option></select></label>
-              <label><span>关联规则</span><select id="review-test-rule"><option value="">暂不关联规则</option></select></label>
-              <label><span>策略族</span><input id="review-test-strategy" type="text" maxlength="120" required placeholder="pre_earnings_reduce" /></label>
-              <label><span>主指标</span><select id="review-test-metric"><option value="net_r">净R</option><option value="expectancy_r">净期望R</option><option value="win_rate">胜率</option><option value="payoff_ratio">赔率</option><option value="relative_return">相对基准收益</option><option value="mae_r">MAE / R</option><option value="mfe_r">MFE / R</option><option value="action_adherence">动作遵守度</option><option value="invalidation_latency">失效执行延迟</option><option value="peak_gross_exposure">峰值毛敞口</option><option value="drawdown">最大回撤</option><option value="hedge_value">对冲价值</option></select></label>
-              <label><span>评价窗口</span><select id="review-test-window"><option value="t1">T+1</option><option value="t3">T+3</option><option value="t5" selected>T+5</option><option value="t20">T+20</option></select></label>
-              <label><span>最少案例</span><input id="review-test-min-cases" type="number" min="1" max="10000" step="1" value="20" /></label>
-            </div>
-            <label><span>样本纳入条件</span><textarea id="review-test-cohort" rows="3" maxlength="3000" placeholder="财报事件、市场环境、Stage、波动率等；未交易但满足条件的案例也应纳入。"></textarea></label>
-            <label><span>排除条件</span><textarea id="review-test-exclusions" rows="2" maxlength="2000" placeholder="必须在读取结果前登记。"></textarea></label>
-            <label><span>成功标准</span><textarea id="review-test-success-criteria" rows="2" maxlength="2000" required placeholder="例如：至少 20 个独立案例后，中位 MAE 改善 ≥ 0.2R，且净期望不下降。"></textarea></label>
-            <div class="review-form-actions"><span>人工结果只会追加为观察样本，不会完成或核验整个协议；正式晋级等待确定性结果引擎。</span><button class="review-button primary" type="submit">登记测试</button></div>
-          </form>
-          </details>
-        </div>
-        </details>
-      </section>
-
-      <section class="review-panel" id="review-panel-rules" role="tabpanel" aria-labelledby="review-tab-rules" hidden>
-        <div class="review-flow-grid">
-          <details class="review-manual-entry">
-            <summary>高级：手动建立候选规则</summary>
-          <form class="review-form review-flow-form" id="review-rule-form">
-            <div class="review-section-heading"><div><span>VERSIONED RULE</span><h2>建立候选规则</h2></div><span class="review-state-badge hypothesis">HYPOTHESIS</span></div>
-            <label><span>规则名称</span><input id="review-rule-title" type="text" maxlength="160" required placeholder="财报前好消息不涨的减仓纪律" /></label>
-            <label><span>观察条件</span><textarea id="review-rule-condition" rows="3" maxlength="3000" required placeholder="必须是事前可观察的条件。"></textarea></label>
-            <label><span>对应动作</span><textarea id="review-rule-action" rows="3" maxlength="3000" required placeholder="触发后执行什么，仓位或保护如何变化？"></textarea></label>
-            <label><span>失效与反证</span><textarea id="review-rule-invalidation" rows="3" maxlength="3000" required placeholder="什么证据出现时，这条规则应停止使用？"></textarea></label>
-            <label><span>适用范围</span><input id="review-rule-scope" type="text" maxlength="500" placeholder="标的、行业、Stage、市场环境" /></label>
-            <div class="review-form-actions"><span>新规则从假设开始，不因单次盈亏直接晋升。</span><button class="review-button primary" type="submit">建立规则</button></div>
-          </form>
-          </details>
+        <details class="review-validation-history">
+          <summary>规则与决策历史 <span id="review-rule-count">0</span> 条规则 · <span id="review-due-count">0</span> 项待决策</summary>
+          <p class="review-card-note">所有旧规则、版本和裁决继续保留，只读查看。继续观察、纳入样本、改版与退役统一在上方验证卡处理；新的验证从周期复盘的 AI 草案开始。</p>
+          <h3>规则档案</h3>
           <div class="review-flow-list" id="review-rule-list"></div>
-        </div>
-      </section>
-
-      <section class="review-panel" id="review-panel-governance" role="tabpanel" aria-labelledby="review-tab-governance" hidden>
-        <div class="review-flow-grid governance">
-          <details class="review-manual-entry">
-            <summary>人工裁决一条规则</summary>
-          <form class="review-form review-flow-form" id="review-governance-form">
-            <div class="review-section-heading"><div><span>RULE GOVERNANCE</span><h2>记录规则Review</h2></div><span class="review-state-badge review">KEEP / CHANGE PROPOSAL / RETIRE</span></div>
-            <label><span>规则</span><select id="review-governance-rule" required><option value="">请选择规则</option></select></label>
-            <label><span>Keep</span><textarea id="review-governance-keep" rows="3" maxlength="3000" required placeholder="哪些行为或规则部分得到支持？"></textarea></label>
-            <label><span>Change</span><textarea id="review-governance-change" rows="3" maxlength="3000" required placeholder="需要怎样做出可观察、可测试的调整？"></textarea></label>
-            <label><span>Next trigger</span><textarea id="review-governance-next" rows="3" maxlength="3000" required placeholder="什么条件触发下次动作或重新审查？"></textarea></label>
-            <label><span>Review 结论</span><select id="review-governance-verdict"><option value="KEEP">KEEP</option><option value="MODIFY">提出修改（仅记录，待另行生成新版本）</option><option value="RETIRE">RETIRE（确认后立即退役）</option></select></label>
-            <div class="review-form-actions"><span>KEEP 只追加记录；提出修改不会伪装成已改版；RETIRE 会原子记录 Review 并迁移规则状态。</span><button class="review-button primary" type="submit">保存Review</button></div>
-          </form>
-          </details>
+          <h3>决策记录</h3>
           <div class="review-flow-list" id="review-governance-list"></div>
-        </div>
+        </details>
       </section>
     </main>
 
@@ -625,8 +803,26 @@
       </form>
     </dialog>
 
+    <dialog class="system-health-dialog" id="system-health-dialog" aria-labelledby="system-health-title" aria-describedby="system-health-description">
+      <header class="system-health-heading">
+        <div><span>LOCAL STATUS · READ ONLY</span><h2 id="system-health-title">系统状态</h2></div>
+        <button class="system-health-close" id="system-health-close" type="button" aria-label="关闭系统状态" autofocus>×</button>
+      </header>
+      <p id="system-health-description" class="system-health-description">查看本机已掌握的连接、保存与数据覆盖状态；不会发起券商查询、补数据或运行 Agent。</p>
+      <div class="system-health-toolbar">
+        <span id="system-health-asof">尚未读取</span>
+        <button class="ghost-button" id="system-health-refresh" type="button">刷新本机状态</button>
+      </div>
+      <p class="system-health-message" id="system-health-message" role="status" aria-live="polite">正在读取本机状态…</p>
+      <div class="system-health-body" id="system-health-body" aria-busy="false" tabindex="0" aria-label="系统状态详情"></div>
+      <footer class="system-health-footer">连接可用不代表数据实时或证据完整；未知、缓存与缺口会分别保留。</footer>
+    </dialog>
+
     <script src="./markdown.js"></script>
+    <script src="./radar-view.js"></script>
     <script src="./renderer.js"></script>
+    <script src="./research.js"></script>
     <script src="./review.js"></script>
+    <script src="./health.js"></script>
   </body>
 </html>

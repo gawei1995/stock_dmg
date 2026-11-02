@@ -43,6 +43,45 @@ test("Longbridge client rejects every tool outside the query allowlist before co
   await assert.rejects(client.call("watchlist_create", {}), /not in the desktop read-only allowlist/);
 });
 
+test("Longbridge rejects business failures hidden inside successful MCP envelopes without dropping quote permission sessions", async () => {
+  for (const structured of [false, true]) {
+    const client = new LongbridgeClient({ store: memoryStore, openExternal: async () => {} });
+    const payload = { error_code: 301604, message: "no quote access", recoverable: "none" };
+    let closed = false;
+    client.client = { async callTool() {
+      return structured
+        ? { isError: false, structuredContent: payload }
+        : { isError: false, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    } };
+    client.transport = { async close() { closed = true; } };
+    client.tools.set("option_quote", {});
+    await assert.rejects(client.call("option_quote", { symbols: ["TEST260918P100000.US"] }), (error) => {
+      assert.equal(error.kind, "permission");
+      assert.equal(error.code, 301604);
+      assert.equal(error.retryable, false);
+      assert.equal(error.reauth, false);
+      assert.match(error.message, /301604: no quote access/);
+      return true;
+    });
+    assert.equal(closed, false);
+    assert.equal(client.connected, true);
+    assert.equal(client.supports("option_quote"), true);
+  }
+});
+
+test("Longbridge does not mistake a zero business code for an error or ignore unknown failures", async () => {
+  const client = new LongbridgeClient({ store: memoryStore, openExternal: async () => {} });
+  let payload = { error_code: 0, list: [] };
+  client.client = { async callTool() { return { structuredContent: payload }; } };
+  client.transport = { async close() {} };
+  client.tools.set("quote", {});
+  assert.deepEqual(await client.call("quote", {}), payload);
+  payload = { error_code: "0", list: [] };
+  assert.deepEqual(await client.call("quote", {}), payload);
+  payload = { error_code: 999999, message: "upstream data unavailable" };
+  await assert.rejects(client.call("quote", {}), /999999: upstream data unavailable/);
+});
+
 test("broker history queries are allowlisted without making them connection requirements", async () => {
   const client = new LongbridgeClient({
     endpoint: "https://mcp.longbridge.com/v2",
@@ -123,6 +162,118 @@ test("OAuth discovery and MCP transport share the injected system-proxy fetch", 
   assert.equal(callbackClosed, true);
   assert.equal(status.endpoint, "https://mcp.longbridge.com/v2");
   assert.equal(status.networkStack, "electron-system-proxy");
+});
+
+test("disconnect invalidates an in-flight connection so it cannot replace the next account session", async () => {
+  let releaseFirstConnection;
+  const firstConnectionGate = new Promise((resolve) => { releaseFirstConnection = resolve; });
+  const clients = [];
+  const transports = [];
+  const requiredTools = [
+    "account_balance",
+    "candlesticks",
+    "exchange_rate",
+    "quote",
+    "stock_positions",
+  ].map((name) => ({ name }));
+  let clientIndex = 0;
+  const broker = new LongbridgeClient({
+    store: memoryStore,
+    openExternal: async () => {},
+    authFn: async () => "AUTHORIZED",
+    callbackFactory: () => ({
+      redirectUrl: "http://127.0.0.1:54321/callback",
+      async start() {},
+      setExpectedState() {},
+      async close() {},
+    }),
+    clientFactory: () => {
+      const index = clientIndex++;
+      const client = {
+        async connect() {
+          if (index === 0) await firstConnectionGate;
+        },
+        async listTools() { return { tools: requiredTools }; },
+      };
+      clients.push(client);
+      return client;
+    },
+    transportFactory: () => {
+      const transport = { closed: false, async close() { this.closed = true; } };
+      transports.push(transport);
+      return transport;
+    },
+  });
+
+  const oldConnect = broker.connect({ interactive: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  await broker.disconnect({ forget: true });
+  const currentStatus = await broker.connect({ interactive: false });
+  assert.equal(currentStatus.connected, true);
+  assert.equal(broker.client, clients[1]);
+
+  releaseFirstConnection();
+  await assert.rejects(oldConnect, (error) => {
+    assert.equal(error.code, "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION");
+    return true;
+  });
+  assert.equal(transports[0].closed, true);
+  assert.equal(broker.client, clients[1]);
+  assert.equal(broker.connected, true);
+});
+
+test("a late tool result from the old session is rejected without closing the replacement session", async () => {
+  let releaseOldCall;
+  const oldCallGate = new Promise((resolve) => { releaseOldCall = resolve; });
+  const broker = new LongbridgeClient({
+    store: memoryStore,
+    openExternal: async () => {},
+  });
+  const oldClient = {
+    async callTool() {
+      await oldCallGate;
+      return { content: [{ type: "text", text: JSON.stringify({ list: [{ account: "old" }] }) }] };
+    },
+  };
+  broker.client = oldClient;
+  broker.transport = { async close() {} };
+  broker.tools.set("stock_positions", {});
+  const oldCall = broker.call("stock_positions", {});
+
+  await broker.disconnect();
+  const replacementClient = { async callTool() { return { content: [] }; } };
+  broker.client = replacementClient;
+  broker.transport = { async close() {} };
+  broker.tools.set("stock_positions", {});
+  releaseOldCall();
+
+  await assert.rejects(oldCall, (error) => {
+    assert.equal(error.code, "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION");
+    return true;
+  });
+  assert.equal(broker.client, replacementClient);
+  assert.equal(broker.connected, true);
+});
+
+test("OAuth persistence rejects writes from an invalidated authorization generation", async () => {
+  const writes = [];
+  let current = true;
+  const oauth = new DesktopOAuthProvider({
+    redirectUrl: "http://127.0.0.1:54321/callback",
+    store: {
+      async get() { return null; },
+      async set(key, value) { writes.push([key, value]); },
+      async delete(key) { writes.push([key, undefined]); },
+    },
+    onRedirect: async () => {},
+    commitGuard: () => current,
+  });
+  current = false;
+  await assert.rejects(oauth.saveTokens({ access_token: "old-account" }), (error) => {
+    assert.equal(error.code, "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION");
+    return true;
+  });
+  assert.deepEqual(writes, []);
 });
 
 test("global OAuth policy rejects mainland authorization hosts", async () => {

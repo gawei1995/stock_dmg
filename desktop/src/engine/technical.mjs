@@ -1,4 +1,6 @@
 import { inferDailyCandleTradeDate } from "../data/normalize.mjs";
+import { buildDailySequence } from "./daily-sequence.mjs";
+import { assessDailyCandleEvidence, usCloseMinute } from "./market-evidence.mjs";
 
 export const EMA_PERIODS = [3, 5, 8, 13, 21, 144, 169];
 export const FIB_RATIOS = [0.382, 0.618, 1, 1.618];
@@ -40,7 +42,7 @@ export function calculateTechnical(candles, options = {}) {
   const provisional = buildProvisionalMetadata(inputCandles.at(-1), lastBar);
 
   if (!completedCandles.length) {
-    return emptyTechnical({
+    return attachMarketEvidence(emptyTechnical({
       reason: inputCandles.length
         ? "最后一根日 K 尚未确认收盘，且没有更早的已完成 K 线"
         : "没有可用的长桥 K 线",
@@ -48,7 +50,7 @@ export function calculateTechnical(candles, options = {}) {
       lastBar,
       provisional,
       provenance,
-    });
+    }), options);
   }
 
   const closes = completedCandles.map((bar) => Number(bar.close));
@@ -92,8 +94,9 @@ export function calculateTechnical(candles, options = {}) {
       ? "partial"
       : "degraded";
   const fib = calculateFib(completedCandles);
+  const dailySequence = safeDailySequence(completedCandles);
 
-  return {
+  return attachMarketEvidence({
     status,
     reason:
       status === "complete"
@@ -137,6 +140,7 @@ export function calculateTechnical(candles, options = {}) {
       priorHigh: Number.isFinite(prior20High) ? round(prior20High) : null,
     },
     fib,
+    dailySequence,
     capabilities: {
       fastEma: ema[21] != null,
       longEma: longAvailable,
@@ -147,7 +151,13 @@ export function calculateTechnical(candles, options = {}) {
       officialBar: true,
       provisionalBar: provisional.available,
     },
-  };
+    capabilityMatrix: technicalCapabilityMatrix({
+      barCount: completedCandles.length,
+      longAvailable,
+      longMature,
+      dailySequence,
+    }),
+  }, options);
 }
 
 export function calculateFib(candles, lookback = 180, confirmBars = 3) {
@@ -220,8 +230,13 @@ export function classifyLastDailyBar(bar, options = {}) {
   const analysisTime = normalizeAnalysisTime(options.analysisTime);
   const explicit = explicitBarStatus(bar);
   const market = resolveMarket(options, bar);
-  const session = DAILY_SESSION_CONFIG[market] ?? null;
   const dateMetadata = resolveDailyBarDateMetadata(bar, options);
+  const regularSession = DAILY_SESSION_CONFIG[market] ?? null;
+  const closeMinute = market === "US" && dateMetadata.tradeDate
+    ? usCloseMinute(dateMetadata.tradeDate) : regularSession?.closeMinute;
+  const session = regularSession && market === "US"
+    ? { ...regularSession, closeMinute, label: `${String(Math.floor(closeMinute / 60)).padStart(2, "0")}:${String(closeMinute % 60).padStart(2, "0")} ET` }
+    : regularSession;
   if (explicit) {
     return {
       status: explicit.status,
@@ -345,6 +360,7 @@ function emptyTechnical({
     emaSlope5d: {},
     emaMaturity,
     fib: null,
+    dailySequence: safeDailySequence([]),
     range20: { priorLow: null, priorHigh: null },
     capabilities: {
       fastEma: false,
@@ -356,7 +372,94 @@ function emptyTechnical({
       officialBar: false,
       provisionalBar: provisional.available,
     },
+    capabilityMatrix: technicalCapabilityMatrix({
+      barCount: 0,
+      longAvailable: false,
+      longMature: false,
+      dailySequence: null,
+    }),
   };
+}
+
+function attachMarketEvidence(technical, options) {
+  const coverage = options?.coverage ?? null;
+  const marketData = assessDailyCandleEvidence({
+    coverage,
+    technical,
+    symbol: options?.symbol,
+    analysisTime: options?.analysisTime,
+  });
+  if (!marketData) return technical;
+  return {
+    ...technical,
+    marketData,
+    calculation: {
+      ...technical.calculation,
+      dataset: {
+        schemaVersion: marketData.schemaVersion,
+        source: marketData.source,
+        originSource: marketData.originSource,
+        endpoint: marketData.endpoint,
+        fetchedAt: marketData.fetchedAt,
+        cacheAgeMs: marketData.cacheAgeMs,
+        expectedLatestTradeDate: marketData.expectedLatestTradeDate,
+        latestTradeDate: marketData.latestTradeDate,
+        quality: marketData.freshForSizing
+          ? "sizing_ready"
+          : marketData.freshForDecision
+            ? "decision_ready"
+            : marketData.freshForResearch
+              ? "research_only"
+              : "unavailable",
+        reasonCodes: marketData.reasonCodes,
+      },
+    },
+  };
+}
+
+function technicalCapabilityMatrix({ barCount, longAvailable, longMature, dailySequence }) {
+  const status = (available, complete = available) => (
+    !available ? "unavailable" : complete ? "complete" : "warming"
+  );
+  return {
+    dailyBars: status(barCount > 0),
+    dailyFastEma: status(barCount >= 21),
+    dailyLongEma: status(longAvailable, longMature),
+    dailySequence: dailySequence?.status ?? "unavailable",
+    weeklyStructure: "unavailable",
+    execution60m: "unavailable",
+    costProfile14d28d: "unavailable",
+    anchoredVwap: "unavailable",
+    benchmarkRelativeStrength: "unavailable",
+    optionsStructure: "unavailable",
+  };
+}
+
+function safeDailySequence(candles) {
+  try {
+    return buildDailySequence(candles);
+  } catch (error) {
+    return {
+      schemaVersion: 1,
+      methodVersion: "daily-sequence-v1",
+      status: "unavailable",
+      inputHash: null,
+      input: {
+        observationCount: Array.isArray(candles) ? candles.length : 0,
+        startAt: null,
+        endAt: null,
+        order: "ascending",
+        completedBarsAssumed: true,
+        priceAdjustment: "caller_supplied",
+        tradeSession: "caller_supplied",
+      },
+      metrics: null,
+      error: {
+        code: String(error?.code ?? "daily_sequence_invalid_input"),
+        message: String(error?.message ?? error).slice(0, 500),
+      },
+    };
+  }
 }
 
 function describeEmaMaturity(barCount, period) {

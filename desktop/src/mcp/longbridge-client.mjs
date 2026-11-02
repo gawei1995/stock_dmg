@@ -90,6 +90,10 @@ export class LongbridgeClient {
     this.transport = null;
     this.tools = new Map();
     this.connecting = null;
+    this.connectingGeneration = null;
+    this.connectionGeneration = 0;
+    this.authorizationCallbacks = new Set();
+    this.closedAuthorizationCallbacks = new WeakSet();
   }
 
   get connected() {
@@ -111,20 +115,29 @@ export class LongbridgeClient {
 
   async connect({ interactive = true } = {}) {
     if (this.connected) return this.status();
-    if (this.connecting) return this.connecting;
-    this.connecting = this.#connect({ interactive }).finally(() => {
-      this.connecting = null;
+    const generation = this.connectionGeneration;
+    if (this.connecting && this.connectingGeneration === generation) return this.connecting;
+    const connecting = this.#connect({ interactive, generation }).finally(() => {
+      if (this.connecting === connecting) {
+        this.connecting = null;
+        this.connectingGeneration = null;
+      }
     });
-    return this.connecting;
+    this.connecting = connecting;
+    this.connectingGeneration = generation;
+    return connecting;
   }
 
-  async #connect({ interactive }) {
+  async #connect({ interactive, generation }) {
     const callback = this.callbackFactory();
+    this.authorizationCallbacks.add(callback);
     await callback.start();
+    this.#assertConnectionGeneration(generation);
     const provider = new DesktopOAuthProvider({
       redirectUrl: callback.redirectUrl,
       store: this.store,
       keyPrefix: this.credentialPrefix,
+      commitGuard: () => generation === this.connectionGeneration,
       onRedirect: async (url) => {
         if (!interactive) {
           throw new Error("Longbridge authorization is required.");
@@ -142,9 +155,11 @@ export class LongbridgeClient {
         scope: LONGBRIDGE_READ_SCOPE,
         fetchFn: this.fetchFn,
       });
+      this.#assertConnectionGeneration(generation);
       if (authResult === "REDIRECT") {
         if (!interactive) throw new Error("Longbridge authorization is required.");
         const { code, state } = await callback.waitForCallback();
+        this.#assertConnectionGeneration(generation);
         if (!provider.validateState(state)) {
           throw new Error("Longbridge OAuth state validation failed.");
         }
@@ -154,9 +169,14 @@ export class LongbridgeClient {
           scope: LONGBRIDGE_READ_SCOPE,
           fetchFn: this.fetchFn,
         });
+        this.#assertConnectionGeneration(generation);
       }
-      await this.#attempt(provider);
-      const listed = await this.client.listTools();
+      await this.#attempt(provider, generation);
+      this.#assertConnectionGeneration(generation);
+      const activeClient = this.client;
+      const listed = await activeClient.listTools();
+      this.#assertConnectionGeneration(generation);
+      if (activeClient !== this.client) throw staleConnectionGenerationError();
       this.tools = new Map(listed.tools.map((tool) => [tool.name, tool]));
       const forbidden = ["submit_order", "replace_order", "cancel_order"].filter((name) =>
         this.tools.has(name),
@@ -180,24 +200,38 @@ export class LongbridgeClient {
       });
       return this.status();
     } catch (error) {
-      this.tools.clear();
-      await this.#closeClient();
+      if (generation === this.connectionGeneration) {
+        this.tools.clear();
+        await this.#closeClient();
+      }
       throw error;
     } finally {
-      await callback.close();
+      await this.#closeAuthorizationCallback(callback);
     }
   }
 
-  async #attempt(provider) {
-    this.client = this.clientFactory(
+  async #attempt(provider, generation) {
+    const candidateClient = this.clientFactory(
       { name: "trading-cockpit-desktop", version: this.clientVersion },
       { capabilities: {} },
     );
-    this.transport = this.transportFactory(new URL(this.endpoint), {
+    const candidateTransport = this.transportFactory(new URL(this.endpoint), {
       authProvider: provider,
       fetch: this.fetchFn,
     });
-    await this.client.connect(this.transport);
+    try {
+      await candidateClient.connect(candidateTransport);
+      this.#assertConnectionGeneration(generation);
+    } catch (error) {
+      try {
+        await candidateTransport?.close?.();
+      } catch {
+        // Best effort cleanup of a connection invalidated during setup.
+      }
+      throw error;
+    }
+    this.client = candidateClient;
+    this.transport = candidateTransport;
   }
 
   status() {
@@ -223,16 +257,24 @@ export class LongbridgeClient {
     if (!this.tools.has(name)) {
       throw new Error(`Longbridge tool ${name} is unavailable for this account.`);
     }
+    const generation = this.connectionGeneration;
+    const activeClient = this.client;
     let result;
     try {
       const timeout = normalizeTimeoutMs(timeoutMs, this.toolTimeouts[name]);
-      result = await this.client.callTool(
+      result = await activeClient.callTool(
         { name, arguments: args },
         undefined,
         { signal, timeout, maxTotalTimeout: timeout },
       );
     } catch (error) {
+      if (generation !== this.connectionGeneration || activeClient !== this.client) {
+        throw staleConnectionGenerationError();
+      }
       throw await this.#handleToolError(name, error);
+    }
+    if (generation !== this.connectionGeneration || activeClient !== this.client) {
+      throw staleConnectionGenerationError();
     }
     if (result.isError) {
       throw await this.#handleToolError(
@@ -240,7 +282,19 @@ export class LongbridgeClient {
         new Error(extractErrorText(result) || `${name} failed.`),
       );
     }
-    return extractToolData(result);
+    const data = extractToolData(result);
+    // Some broker failures arrive as successful MCP envelopes (isError=false).
+    // Never turn their empty placeholder fields into a successful data refresh.
+    if (data && !Array.isArray(data) && typeof data === "object"
+        && data.error_code != null && String(data.error_code).trim() !== ""
+        && String(data.error_code) !== "0") {
+      const code = String(data.error_code).slice(0, 40);
+      const detail = String(data.message || "券商返回业务错误").slice(0, 500);
+      const error = new Error(`${code}: ${detail}`);
+      error.code = data.error_code;
+      throw await this.#handleToolError(name, error);
+    }
+    return data;
   }
 
   async #handleToolError(name, error) {
@@ -253,6 +307,12 @@ export class LongbridgeClient {
   }
 
   async disconnect({ forget = false } = {}) {
+    this.connectionGeneration += 1;
+    this.connecting = null;
+    this.connectingGeneration = null;
+    const callbacks = [...this.authorizationCallbacks];
+    this.authorizationCallbacks.clear();
+    await Promise.allSettled(callbacks.map((callback) => this.#closeAuthorizationCallback(callback)));
     await this.#closeClient();
     this.tools.clear();
     if (forget) {
@@ -268,6 +328,17 @@ export class LongbridgeClient {
       }
     }
     this.onStatus({ state: "disconnected", message: "长桥未连接" });
+  }
+
+  #assertConnectionGeneration(generation) {
+    if (generation !== this.connectionGeneration) throw staleConnectionGenerationError();
+  }
+
+  async #closeAuthorizationCallback(callback) {
+    this.authorizationCallbacks.delete(callback);
+    if (!callback || this.closedAuthorizationCallbacks.has(callback)) return;
+    this.closedAuthorizationCallbacks.add(callback);
+    await callback.close();
   }
 
   async #closeClient() {
@@ -322,6 +393,9 @@ export function classifyLongbridgeError(error) {
   ) {
     return { kind: "permission", code: 403308, retryable: false, reauth: true };
   }
+  if (explicitCode === 301604 || /\b301604\b|no quote access/.test(normalized)) {
+    return { kind: "permission", code: 301604, retryable: false, reauth: false };
+  }
   if (/insufficient[_ ]scope|permission denied|\b403\b/.test(normalized)) {
     return { kind: "permission", code: 403, retryable: false, reauth: false };
   }
@@ -337,6 +411,12 @@ function normalizeTimeoutMs(value, fallback) {
     return Math.min(Math.max(Math.trunc(parsed), 1), 120_000);
   }
   return fallback;
+}
+
+function staleConnectionGenerationError() {
+  const error = new Error("Longbridge authorization changed while the connection was opening.");
+  error.code = "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION";
+  return error;
 }
 
 function validateEndpoint(value) {

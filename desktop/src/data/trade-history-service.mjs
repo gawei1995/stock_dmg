@@ -1,7 +1,8 @@
 import { inferInstrumentType, normalizeCandles } from "./normalize.mjs";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const STORE_KEY = "brokerTradeHistoryV1";
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DEFAULT_LOOKBACK_DAYS = 180;
 const MAX_LOOKBACK_DAYS = 730;
 const API_WINDOW_DAYS = 90;
@@ -27,11 +28,15 @@ const ORDER_DETAIL_RETRY_DELAY_MS = 100;
 const BROKER_PRICE_AUDIT_CONCURRENCY = 2;
 const BROKER_PRICE_AUDIT_CANDLE_COUNT = 1_000;
 const BROKER_PRICE_AUDIT_MAX_SYMBOLS = 12;
+const BROKER_PRICE_AUDIT_MAX_SYMBOL_DATES = 24;
+const EQUITY_PRICE_OUTLIER_PEER_WINDOW_MS = 45 * 24 * 60 * 60 * 1000;
+const EQUITY_PRICE_OUTLIER_MIN_PEER_ORDERS = 3;
+const EQUITY_PRICE_OUTLIER_RATIO = 4;
 
 /**
  * Read-only Longbridge order/execution archive used by the review workspace.
- * It deliberately stores no account identifiers and never exposes brokerage
- * write operations.
+ * It stores only the host-issued opaque account scope (never a raw account
+ * identifier) and never exposes brokerage write operations.
  */
 export class TradeHistoryService {
   constructor({
@@ -39,20 +44,135 @@ export class TradeHistoryService {
     store,
     onStatus = () => {},
     orderDetailMinIntervalMs = ORDER_DETAIL_MIN_START_INTERVAL_MS,
+    getAccountScopeId = () => null,
+    requireAccountScope = false,
+    authorizationLifecycle = null,
   }) {
     this.longbridge = longbridge;
     this.store = store;
     this.onStatus = onStatus;
     this.orderDetailMinIntervalMs = clampInteger(orderDetailMinIntervalMs, 0, 5_000, ORDER_DETAIL_MIN_START_INTERVAL_MS);
+    this.getAccountScopeId = getAccountScopeId;
+    this.requireAccountScope = requireAccountScope === true;
+    this.authorizationLifecycle = authorizationLifecycle;
+    this.operationContext = new AsyncLocalStorage();
+    this.operationQueue = Promise.resolve();
+    this.pendingOperationCount = 0;
     this.orderDetailStartQueue = Promise.resolve();
     this.orderDetailLastStartedAt = 0;
     this.syncing = null;
-    this.eventLookupQueue = Promise.resolve();
+    this.syncingKey = null;
+  }
+
+  #captureOperation() {
+    return {
+      accountScopeId: normalizeAccountScopeId(this.getAccountScopeId?.()),
+      authorizationGeneration: this.authorizationLifecycle?.capture(),
+      connectionGeneration: this.longbridge.connectionGeneration,
+    };
+  }
+
+  get busy() {
+    return this.pendingOperationCount > 0;
+  }
+
+  #assertOperation(operation = this.operationContext.getStore()) {
+    if (!operation) return;
+    this.authorizationLifecycle?.assertCurrent(operation.authorizationGeneration);
+    if (operation.accountScopeId !== normalizeAccountScopeId(this.getAccountScopeId?.())
+        || operation.connectionGeneration !== this.longbridge.connectionGeneration) {
+      const error = new Error("长桥账户或授权已在历史查询期间变化；旧结果未提交，请重新同步。");
+      error.code = "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION";
+      error.retryable = true;
+      throw error;
+    }
+  }
+
+  #scheduleOperation(task, operation = this.#captureOperation()) {
+    // Calendar enrichment and order sync update the same archive. Serialize
+    // both so a slow calendar response cannot overwrite newer order evidence.
+    const queued = this.operationQueue;
+    this.pendingOperationCount += 1;
+    const execute = () => queued.then(() => this.operationContext.run(operation, async () => {
+      this.#assertOperation();
+      try {
+        const result = await task();
+        this.#assertOperation();
+        return result;
+      } catch (error) {
+        this.#assertOperation();
+        throw error;
+      }
+    }));
+    const tracked = this.authorizationLifecycle
+      ? this.authorizationLifecycle.track(operation.authorizationGeneration, execute)
+      : execute();
+    const pending = tracked.finally(() => { this.pendingOperationCount -= 1; });
+    this.operationQueue = pending.catch(() => {});
+    return pending;
+  }
+
+  async #call(tool, args) {
+    this.#assertOperation();
+    const payload = await this.longbridge.call(tool, args);
+    this.#assertOperation();
+    return payload;
+  }
+
+  async #commitArchive(archive) {
+    const operation = this.operationContext.getStore();
+    this.#assertOperation(operation);
+    const previous = await this.store.get(STORE_KEY);
+    this.#assertOperation(operation);
+    // Preserve each account's last archive when the active view changes. The
+    // legacy top-level shape remains the active archive for older readers;
+    // nested archives are normalized (no recursive copies or merged scopes).
+    const scopedArchives = { ...(previous?.scopedArchives ?? {}) };
+    const previousArchive = normalizeArchive(previous);
+    if (previousArchive.accountScopeId) {
+      Object.defineProperty(scopedArchives, previousArchive.accountScopeId, {
+        value: previousArchive, enumerable: true, configurable: true, writable: true,
+      });
+    } else if (previousArchive.syncedAt || previousArchive.orders.length || previousArchive.executions.length) {
+      Object.defineProperty(scopedArchives, "legacy_unbound", {
+        value: previousArchive, enumerable: true, configurable: true, writable: true,
+      });
+    }
+    if (archive.accountScopeId) {
+      Object.defineProperty(scopedArchives, archive.accountScopeId, {
+        value: normalizeArchive(archive), enumerable: true, configurable: true, writable: true,
+      });
+    }
+    // The store checks this again inside its write queue immediately before
+    // the atomic commit, not only before asynchronous encryption/filesystem IO.
+    await this.store.set(STORE_KEY, { ...archive, scopedArchives }, { commitGuard: () => {
+      this.#assertOperation(operation);
+      return true;
+    } });
+    this.#assertOperation(operation);
   }
 
   async cached() {
     const value = await this.store.get(STORE_KEY);
-    return normalizeArchive(value);
+    this.#assertOperation();
+    const archive = normalizeArchive(value);
+    const currentScopeId = normalizeAccountScopeId(this.getAccountScopeId?.());
+    if (!currentScopeId) return archive;
+    if (archive.accountScopeId === currentScopeId) return archive;
+    if (value?.scopedArchives && Object.hasOwn(value.scopedArchives, currentScopeId)) {
+      const scoped = normalizeArchive(value.scopedArchives[currentScopeId]);
+      if (scoped.accountScopeId === currentScopeId) return scoped;
+    }
+    if (!archive.syncedAt && !archive.orders.length && !archive.executions.length) {
+      return { ...archive, accountScopeId: currentScopeId };
+    }
+    return {
+      ...emptyArchive(),
+      accountScopeId: currentScopeId,
+      warnings: [archive.accountScopeId
+        ? "本机交易历史属于另一匿名账户作用域；已隔离，需为当前账户重新同步。"
+        : "旧交易历史缺少匿名账户作用域；为防跨账户混合已隔离，需重新同步。"],
+    };
   }
 
   async intake(options = {}) {
@@ -68,13 +188,11 @@ export class TradeHistoryService {
   }
 
   async lookupEventCandidates({ recordIds = [], daysBefore = 45, daysAfter = 45 } = {}) {
-    const pending = this.eventLookupQueue.then(() => this.#lookupEventCandidates({
+    return this.#scheduleOperation(() => this.#lookupEventCandidates({
       recordIds,
       daysBefore,
       daysAfter,
     }));
-    this.eventLookupQueue = pending.catch(() => {});
-    return pending;
   }
 
   async preloadRecentEventCandidates({ symbols = [], asOf = null } = {}) {
@@ -84,12 +202,10 @@ export class TradeHistoryService {
     if (!normalizedSymbols.length) {
       return { status: "empty", message: null, eventCandidates: [] };
     }
-    const pending = this.eventLookupQueue.then(() => this.#preloadRecentEventCandidates({
+    return this.#scheduleOperation(() => this.#preloadRecentEventCandidates({
       symbols: normalizedSymbols,
       asOf,
     }));
-    this.eventLookupQueue = pending.catch(() => {});
-    return pending;
   }
 
   async #preloadRecentEventCandidates({ symbols, asOf }) {
@@ -103,7 +219,6 @@ export class TradeHistoryService {
         eventCandidates: [],
       };
     }
-    if (this.syncing) await this.syncing;
     const archive = await this.cached();
     const referenceMs = Math.min(parseOptionalDate(asOf) ?? Date.now(), Date.now());
     const windows = [{
@@ -155,7 +270,6 @@ export class TradeHistoryService {
         eventCandidates: [],
       };
     }
-    if (this.syncing) await this.syncing;
     const archive = await this.cached();
     const selected = resolveArchivedRecords(archive, recordIds);
     const selectedSpanMs = Date.parse(selected.activityTimes.at(-1)) - Date.parse(selected.activityTimes[0]);
@@ -195,7 +309,7 @@ export class TradeHistoryService {
         .slice(0, 10_000),
       eventCoverage: mergeFinanceCoverage(archive.eventCoverage, refresh.coverage),
     };
-    await this.store.set(STORE_KEY, nextArchive);
+    await this.#commitArchive(nextArchive);
     const candidates = financeCandidatesForSelection(nextArchive, selected);
     return {
       status: warnings.length ? "degraded" : "ready",
@@ -219,14 +333,26 @@ export class TradeHistoryService {
         .slice(0, 10_000),
       eventCoverage: mergeFinanceCoverage(archive.eventCoverage, refresh.coverage),
     };
-    await this.store.set(STORE_KEY, nextArchive);
+    await this.#commitArchive(nextArchive);
     return nextArchive;
   }
 
   async sync({ startAt = null, endAt = null, symbol = null } = {}) {
-    if (this.syncing) return this.syncing;
-    this.syncing = this.#sync({ startAt, endAt, symbol }).finally(() => {
+    const operation = this.#captureOperation();
+    const dateKey = (value) => value == null || !Number.isFinite(Date.parse(String(value)))
+      ? null : new Date(Date.parse(String(value))).toISOString();
+    const key = JSON.stringify({ ...operation, startAt: dateKey(startAt), endAt: dateKey(endAt), symbol: normalizeSymbol(symbol) });
+    if (this.syncing) {
+      if (key === this.syncingKey) return this.syncing;
+      const error = new Error("另一日期、标的或账户范围的历史同步正在进行；请等待本轮完成后重试，新范围尚未查询。");
+      error.code = "HISTORY_SYNC_BUSY";
+      error.retryable = true;
+      throw error;
+    }
+    this.syncingKey = key;
+    this.syncing = this.#scheduleOperation(() => this.#sync({ startAt, endAt, symbol }), operation).finally(() => {
       this.syncing = null;
+      this.syncingKey = null;
     });
     return this.syncing;
   }
@@ -251,6 +377,10 @@ export class TradeHistoryService {
       throw new Error("长桥尚未连接，无法同步历史订单与成交。");
     }
     const range = normalizeRange({ startAt, endAt });
+    const accountScopeId = normalizeAccountScopeId(this.getAccountScopeId?.());
+    if (!accountScopeId && this.requireAccountScope) {
+      throw new Error("长桥交易历史缺少可验证的本机账户作用域，已停止同步。请先刷新真实持仓。");
+    }
     const normalizedSymbol = normalizeSymbol(symbol);
     const warnings = [];
     const capabilities = {
@@ -335,11 +465,13 @@ export class TradeHistoryService {
       (item) => item.tradeId,
     ).sort(sortNewest("doneAt"));
     const reconciled = auditBrokerPackages(normalizedOrders, normalizedExecutions);
-    const orders = reconciled.orders;
-    const executions = await this.#enrichExcludedEquityMarketEvidence({
+    const marketAudited = await this.#enrichEquityMarketEvidence({
+      orders: reconciled.orders,
       executions: reconciled.executions,
       warnings,
     });
+    const orders = marketAudited.orders;
+    const executions = marketAudited.executions;
 
     const events = mergeById(
       previous.events.map(normalizeFinanceEvent).filter(Boolean),
@@ -361,6 +493,7 @@ export class TradeHistoryService {
     const archive = {
       schemaVersion: SCHEMA_VERSION,
       source: "Longbridge MCP · read only",
+      accountScopeId,
       syncedAt: new Date().toISOString(),
       range: {
         startAt: new Date(range.startMs).toISOString(),
@@ -375,7 +508,7 @@ export class TradeHistoryService {
       events: events.slice(0, 10_000),
       eventCoverage: previous.eventCoverage,
     };
-    await this.store.set(STORE_KEY, archive);
+    await this.#commitArchive(archive);
     this.onStatus({
       state: warnings.length ? "degraded" : "ready",
       phase: "trade_history",
@@ -385,57 +518,125 @@ export class TradeHistoryService {
     return structuredClone(archive);
   }
 
-  async #enrichExcludedEquityMarketEvidence({ executions, warnings }) {
+  async #enrichEquityMarketEvidence({ orders, executions, warnings }) {
+    const orderRows = Array.isArray(orders) ? orders : [];
     const rows = Array.isArray(executions) ? executions : [];
-    if (!this.longbridge.supports("candlesticks")) return rows;
     const reasons = new Set([
       "multileg_order_unmodeled",
       "possible_multileg_missing_leg_metadata",
       "parent_execution_fields_conflict",
     ]);
-    const allSymbols = [...new Set(rows
-      .filter((item) => item?.brokerEvidenceAudit?.status === "excluded")
-      .filter((item) => reasons.has(item?.brokerEvidenceAudit?.reason))
-      .filter((item) => inferInstrumentType(item?.symbol) === "equity")
-      .map((item) => normalizeSymbol(item?.symbol))
-      .filter(Boolean))];
+    const priceOutlierTradeIds = identifyEquityExecutionPriceOutliers(rows);
+    const executionOrderIds = new Set(rows
+      .map((item) => cleanId(item?.orderId ?? item?.order_id))
+      .filter(Boolean));
+    const parentOnlyOrders = orderRows.filter((order) => {
+      const orderId = cleanId(order?.orderId ?? order?.order_id ?? order?.id);
+      return orderId
+        && !executionOrderIds.has(orderId)
+        && inferInstrumentType(order?.symbol) === "equity"
+        && orderHasFillEvidence(order)
+        && positiveFiniteOrNull(
+          order?.reportedExecutedPrice
+            ?? order?.priceAudit?.reportedValue
+            ?? order?.executedPrice
+            ?? order?.executed_price,
+        ) != null;
+    });
+    const parentOnlyOrderIds = new Set(parentOnlyOrders
+      .map((item) => cleanId(item?.orderId ?? item?.order_id ?? item?.id))
+      .filter(Boolean));
+    const priceOutlierOrderIds = identifyEquityOrderPriceOutliers(orderRows, rows);
+    const allTargets = [];
+    const seenTargetKeys = new Set();
+    const registerTarget = ({ symbol, tradeDate, suspicious = false }) => {
+      const targetKey = symbol && tradeDate ? `${symbol}|${tradeDate}` : null;
+      if (!targetKey) return;
+      const previous = allTargets.find((item) => item.targetKey === targetKey);
+      if (previous) {
+        previous.suspicious ||= suspicious;
+        return;
+      }
+      if (seenTargetKeys.has(targetKey)) return;
+      seenTargetKeys.add(targetKey);
+      allTargets.push({ symbol, tradeDate, targetKey, suspicious });
+    };
+    for (const execution of rows) {
+      const isExcludedPackage = execution?.brokerEvidenceAudit?.status === "excluded"
+        && reasons.has(execution?.brokerEvidenceAudit?.reason);
+      const isPriceOutlier = priceOutlierTradeIds.has(cleanId(execution?.tradeId));
+      if ((!isExcludedPackage && !isPriceOutlier)
+          || inferInstrumentType(execution?.symbol) !== "equity") continue;
+      const symbol = normalizeSymbol(execution?.symbol);
+      const tradeDate = exchangeDateForTimestamp(execution?.doneAt, symbol);
+      registerTarget({ symbol, tradeDate, suspicious: isPriceOutlier });
+    }
+    for (const order of parentOnlyOrders) {
+      const orderId = cleanId(order?.orderId ?? order?.order_id ?? order?.id);
+      const symbol = normalizeSymbol(order?.symbol);
+      const tradeDate = exchangeDateForTimestamp(
+        order?.submittedAt ?? order?.updatedAt,
+        symbol,
+      );
+      registerTarget({
+        symbol,
+        tradeDate,
+        suspicious: priceOutlierOrderIds.has(orderId),
+      });
+    }
+    allTargets.sort((left, right) => Number(right.suspicious) - Number(left.suspicious));
+    const targets = allTargets.slice(0, BROKER_PRICE_AUDIT_MAX_SYMBOL_DATES);
+    const targetKeys = new Set(targets.map((item) => item.targetKey));
+    if (allTargets.length > targets.length) {
+      warnings.push(
+        `证券成交价格核验本轮覆盖 ${targets.length} 个标的交易日；其余 ${allTargets.length - targets.length} 个候选不等待行情，强异常继续只供审计。`,
+      );
+    }
+    const allSymbols = [...new Set(targets.map((item) => item.symbol))];
     const symbols = allSymbols.slice(0, BROKER_PRICE_AUDIT_MAX_SYMBOLS);
     if (allSymbols.length > symbols.length) {
       warnings.push(
-        `证券语义行情核验本轮按最近记录覆盖 ${symbols.length} 个标的；其余 ${allSymbols.length - symbols.length} 个异常包仍按父单/成交确定性冲突排除，不等待行情旁证。`,
+        `证券语义行情核验本轮覆盖 ${symbols.length} 个标的；其余 ${allSymbols.length - symbols.length} 个候选不等待行情，既有确定性冲突或强异常继续只供审计。`,
       );
     }
-    if (!symbols.length) return rows;
-    const results = await mapWithConcurrency(
-      symbols,
-      BROKER_PRICE_AUDIT_CONCURRENCY,
-      async (symbol) => {
-        try {
-          const payload = await this.longbridge.call("candlesticks", {
-            symbol,
-            period: "day",
-            count: BROKER_PRICE_AUDIT_CANDLE_COUNT,
-            // Transaction prices are unadjusted facts; an adjusted series can
-            // manufacture a false mismatch after a split or distribution.
-            forward_adjust: false,
-            trade_sessions: "intraday",
-          });
-          return [symbol, normalizeCandles(payload, { symbol })];
-        } catch (error) {
-          warnings.push(`证券语义行情核验(${symbol}): ${safeMessage(error)}`);
-          return [symbol, []];
-        }
-      },
-    );
+    const results = this.longbridge.supports("candlesticks")
+      ? await mapWithConcurrency(
+        symbols,
+        BROKER_PRICE_AUDIT_CONCURRENCY,
+        async (symbol) => {
+          try {
+            const payload = await this.#call("candlesticks", {
+              symbol,
+              period: "day",
+              count: BROKER_PRICE_AUDIT_CANDLE_COUNT,
+              // Transaction prices are unadjusted facts; an adjusted series can
+              // manufacture a false mismatch after a split or distribution.
+              forward_adjust: false,
+              trade_sessions: "intraday",
+            });
+            return [symbol, normalizeCandles(payload, { symbol })];
+          } catch (error) {
+            warnings.push(`证券语义行情核验(${symbol}): ${safeMessage(error)}`);
+            return [symbol, []];
+          }
+        },
+      )
+      : [];
     const candlesBySymbol = new Map(results);
     const checkedAt = new Date().toISOString();
-    return rows.map((execution) => {
-      if (execution?.brokerEvidenceAudit?.status !== "excluded"
-          || !reasons.has(execution?.brokerEvidenceAudit?.reason)) return execution;
+    const auditedExecutions = rows.map((execution) => {
       const symbol = normalizeSymbol(execution.symbol);
       const tradeDate = exchangeDateForTimestamp(execution.doneAt, symbol);
-      const candle = (candlesBySymbol.get(symbol) ?? [])
-        .find((item) => item.tradeDate === tradeDate);
+      const isExcludedPackage = execution?.brokerEvidenceAudit?.status === "excluded"
+        && reasons.has(execution?.brokerEvidenceAudit?.reason);
+      const isPriceOutlier = priceOutlierTradeIds.has(cleanId(execution?.tradeId));
+      if (!isExcludedPackage && !isPriceOutlier) return execution;
+      const lookupAttempted = targetKeys.has(`${symbol}|${tradeDate}`)
+        && symbols.includes(symbol);
+      if (!lookupAttempted && !isPriceOutlier) return execution;
+      const candle = lookupAttempted
+        ? (candlesBySymbol.get(symbol) ?? []).find((item) => item.tradeDate === tradeDate)
+        : null;
       const reportedPrice = positiveFiniteOrNull(
         execution.reportedPrice
           ?? execution.priceAudit?.reportedValue
@@ -468,14 +669,127 @@ export class TradeHistoryService {
           reportedPriceInsideRange: null,
           checkedAt,
         };
+      const confirmedOutsideRange = isPriceOutlier
+        && candle
+        && reportedPrice != null
+        && (reportedPrice < candle.low || reportedPrice > candle.high);
+      const strongOutlierUnverified = isPriceOutlier && !candle;
+      const excluded = confirmedOutsideRange || strongOutlierUnverified;
       return {
         ...execution,
+        price: excluded ? null : execution.price,
         priceAudit: {
           ...(execution.priceAudit ?? {}),
+          ...(excluded ? {
+            status: "excluded",
+            reason: confirmedOutsideRange
+              ? "execution_price_outside_unadjusted_daily_range"
+              : "execution_price_unverified_strong_local_outlier",
+          } : {}),
           marketReference,
         },
       };
     });
+
+    const auditedOrders = orderRows.map((order) => {
+      const orderId = cleanId(order?.orderId ?? order?.order_id ?? order?.id);
+      if (!parentOnlyOrderIds.has(orderId)) return order;
+      const symbol = normalizeSymbol(order?.symbol);
+      const tradeDate = exchangeDateForTimestamp(
+        order?.submittedAt ?? order?.updatedAt,
+        symbol,
+      );
+      const targetKey = `${symbol}|${tradeDate}`;
+      const reportedPrice = positiveFiniteOrNull(
+        order?.reportedExecutedPrice
+          ?? order?.priceAudit?.reportedValue
+          ?? order?.executedPrice
+          ?? order?.executed_price,
+      );
+      const candle = targetKeys.has(targetKey) && symbols.includes(symbol)
+        ? (candlesBySymbol.get(symbol) ?? []).find((item) => item.tradeDate === tradeDate)
+        : null;
+      const marketReference = candle
+        ? {
+          status: "available",
+          source: "Longbridge candlesticks",
+          period: "day",
+          adjustment: "none",
+          tradeSessions: "intraday",
+          tradeDate,
+          low: candle.low,
+          high: candle.high,
+          reportedPriceInsideRange: reportedPrice != null
+            ? reportedPrice >= candle.low && reportedPrice <= candle.high
+            : null,
+          checkedAt,
+        }
+        : {
+          status: "unavailable",
+          source: "Longbridge candlesticks",
+          period: "day",
+          adjustment: "none",
+          tradeSessions: "intraday",
+          tradeDate,
+          low: null,
+          high: null,
+          reportedPriceInsideRange: null,
+          checkedAt,
+        };
+      const confirmedOutsideRange = candle
+        && reportedPrice != null
+        && (reportedPrice < candle.low || reportedPrice > candle.high);
+      const strongOutlierUnverified = priceOutlierOrderIds.has(orderId) && !candle;
+      const excluded = confirmedOutsideRange || strongOutlierUnverified;
+      const reason = confirmedOutsideRange
+        ? "parent_order_price_outside_unadjusted_daily_range"
+        : strongOutlierUnverified
+          ? "parent_order_price_unverified_strong_local_outlier"
+          : candle
+            ? null
+            : "parent_order_trade_date_candle_unavailable";
+      return {
+        ...order,
+        reportedExecutedPrice: reportedPrice,
+        executedPrice: excluded ? null : reportedPrice,
+        priceAudit: {
+          status: excluded ? "excluded" : candle ? "accepted" : "unavailable",
+          sourceField: "Longbridge history_orders.executed_price",
+          reportedValue: reportedPrice,
+          reason,
+          instrumentType: "equity",
+          parentOrderMatched: true,
+          sideResolved: Boolean(normalizedSide(order.side)),
+          currencyResolved: Boolean(cleanCurrency(order.currency)),
+          marketReference,
+        },
+        brokerEvidenceAudit: excluded
+          ? {
+            status: "excluded",
+            reason: "price_unverified",
+            instrumentType: "equity",
+            orderId,
+            sourceFields: [
+              "Longbridge history_orders.executed_price",
+              "Longbridge candlesticks",
+            ],
+            parentExecutedQuantity: positiveFiniteOrNull(
+              order.executedQuantity ?? order.executed_quantity,
+            ),
+            childExecutionCount: 0,
+            childExecutionQuantity: 0,
+            parentExecutedPrice: reportedPrice,
+            childExecutionPrices: [],
+            netAndLegPricePattern: false,
+            conflictingFields: [],
+            explicitMultiLeg: null,
+          }
+          : order?.brokerEvidenceAudit?.reason === "price_unverified"
+            ? null
+            : order.brokerEvidenceAudit,
+      };
+    });
+    return { orders: auditedOrders, executions: auditedExecutions };
   }
 
   async #backfillMissingParentOrders({ orders, executions, warnings }) {
@@ -604,7 +918,7 @@ export class TradeHistoryService {
     });
     this.orderDetailStartQueue = start.catch(() => {});
     await start;
-    return this.longbridge.call("order_detail", args);
+    return this.#call("order_detail", args);
   }
 
   async #fetchWindows(tool, range, symbol, listKey, warnings, diagnostics) {
@@ -703,7 +1017,7 @@ export class TradeHistoryService {
         );
         const right = await this.#fetchWindow(
           tool,
-          { startMs: middle + 1_000, endMs: range.endMs },
+          { startMs: middle, endMs: range.endMs },
           symbol,
           listKey,
           warnings,
@@ -728,7 +1042,7 @@ export class TradeHistoryService {
       );
       const right = await this.#fetchWindow(
         tool,
-        { startMs: middle + 1_000, endMs: range.endMs },
+        { startMs: middle, endMs: range.endMs },
         symbol,
         listKey,
         warnings,
@@ -754,7 +1068,7 @@ export class TradeHistoryService {
   async #trackedHistoryCall(tool, args, diagnostics) {
     diagnostics.attempted += 1;
     try {
-      const payload = await this.longbridge.call(tool, args);
+      const payload = await this.#call(tool, args);
       diagnostics.succeeded += 1;
       return payload;
     } catch (error) {
@@ -766,7 +1080,7 @@ export class TradeHistoryService {
   async #optionalCall(tool, args, listKey, warnings, diagnostics = emptyFetchDiagnostics()) {
     diagnostics.attempted += 1;
     try {
-      const rows = extractRows(await this.longbridge.call(tool, args), listKey);
+      const rows = extractRows(await this.#call(tool, args), listKey);
       diagnostics.succeeded += 1;
       return rows;
     } catch (error) {
@@ -795,7 +1109,7 @@ export class TradeHistoryService {
       window,
     }) => {
       try {
-        const payload = await this.longbridge.call("finance_calendar", {
+        const payload = await this.#call("finance_calendar", {
           category: "report",
           start: isoDate(window.startMs),
           end: isoDate(window.endMs),
@@ -1033,7 +1347,7 @@ function resolveArchivedRecords(archive, recordIds) {
   const excludedOrderIds = new Set(partitionReviewOrders(archive.orders, archive.executions)
     .excluded.map(({ order }) => order.orderId));
   if ([...selectedOrderIds].some((orderId) => excludedOrderIds.has(orderId))) {
-    throw new Error("所选记录包含未成交、取消、拒绝或过期订单；这些记录只供审计查看，不能作为默认复盘证据。");
+    throw new Error("所选记录包含未成交状态，或价格/证券语义不可核验的订单；这些记录只供审计查看，不能作为默认复盘证据。");
   }
 
   // Broker records form a closed decision package: selecting a fill brings in
@@ -1091,7 +1405,10 @@ export function matchExecutionsToEvent(archive, {
   if (!normalizedSymbol || !Number.isFinite(eventMs)) return [];
   const startMs = eventMs - daysBefore * 24 * 60 * 60 * 1000;
   const endMs = eventMs + daysAfter * 24 * 60 * 60 * 1000;
-  return (archive?.executions ?? []).filter((item) => {
+  return partitionReviewExecutions(
+    archive?.executions ?? [],
+    archive?.orders ?? [],
+  ).included.filter((item) => {
     const doneMs = Date.parse(String(item.doneAt ?? ""));
     return item.symbol === normalizedSymbol && doneMs >= startMs && doneMs <= endMs;
   });
@@ -1108,7 +1425,10 @@ export function matchOrdersToEvent(archive, {
   if (!normalizedSymbol || !Number.isFinite(eventMs)) return [];
   const startMs = eventMs - daysBefore * 24 * 60 * 60 * 1000;
   const endMs = eventMs + daysAfter * 24 * 60 * 60 * 1000;
-  return (archive?.orders ?? []).filter((item) => {
+  return partitionReviewOrders(
+    archive?.orders ?? [],
+    archive?.executions ?? [],
+  ).included.filter((item) => {
     const submittedMs = Date.parse(String(item.submittedAt ?? item.updatedAt ?? ""));
     return item.symbol === normalizedSymbol && submittedMs >= startMs && submittedMs <= endMs;
   });
@@ -1118,6 +1438,7 @@ function emptyArchive() {
   return {
     schemaVersion: SCHEMA_VERSION,
     source: "Longbridge MCP · read only",
+    accountScopeId: null,
     syncedAt: null,
     range: null,
     capabilities: {
@@ -1142,12 +1463,13 @@ function emptyArchive() {
 }
 
 function normalizeArchive(value) {
-  if (!value || ![1, SCHEMA_VERSION].includes(value.schemaVersion)) return emptyArchive();
+  if (!value || ![1, 2, SCHEMA_VERSION].includes(value.schemaVersion)) return emptyArchive();
   const archive = emptyArchive();
   const normalized = structuredClone({
     ...archive,
     schemaVersion: SCHEMA_VERSION,
     source: cleanText(value.source, 120) || archive.source,
+    accountScopeId: normalizeAccountScopeId(value.accountScopeId),
     syncedAt: timestampToIso(value.syncedAt),
     range: normalizeStoredRange(value.range),
     capabilities: {
@@ -1173,6 +1495,10 @@ function normalizeArchive(value) {
     normalized.executions,
     normalized.orders,
   ).excluded;
+  const excludedOrders = partitionReviewOrders(
+    normalized.orders,
+    normalized.executions,
+  ).excluded;
   const multiLegAuditCount = excludedExecutions.filter((item) => [
     "multileg_order_unmodeled",
     "possible_multileg_missing_leg_metadata",
@@ -1181,7 +1507,9 @@ function normalizeArchive(value) {
     .filter((item) => item.reason === "parent_order_unmatched").length;
   const priceEvidenceCount = excludedExecutions
     .filter((item) => item.reason === "price_unverified").length;
-  if (multiLegAuditCount || unmatchedParentCount || priceEvidenceCount) {
+  const parentOrderPriceEvidenceCount = excludedOrders
+    .filter((item) => item.reason === "price_unverified").length;
+  if (multiLegAuditCount || unmatchedParentCount || priceEvidenceCount || parentOrderPriceEvidenceCount) {
     normalized.warnings = [...new Set([
       ...normalized.warnings,
       ...(multiLegAuditCount
@@ -1193,9 +1521,17 @@ function normalizeArchive(value) {
       ...(priceEvidenceCount
         ? [`${priceEvidenceCount} 条成交缺少可核验价格证据；原始 execution.price 已保留审计，但不作为成交价展示。`]
         : []),
+      ...(parentOrderPriceEvidenceCount
+        ? [`${parentOrderPriceEvidenceCount} 条无子成交父订单的成交价未通过未复权交易日行情核验；原始价格只供审计，不进入复盘证据。`]
+        : []),
     ])].slice(0, 20);
   }
   return normalized;
+}
+
+function normalizeAccountScopeId(value) {
+  const text = String(value ?? "").trim();
+  return /^[A-Za-z0-9._:-]{8,160}$/.test(text) ? text : null;
 }
 
 function normalizeStoredExecutions(executions, orders) {
@@ -1337,7 +1673,9 @@ function splitRange(startMs, endMs, days) {
   while (cursor < endMs) {
     const windowEnd = Math.min(endMs, cursor + span);
     windows.push({ startMs: cursor, endMs: windowEnd });
-    cursor = windowEnd + 1_000;
+    // Adjacent inclusive windows overlap at their boundary. Broker timestamp
+    // precision can vary; stable order/trade IDs deduplicate overlapping rows.
+    cursor = windowEnd;
   }
   return windows;
 }
@@ -1400,6 +1738,19 @@ function normalizeOrder(value) {
   const orderId = cleanId(value.order_id ?? value.orderId ?? value.id);
   const symbol = normalizeSymbol(value.symbol);
   if (!orderId || !symbol) return null;
+  const reportedExecutedPrice = finiteOrNull(
+    value.reportedExecutedPrice
+      ?? value.priceAudit?.reportedValue
+      ?? value.executed_price
+      ?? value.executedPrice,
+  );
+  const preservedPriceAudit = value.priceAudit && typeof value.priceAudit === "object"
+    ? publicPriceAudit(value.priceAudit)
+    : null;
+  const priceExcluded = preservedPriceAudit?.status === "excluded";
+  const contractMultiplier = inferInstrumentType(symbol) === "option"
+    ? positiveFiniteOrNull(value.contract_multiplier ?? value.contractMultiplier)
+    : 1;
   return {
     orderId,
     symbol,
@@ -1420,7 +1771,10 @@ function normalizeOrder(value) {
         ?? value.submit_price
         ?? value.submitPrice,
     ),
-    executedPrice: finiteOrNull(value.executed_price ?? value.executedPrice),
+    executedPrice: priceExcluded ? null : reportedExecutedPrice,
+    reportedExecutedPrice,
+    priceAudit: preservedPriceAudit,
+    contractMultiplier,
     currency: cleanCurrency(
       value.currency
         ?? value.charge_detail?.currency
@@ -1429,6 +1783,7 @@ function normalizeOrder(value) {
     submittedAt: timestampToIso(value.submitted_at ?? value.submittedAt),
     updatedAt: timestampToIso(value.updated_at ?? value.updatedAt),
     multiLeg: normalizeMultiLeg(value.multi_leg ?? value.multiLeg),
+    brokerEvidenceAudit: publicBrokerEvidenceAudit(value.brokerEvidenceAudit),
     source: "Longbridge",
   };
 }
@@ -1501,6 +1856,13 @@ function normalizeExecution(value, orderById) {
     currency,
     previousAudit: value.priceAudit,
   });
+  const contractMultiplier = inferInstrumentType(symbol) === "option"
+    ? positiveFiniteOrNull(
+      value.contract_multiplier
+        ?? value.contractMultiplier
+        ?? order?.contractMultiplier,
+    )
+    : 1;
   return {
     tradeId,
     orderId,
@@ -1510,6 +1872,7 @@ function normalizeExecution(value, orderById) {
     price: priceAudit.status === "accepted" ? reportedPrice : null,
     reportedPrice,
     priceAudit,
+    contractMultiplier,
     currency,
     doneAt: timestampToIso(value.trade_done_at ?? value.doneAt ?? value.tradeDoneAt),
     source: "Longbridge",
@@ -1528,6 +1891,19 @@ function assessExecutionPrice({ symbol, reportedPrice, order, side, currency, pr
       sourceField,
       reportedValue: null,
       reason: "execution_price_missing",
+      instrumentType,
+      parentOrderMatched,
+      sideResolved,
+      currencyResolved,
+      marketReference: publicMarketReference(previousAudit?.marketReference),
+    };
+  }
+  if (String(previousAudit?.status ?? "").toLowerCase() === "excluded") {
+    return {
+      status: "excluded",
+      sourceField,
+      reportedValue: reportedPrice,
+      reason: cleanText(previousAudit?.reason, 160) || "execution_price_unverified",
       instrumentType,
       parentOrderMatched,
       sideResolved,
@@ -1637,6 +2013,12 @@ function publicOrderRecord(value, { reviewEligibility = null } = {}) {
         : "unavailable",
     submittedPrice,
     executedPrice,
+    reportedExecutedPrice: finiteOrNull(
+      value.reportedExecutedPrice
+        ?? value.priceAudit?.reportedValue
+        ?? value.executedPrice,
+    ),
+    priceAudit: publicPriceAudit(value.priceAudit),
     currency: value.currency,
     activityAt: value.submittedAt ?? value.updatedAt,
     multiLeg: publicMultiLeg(value.multiLeg),
@@ -1665,23 +2047,8 @@ export function partitionReviewOrders(orders = [], executions = []) {
       continue;
     }
     const orderId = cleanId(order.orderId ?? order.order_id ?? order.id);
-    const executedQuantity = finiteOrNull(
-      order.executedQuantity
-        ?? order.executed_quantity
-        ?? order.executedQty
-        ?? order.executed_qty,
-    );
     const statusToken = String(order.status ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const statusProvesFill = [
-      "filled",
-      "filledstatus",
-      "partialfilled",
-      "partialfilledstatus",
-      "partiallyfilled",
-      "partiallyfilledstatus",
-      "partialwithdrawal",
-    ].includes(statusToken);
-    if ((orderId && executionOrderIds.has(orderId)) || (executedQuantity != null && executedQuantity > 0) || statusProvesFill) {
+    if ((orderId && executionOrderIds.has(orderId)) || orderHasFillEvidence(order)) {
       included.push(order);
       continue;
     }
@@ -1837,9 +2204,146 @@ function positiveFiniteOrNull(value) {
   return result != null && result > 0 ? result : null;
 }
 
+function identifyEquityExecutionPriceOutliers(executions = []) {
+  const eligible = (Array.isArray(executions) ? executions : [])
+    .filter((item) => inferInstrumentType(item?.symbol) === "equity")
+    .filter((item) => item?.brokerEvidenceAudit?.status !== "excluded")
+    .filter((item) => String(item?.priceAudit?.status ?? "accepted").toLowerCase() === "accepted")
+    .map((item) => ({
+      tradeId: cleanId(item?.tradeId),
+      orderId: cleanId(item?.orderId),
+      symbol: normalizeSymbol(item?.symbol),
+      doneMs: Date.parse(timestampToIso(item?.doneAt) ?? ""),
+      price: positiveFiniteOrNull(
+        item?.reportedPrice ?? item?.priceAudit?.reportedValue ?? item?.price,
+      ),
+    }))
+    .filter((item) => item.tradeId && item.symbol && Number.isFinite(item.doneMs) && item.price != null);
+  const bySymbol = new Map();
+  for (const item of eligible) {
+    if (!bySymbol.has(item.symbol)) bySymbol.set(item.symbol, []);
+    bySymbol.get(item.symbol).push(item);
+  }
+  const outliers = new Set();
+  for (const item of eligible) {
+    const peers = (bySymbol.get(item.symbol) ?? []).filter((peer) => (
+      peer.tradeId !== item.tradeId
+      && Math.abs(peer.doneMs - item.doneMs) <= EQUITY_PRICE_OUTLIER_PEER_WINDOW_MS
+      && (!item.orderId || !peer.orderId || peer.orderId !== item.orderId)
+    ));
+    const priceByPeerOrder = new Map();
+    for (const peer of peers) {
+      const peerKey = peer.orderId || peer.tradeId;
+      if (!priceByPeerOrder.has(peerKey)) priceByPeerOrder.set(peerKey, []);
+      priceByPeerOrder.get(peerKey).push(peer.price);
+    }
+    const peerOrderMedians = [...priceByPeerOrder.values()]
+      .map(median)
+      .filter((value) => value != null);
+    if (peerOrderMedians.length < EQUITY_PRICE_OUTLIER_MIN_PEER_ORDERS) continue;
+    const referencePrice = median(peerOrderMedians);
+    if (!(referencePrice > 0)) continue;
+    const ratio = item.price / referencePrice;
+    if (ratio <= 1 / EQUITY_PRICE_OUTLIER_RATIO || ratio >= EQUITY_PRICE_OUTLIER_RATIO) {
+      outliers.add(item.tradeId);
+    }
+  }
+  return outliers;
+}
+
+function identifyEquityOrderPriceOutliers(orders = [], executions = []) {
+  const executionPricesByOrder = new Map();
+  for (const execution of Array.isArray(executions) ? executions : []) {
+    if (inferInstrumentType(execution?.symbol) !== "equity") continue;
+    const orderId = cleanId(execution?.orderId ?? execution?.order_id);
+    const price = positiveFiniteOrNull(
+      execution?.reportedPrice ?? execution?.priceAudit?.reportedValue ?? execution?.price,
+    );
+    if (!orderId || price == null) continue;
+    if (!executionPricesByOrder.has(orderId)) executionPricesByOrder.set(orderId, []);
+    executionPricesByOrder.get(orderId).push(price);
+  }
+  const eligible = (Array.isArray(orders) ? orders : [])
+    .filter((item) => inferInstrumentType(item?.symbol) === "equity")
+    .filter((item) => item?.brokerEvidenceAudit?.status !== "excluded"
+      || item?.brokerEvidenceAudit?.reason === "price_unverified")
+    .filter(orderHasFillEvidence)
+    .map((item) => {
+      const orderId = cleanId(item?.orderId ?? item?.order_id ?? item?.id);
+      return {
+        orderId,
+        symbol: normalizeSymbol(item?.symbol),
+        doneMs: Date.parse(timestampToIso(item?.submittedAt ?? item?.updatedAt) ?? ""),
+        price: positiveFiniteOrNull(
+          item?.reportedExecutedPrice
+            ?? item?.priceAudit?.reportedValue
+            ?? item?.executedPrice
+            ?? item?.executed_price,
+        ) ?? median(executionPricesByOrder.get(orderId) ?? []),
+      };
+    })
+    .filter((item) => item.orderId && item.symbol && Number.isFinite(item.doneMs) && item.price != null);
+  const bySymbol = new Map();
+  for (const item of eligible) {
+    if (!bySymbol.has(item.symbol)) bySymbol.set(item.symbol, []);
+    bySymbol.get(item.symbol).push(item);
+  }
+  const outliers = new Set();
+  for (const item of eligible) {
+    const peerPrices = (bySymbol.get(item.symbol) ?? [])
+      .filter((peer) => (
+        peer.orderId !== item.orderId
+        && Math.abs(peer.doneMs - item.doneMs) <= EQUITY_PRICE_OUTLIER_PEER_WINDOW_MS
+      ))
+      .map((peer) => peer.price);
+    if (peerPrices.length < EQUITY_PRICE_OUTLIER_MIN_PEER_ORDERS) continue;
+    const referencePrice = median(peerPrices);
+    if (!(referencePrice > 0)) continue;
+    const ratio = item.price / referencePrice;
+    if (ratio <= 1 / EQUITY_PRICE_OUTLIER_RATIO || ratio >= EQUITY_PRICE_OUTLIER_RATIO) {
+      outliers.add(item.orderId);
+    }
+  }
+  return outliers;
+}
+
+function median(values) {
+  const sorted = (Array.isArray(values) ? values : [])
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  if (!sorted.length) return null;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
 function normalizedSide(value) {
   const side = String(value ?? "").trim().toLowerCase();
   return new Set(["buy", "sell"]).has(side) ? side : null;
+}
+
+function orderHasFillEvidence(order) {
+  const executedQuantity = finiteOrNull(
+    order?.executedQuantity
+      ?? order?.executed_quantity
+      ?? order?.executedQty
+      ?? order?.executed_qty,
+  );
+  if (executedQuantity != null && executedQuantity > 0) return true;
+  const statusToken = String(order?.status ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  return [
+    "filled",
+    "filledstatus",
+    "partialfilled",
+    "partialfilledstatus",
+    "partiallyfilled",
+    "partiallyfilledstatus",
+    "partialwithdrawal",
+  ].includes(statusToken);
 }
 
 function quantityGreaterThan(actual, expected) {
@@ -1882,6 +2386,7 @@ function countExcludedOrderReasons(excluded) {
     expired_unfilled: 0,
     open_or_pending_unfilled: 0,
     unfilled_or_unverified: 0,
+    price_unverified: 0,
   };
   for (const item of excluded) {
     if (item?.reason) counts[item.reason] = (counts[item.reason] ?? 0) + 1;

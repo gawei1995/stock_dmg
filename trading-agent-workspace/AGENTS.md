@@ -22,3 +22,12 @@
 - The desktop Longbridge bridge exposes query operations only. Discuss trade plans, but do not submit, modify, or cancel brokerage orders.
 - The desktop host disables recognized Longbridge brokerage-write tools in the App Server thread config. Do not seek alternative order-writing tools or attempt to bypass that read-only boundary; all final execution remains manual in the broker UI.
 - Prefer concise Chinese unless the user requests another language.
+
+## TradingView MCP research link
+
+- The project-local `tradingview` MCP connects the right-side Agent to the official TradingView service. Use its allowed queries for this conversation's selected symbol, candidate or supplied portfolio; there is still only one Codex App Server harness. Do not infer that the native chart's current drawings, private Pine indicators or layout are available through MCP.
+- Only use the project query allowlist. Never call `get_active_watchlist` (it can create or activate a list), or create/update/delete watchlists or alerts. Do not widen the allowlist or use another tool to bypass it.
+- TradingView beta market data may be delayed. Keep it separate from Longbridge/IBKR quantities, costs, cash and valuation. State source, returned data time, currency, timeframe, adjustment/session convention; missing conventions remain unknown. Do not replace the host's frozen evidence or executable sizing inputs.
+- Resolve an exact `EXCHANGE:TICKER` before research. Request bounded fields/bars relevant to the question. If computing custom EMA or Fib, use sufficiently warmed-up, completed bars and explicit anchors; never treat a preset technical rating as the user's custom indicator values.
+- A missing login, 401/403, 429, 503 or timeout is a source limitation, not permission to retry indefinitely. Say which evidence is unavailable and finish using available evidence. Do not present a configured endpoint as connected before successful authorization and a real read.
+- Blind reviews still forbid external queries. Other reviews must respect historical cutoffs; current forecasts/news/calendars cannot become ex-ante evidence or override selected orders and deterministic host metrics. TV research does not automatically feed the technical radar, ledger or daily snapshot scheduler.

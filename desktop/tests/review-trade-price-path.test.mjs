@@ -119,6 +119,28 @@ test("partial sell is a closed sub-cycle while the selected lot remains explicit
   assert.equal(result.metrics.linkedSelectionGrossPnl, 40);
 });
 
+test("selected option path fails closed without a multiplier and scales P&L with a verified multiplier", () => {
+  const optionSymbol = "AAPL260918C250000.US";
+  const withoutMultiplier = buildReviewTradePricePath({
+    selectedExecutions: [
+      execution({ tradeId: "option-buy-missing", symbol: optionSymbol, side: "Buy", quantity: 1, price: 2, doneAt: "2026-08-03T14:00:00Z" }),
+      execution({ tradeId: "option-sell-missing", symbol: optionSymbol, side: "Sell", quantity: 1, price: 3, doneAt: "2026-08-05T21:00:00Z" }),
+    ],
+  });
+  assert.equal(withoutMultiplier.status, "unavailable");
+  assert.equal(withoutMultiplier.reason, "option_contract_multiplier_unavailable");
+
+  const withMultiplier = buildReviewTradePricePath({
+    selectedExecutions: [
+      execution({ tradeId: "option-buy", symbol: optionSymbol, side: "Buy", quantity: 1, price: 2, contractMultiplier: 100, doneAt: "2026-08-03T14:00:00Z" }),
+      execution({ tradeId: "option-sell", symbol: optionSymbol, side: "Sell", quantity: 1, price: 3, contractMultiplier: 100, doneAt: "2026-08-05T21:00:00Z" }),
+    ],
+  });
+  assert.equal(withMultiplier.metrics.linkedSelectionGrossPnl, 100);
+  assert.equal(withMultiplier.metrics.contractMultiplier, 100);
+  assert.equal(withMultiplier.activities[0].contractMultiplier, 100);
+});
+
 test("multiple selected buy and sell nodes are retained and FIFO matched", () => {
   const selectedExecutions = [
     execution({ tradeId: "b1", side: "Buy", quantity: 100, price: 10, doneAt: "2026-08-03T13:00:00Z" }),
@@ -272,6 +294,51 @@ test("invalid or unsorted candles never produce trend, MAE or MFE", () => {
   assert.equal(result.pricePath.mfePercent, null);
   assert.equal(result.pricePath.maePercent, null);
   assert.deepEqual(result.pricePath.trend.segments, []);
+});
+
+test("boolean or non-scalar execution numerics and OHLC fail closed", () => {
+  for (const invalidValue of [true, null, "", [], {}]) {
+    const invalidQuantity = buildReviewTradePricePath({
+      selectedExecutions: [
+        execution({ tradeId: "buy", side: "Buy", quantity: invalidValue, price: 10, doneAt: "2026-08-03T13:00:00Z" }),
+        execution({ tradeId: "sell", side: "Sell", quantity: 1, price: 12, doneAt: "2026-08-05T21:00:00Z" }),
+      ],
+    });
+    assert.equal(invalidQuantity.status, "unavailable");
+    assert.equal(invalidQuantity.reason, "selected_execution_fields_incomplete");
+    assert.equal(invalidQuantity.metrics.linkedSelectionGrossPnl, null);
+
+    const invalidPrice = buildReviewTradePricePath({
+      selectedExecutions: [
+        execution({ tradeId: "buy", side: "Buy", quantity: 1, price: invalidValue, doneAt: "2026-08-03T13:00:00Z" }),
+        execution({ tradeId: "sell", side: "Sell", quantity: 1, price: 12, doneAt: "2026-08-05T21:00:00Z" }),
+      ],
+    });
+    assert.equal(invalidPrice.status, "unavailable");
+    assert.equal(invalidPrice.reason, "selected_execution_fields_incomplete");
+    assert.equal(invalidPrice.metrics.linkedSelectionGrossPnl, null);
+
+    const invalidCandle = buildReviewTradePricePath({
+      selectedExecutions: [
+        execution({ tradeId: "buy", side: "Buy", quantity: 1, price: 10, doneAt: "2026-08-03T13:00:00Z" }),
+        execution({ tradeId: "sell", side: "Sell", quantity: 1, price: 12, doneAt: "2026-08-05T21:00:00Z" }),
+      ],
+      candles: [{
+        tradeDate: "2026-08-03",
+        symbol: "AAOI.US",
+        open: invalidValue,
+        high: 10,
+        low: 10,
+        close: 10,
+        isClosed: true,
+      }],
+    });
+    assert.equal(invalidCandle.pricePath.status, "unavailable");
+    assert.equal(invalidCandle.pricePath.reason, "daily_candle_fields_invalid");
+    assert.equal(invalidCandle.pricePath.periodReturnPercent, null);
+    assert.equal(invalidCandle.pricePath.mfePercent, null);
+    assert.equal(invalidCandle.pricePath.maePercent, null);
+  }
 });
 
 test("a Sell-date bar before the exchange close is excluded instead of leaking future data", () => {

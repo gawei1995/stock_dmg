@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { inspectPersistedAccountScope } from "./account-scope-identity.mjs";
 
 const STORE_KEY = "portfolioSnapshotLedgerV2";
 const SCHEMA_VERSION = 2;
@@ -21,6 +22,7 @@ const VALUATION_SESSIONS = new Set([
 const TOTAL_ASSET_BASES = new Set([
   "broker_observed",
   "capture_cash_plus_regular_close_positions",
+  "capture_cash_only_after_verified_market_close",
 ]);
 export const REGULAR_CLOSE_VALUATION_METHOD_VERSION = "regular-close-v2";
 const CREDENTIAL_KEYS = new Set([
@@ -66,7 +68,7 @@ export class PortfolioSnapshotStore {
   }
 
   /** Appends one immutable snapshot or returns the existing idempotent entry. */
-  async appendSnapshot(input) {
+  async appendSnapshot(input, { commitGuard = null } = {}) {
     return this.#enqueue(async () => {
       this.#assertEncryptedPersistence();
       assertNoCredentialFields(input);
@@ -99,9 +101,6 @@ export class PortfolioSnapshotStore {
           throw new Error("同一账户范围、交易日和收盘估值版本已存在组合快照，已拒绝重复写入。");
         }
       }
-      if (loaded.ledger.snapshots.length >= this.maxSnapshots) {
-        throw new Error("组合快照账本已达到容量上限；不会自动删除历史快照。");
-      }
 
       const recordedAt = requiredIso(this.now(), "系统记录时间无效。");
       const previousHash = loaded.ledger.headHash || GENESIS_HASH;
@@ -126,8 +125,8 @@ export class PortfolioSnapshotStore {
         snapshots,
         headHash: entry.integrity.entryHash,
       });
-      this.#assertCapacity(ledger);
-      await this.store.set(STORE_KEY, ledger);
+      await this.#assertCapacity(ledger);
+      await this.store.set(STORE_KEY, ledger, { commitGuard });
       return { appended: true, snapshot: structuredClone(entry) };
     });
   }
@@ -169,7 +168,8 @@ export class PortfolioSnapshotStore {
     const maxDistance = maxDistanceMs == null
       ? null
       : nonNegativeNumber(maxDistanceMs, "最近快照最大距离无效。");
-    const snapshots = await this.listSnapshots({ ...filters, scopeId, order: "asc", limit: this.maxSnapshots });
+    const { ledger } = await this.#loadVerified();
+    const snapshots = filterSnapshots(ledger.snapshots, { ...filters, scopeId, order: "asc", limit: Math.max(1, ledger.snapshots.length) });
     const candidates = snapshots.filter((item) => {
       const capturedAt = Date.parse(item.capturedAt);
       if (direction === "at_or_before") return capturedAt <= targetAt;
@@ -200,7 +200,8 @@ export class PortfolioSnapshotStore {
     const start = requiredIso(startAt, "复盘周期起点无效。");
     const end = requiredIso(endAt, "复盘周期终点无效。");
     if (Date.parse(start) > Date.parse(end)) throw new Error("复盘周期起点不能晚于终点。");
-    const all = await this.listSnapshots({ ...filters, scopeId, order: "asc", limit: this.maxSnapshots });
+    const { ledger } = await this.#loadVerified();
+    const all = filterSnapshots(ledger.snapshots, { ...filters, scopeId, order: "asc", limit: Math.max(1, ledger.snapshots.length) });
     const within = all.filter((item) => item.capturedAt >= start && item.capturedAt <= end);
     const beforeOrAtStart = all.filter((item) => item.capturedAt <= start).at(-1) ?? null;
     const beforeOrAtEnd = all.filter((item) => item.capturedAt <= end).at(-1) ?? null;
@@ -235,7 +236,8 @@ export class PortfolioSnapshotStore {
     const start = requiredDate(startTradingDate, "交易日起点无效。");
     const end = requiredDate(endTradingDate, "交易日终点无效。");
     if (start > end) throw new Error("交易日起点不能晚于终点。");
-    const all = await this.listSnapshots({ ...filters, scopeId, order: "asc", limit: this.maxSnapshots });
+    const { ledger } = await this.#loadVerified();
+    const all = filterSnapshots(ledger.snapshots, { ...filters, scopeId, order: "asc", limit: Math.max(1, ledger.snapshots.length) });
     const within = all.filter((item) => item.tradingDate >= start && item.tradingDate <= end);
     const openingBaseline = all.filter((item) => item.tradingDate < start).at(-1) ?? null;
     const first = within[0] ?? null;
@@ -255,10 +257,14 @@ export class PortfolioSnapshotStore {
   async queryMonth({ month, ...filters } = {}) {
     const value = String(month ?? "").trim();
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) throw new Error("复盘月份无效。");
+    // Construct from the ISO year rather than Date.UTC's special 0–99 mapping.
+    const nextMonth = new Date(`${value}-01T00:00:00.000Z`);
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+    nextMonth.setUTCDate(0);
     return this.queryTradingPeriod({
       ...filters,
       startTradingDate: `${value}-01`,
-      endTradingDate: `${value}-31`,
+      endTradingDate: nextMonth.toISOString().slice(0, 10),
     });
   }
 
@@ -281,7 +287,7 @@ export class PortfolioSnapshotStore {
       const verification = verifyLedger(loaded.ledger);
       if (!verification.valid) throw integrityError(verification);
       if (loaded.migrated) {
-        this.#assertCapacity(loaded.ledger);
+        await this.#assertCapacity(loaded.ledger);
         await this.store.set(STORE_KEY, loaded.ledger);
       }
       return {
@@ -294,12 +300,15 @@ export class PortfolioSnapshotStore {
 
   async capacity() {
     const { ledger } = await this.#loadVerified();
-    const serializedBytes = Buffer.byteLength(JSON.stringify(ledger), "utf8");
+    const measured = await this.#measure(ledger);
     return {
       snapshotCount: ledger.snapshots.length,
+      activeCount: measured.activeCount,
+      archivedCount: measured.archivedCount,
       maxSnapshots: this.maxSnapshots,
-      remainingSnapshots: Math.max(0, this.maxSnapshots - ledger.snapshots.length),
-      serializedBytes,
+      remainingSnapshots: Math.max(0, this.maxSnapshots - measured.activeCount),
+      serializedBytes: measured.activeBytes,
+      totalSerializedBytes: measured.totalBytes,
       maxSerializedBytes: this.maxSerializedBytes,
     };
   }
@@ -324,11 +333,18 @@ export class PortfolioSnapshotStore {
     return loaded;
   }
 
-  #assertCapacity(ledger) {
-    if (ledger.snapshots.length > this.maxSnapshots) {
+  async #measure(ledger) {
+    if (typeof this.store.measureLedger === "function") return this.store.measureLedger(ledger);
+    const bytes = Buffer.byteLength(JSON.stringify(ledger), "utf8");
+    return { activeCount: ledger.snapshots.length, archivedCount: 0, activeBytes: bytes, totalBytes: bytes };
+  }
+
+  async #assertCapacity(ledger) {
+    const measured = await this.#measure(ledger);
+    if (measured.activeCount > this.maxSnapshots) {
       throw new Error("组合快照账本超过快照容量上限。");
     }
-    if (Buffer.byteLength(JSON.stringify(ledger), "utf8") > this.maxSerializedBytes) {
+    if (measured.activeBytes > this.maxSerializedBytes) {
       throw new Error("组合快照账本超过加密存储容量上限；不会自动删除历史快照。");
     }
   }
@@ -424,7 +440,35 @@ function normalizeAccountScope(value) {
   if (new Set(accounts.map((item) => item.accountRef)).size !== accounts.length) {
     throw new Error("账户范围包含重复账户引用。");
   }
-  return { scopeId, broker, accounts };
+  const base = { scopeId, broker, accounts };
+  if (value.status !== "verified") return base;
+  const candidate = {
+    ...base,
+    status: "verified",
+    environment: cleanText(value.environment, 40),
+    identifierKinds: Array.isArray(value.identifierKinds)
+      ? [...new Set(value.identifierKinds.map((item) => cleanText(item, 80)).filter(Boolean))].sort()
+      : [],
+    identifierCount: Number(value.identifierCount),
+    version: cleanText(value.version, 80),
+    provenance: value.provenance && typeof value.provenance === "object"
+      ? {
+          source: cleanText(value.provenance.source, 100),
+          derivation: cleanText(value.provenance.derivation, 100),
+          domain: cleanText(value.provenance.domain, 160),
+          algorithm: cleanText(value.provenance.algorithm, 40),
+          version: cleanText(value.provenance.version, 80),
+          canonicalizationVersion: cleanText(value.provenance.canonicalizationVersion, 100),
+          rawIdentifiersPersisted: value.provenance.rawIdentifiersPersisted,
+          mutablePortfolioContentUsed: value.provenance.mutablePortfolioContentUsed,
+        }
+      : null,
+  };
+  if (!Number.isInteger(candidate.identifierCount) || candidate.identifierCount < 1
+      || inspectPersistedAccountScope(candidate).verified !== true) {
+    throw new Error("账户范围声明为已验证，但缺少匹配的不可逆身份来源。 ");
+  }
+  return candidate;
 }
 
 function normalizeSummary(value) {
@@ -574,7 +618,10 @@ function filterSnapshots(snapshots, filters) {
   const toTradingDate = filters.toTradingDate == null
     ? null
     : requiredDate(filters.toTradingDate, "交易日终点无效。");
-  const limit = filters.limit == null ? 1_000 : positiveInteger(filters.limit, "查询数量无效。");
+  // Omission keeps the bounded UI default; explicit null is the host's full
+  // ledger query, including immutable history beyond the active-file ceiling.
+  const limit = filters.limit === null ? snapshots.length
+    : filters.limit === undefined ? 1_000 : positiveInteger(filters.limit, "查询数量无效。");
   const order = filters.order ?? "desc";
   if (!["asc", "desc"].includes(order)) throw new Error("快照排序方式无效。");
   const result = snapshots.filter((item) => (

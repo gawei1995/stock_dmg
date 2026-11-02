@@ -6,6 +6,20 @@ const ALLOWED_REVIEW_TIMEZONES = new Set([
   "Asia/Singapore",
 ]);
 
+/** A calendar interval, never a substitute for an unknown event timestamp. */
+export function reviewDayRange(value, timezone = DEFAULT_REVIEW_TIMEZONE) {
+  const text = String(value ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new Error("事件日期无效。");
+  const date = new Date(`${text}T00:00:00.000Z`);
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== text) throw new Error("事件日期无效。");
+  const timeZone = String(timezone ?? DEFAULT_REVIEW_TIMEZONE).trim();
+  try { new Intl.DateTimeFormat("en-US", { timeZone }).format(date); } catch { throw new Error("事件时区无效。"); }
+  const next = new Date(date.getTime() + 86_400_000);
+  const startMs = zonedLocalMidnightUtc({ year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(), timeZone });
+  const nextMs = zonedLocalMidnightUtc({ year: next.getUTCFullYear(), month: next.getUTCMonth() + 1, day: next.getUTCDate(), timeZone });
+  return { date: text, timezone: timeZone, startAt: new Date(startMs).toISOString(), endAt: new Date(nextMs - 1).toISOString() };
+}
+
 export function reviewMonthRange(value, timezone = DEFAULT_REVIEW_TIMEZONE) {
   const { year, month, normalized } = parseMonth(value);
   const timeZone = normalizeReviewTimezone(timezone);

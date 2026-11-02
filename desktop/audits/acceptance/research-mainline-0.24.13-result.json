@@ -1,0 +1,53 @@
+{
+  "version": "0.24.13",
+  "dateLocal": "2026-10-22",
+  "status": "passed_scoped_synthetic_acceptance_after_failed_path_recheck",
+  "gate": "../../release/verification-0.24.13-2026-10-21T17-46-10-232Z.json",
+  "driver": "../../tests/research-ui-smoke.cjs",
+  "profile": "isolated_temporary_synthetic_memory_store_only",
+  "consolidatedComputerUsePassCount": 1,
+  "failedPathRecheckCount": 1,
+  "initialPass": {
+    "renderer": "0.24.12_packaged_app_asar",
+    "observed": [
+      "research_tab_and_saved_judgment_vs_market_belief_visible",
+      "AI_proposal_confirmation_and_immutable_version_boundary_visible",
+      "source_provenance_and_literal_zero_visible_in_accessibility_state",
+      "exact_review_cycle_association_visible_in_accessibility_state"
+    ],
+    "failedPath": "sidebar_checkboxes_inherited_full_width_form_styles_and_wrapped_labels",
+    "disposition": "0.24.12_not_delivered_or_installed"
+  },
+  "recheck": {
+    "scope": "only_failed_sidebar_checkbox_and_label_layout",
+    "renderer": "fixed_source_renderer_then_hash_matched_to_final_package_by_release_gate",
+    "result": "compact_checkboxes_and_single_line_labels_visible",
+    "otherComputerUsePathsRepeated": false
+  },
+  "automatedChromiumChecks": [
+    "lazy_research_without_full_review_fetch",
+    "one_line_create_without_broker",
+    "numeric_zero_units_period_currency_denominator",
+    "one_synthetic_persistent_session_and_settled_result",
+    "null_AI_fields_default_unchecked",
+    "AI_sources_default_unchecked_and_explicit_adoption",
+    "prior_judgment_version_unchanged",
+    "exact_current_account_cycle_link_and_original_cycle_navigation",
+    "independent_vertical_scroll_and_compact_width",
+    "sidebar_checkbox_14px_and_one_line_label_assertions"
+  ],
+  "manualFlowActionsClaimed": false,
+  "realBrokerOrModelRequests": false,
+  "realAccountOrProfileRead": false,
+  "userSkillsChanged": false,
+  "installedAppReplaced": false,
+  "externalNetworkAttemptsInFixture": 0,
+  "temporaryWindowsClosed": true,
+  "limits": [
+    "Synthetic_UI_does_not_verify_installed_user_profile_migration",
+    "No_actual_model_research_or_connector_query_in_this_batch",
+    "Financial_and_consensus_source_verification_remains_conditional",
+    "No_background_research_or_automatic_stage_promotion",
+    "No_trading_or_order_writes"
+  ]
+}

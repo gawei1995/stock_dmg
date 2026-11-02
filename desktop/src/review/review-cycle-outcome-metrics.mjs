@@ -3,6 +3,7 @@ import {
   exchangeTimezoneForSymbol,
 } from "./review-trade-price-path.mjs";
 import { partitionReviewExecutions } from "../data/trade-history-service.mjs";
+import { inferInstrumentType } from "../data/normalize.mjs";
 
 const MAX_METRIC_SYMBOLS = 8;
 const DEFAULT_CANDLE_COUNT = 1_000;
@@ -84,12 +85,15 @@ export async function buildReviewCycleOutcomeMetrics({
     ...(Array.isArray(cycle?.symbols) ? cycle.symbols : []),
     cycle?.symbol,
     ...linkedExecutions.map((item) => item?.symbol),
-  ]).map(normalizeSymbol).filter(Boolean);
+  ].map(normalizeSymbol).filter(Boolean));
   const benchmark = normalizeSymbol(cycle?.benchmark)
     ?? (cycleSymbols.some((symbol) => symbol.endsWith(".US")) ? "QQQ.US" : null);
-  const requestedSymbols = uniqueStrings([...cycleSymbols, benchmark]).slice(0, MAX_METRIC_SYMBOLS);
-  const omittedSymbols = uniqueStrings([...cycleSymbols, benchmark]).slice(MAX_METRIC_SYMBOLS);
-  const initiallyUnavailableSymbols = cycleSymbols.slice(0, MAX_METRIC_SYMBOLS)
+  const selectedCycleSymbols = cycleSymbols.slice(0, MAX_METRIC_SYMBOLS);
+  // The benchmark has its own request slot. Eight positions must not silently
+  // consume the QQQ slot; if QQQ is itself held, the request is still shared.
+  const requestedSymbols = uniqueStrings([...selectedCycleSymbols, benchmark]);
+  const omittedSymbols = cycleSymbols.filter((symbol) => !requestedSymbols.includes(symbol));
+  const initiallyUnavailableSymbols = selectedCycleSymbols
     .map((symbol) => unavailablePath(symbol, "candles_not_loaded"));
   const base = {
     schemaVersion: 1,
@@ -124,6 +128,17 @@ export async function buildReviewCycleOutcomeMetrics({
       archiveSyncedAt: optionalIso(archive?.syncedAt),
       requestedSymbols,
       omittedSymbols,
+      cycleSymbolCoverage: {
+        sourceCount: cycleSymbols.length,
+        deliveredCount: selectedCycleSymbols.length,
+        omittedCount: Math.max(0, cycleSymbols.length - selectedCycleSymbols.length),
+        requestedSymbols: selectedCycleSymbols,
+        omittedSymbols: cycleSymbols.slice(MAX_METRIC_SYMBOLS),
+        maximum: MAX_METRIC_SYMBOLS,
+        policy: "first_eight_cycle_symbols_with_independent_benchmark_slot",
+      },
+      benchmarkCoverage: { symbol: benchmark, independentRequestSlot: true,
+        requested: Boolean(benchmark), sharedWithCycleSymbol: selectedCycleSymbols.includes(benchmark) },
       loadedSymbols: [],
       failedSymbols: [],
       candleSources: [],
@@ -150,6 +165,8 @@ export async function buildReviewCycleOutcomeMetrics({
   if (isSelectedTradeWindow && !hasExplicitTradeWindow) {
     base.coverage.reasons.push("explicit_trade_window_unavailable_declared_cycle_fallback_used");
   }
+  if (cycleSymbols.length > MAX_METRIC_SYMBOLS) base.coverage.reasons.push("metric_symbol_limit_reached");
+  if (signal?.aborted) throw cancellationError(signal);
 
   if (!metricStartAt || !metricEndAt || Date.parse(metricEndAt) < Date.parse(metricStartAt)) {
     base.coverage.reasons.push("cycle_window_invalid");
@@ -165,42 +182,19 @@ export async function buildReviewCycleOutcomeMetrics({
     return combineMetricStatus(base);
   }
 
-  const controller = new AbortController();
-  const abortFromParent = () => controller.abort(signal?.reason);
-  if (signal?.aborted) abortFromParent();
-  else signal?.addEventListener?.("abort", abortFromParent, { once: true });
-  let timer;
-  const timedOut = new Promise((resolve) => {
-    timer = setTimeout(() => resolve({ timedOut: true, results: [] }), Math.max(50, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
-  });
-  const work = Promise.allSettled(requestedSymbols.map(async (symbol) => {
-    const loaded = normalizeLoadedCandles(
-      await loadCandles(symbol, DEFAULT_CANDLE_COUNT, { signal: controller.signal }),
-    );
-    return { symbol, ...loaded };
-  })).then((results) => ({ timedOut: false, results }));
-
-  let outcome;
-  try {
-    outcome = await Promise.race([work, timedOut]);
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener?.("abort", abortFromParent);
-  }
-  if (signal?.aborted) {
-    throw signal.reason instanceof Error ? signal.reason : new Error("周期结果指标计算已取消。");
-  }
+  const outcome = await collectBoundedCandleResults({ requestedSymbols, loadCandles, signal, timeoutMs });
   if (outcome.timedOut) {
-    controller.abort(new Error("周期结果指标日线读取超时。"));
     base.coverage.reasons.push("historical_candles_timeout");
-    base.coverage.failedSymbols = requestedSymbols.map((symbol) => ({ symbol, reason: "timeout" }));
-    return combineMetricStatus(base);
   }
 
   const metricsBySymbol = new Map();
   const candlesBySymbol = new Map();
   outcome.results.forEach((result, index) => {
     const symbol = requestedSymbols[index];
+    if (result.status === "timed_out") {
+      base.coverage.failedSymbols.push({ symbol, reason: "timeout" });
+      return;
+    }
     if (result.status === "rejected") {
       base.coverage.failedSymbols.push({ symbol, reason: cleanReason(result.reason) });
       return;
@@ -232,12 +226,11 @@ export async function buildReviewCycleOutcomeMetrics({
     }
   });
   if (base.coverage.failedSymbols.length) base.coverage.reasons.push("some_candles_unavailable");
-  if (omittedSymbols.length) base.coverage.reasons.push("metric_symbol_limit_reached");
 
   const benchmarkMetrics = benchmark
     ? metricsBySymbol.get(benchmark) ?? unavailablePath(benchmark, "benchmark_candles_unavailable")
     : unavailablePath(null, "benchmark_not_configured_or_inferable");
-  const symbolMetrics = cycleSymbols.slice(0, MAX_METRIC_SYMBOLS)
+  const symbolMetrics = selectedCycleSymbols
     .map((symbol) => metricsBySymbol.get(symbol) ?? unavailablePath(symbol, "symbol_candles_unavailable"));
   const excessReturns = symbolMetrics.map((item) => {
     if (item.periodReturnPercent == null) {
@@ -265,6 +258,56 @@ export async function buildReviewCycleOutcomeMetrics({
     base.tradePricePath = buildSelectedTradePricePath(candlesBySymbol.get(selectedSymbol) ?? []);
   }
   return combineMetricStatus(base);
+}
+
+/** Settled sources survive the shared deadline; late continuations cannot edit the result. */
+async function collectBoundedCandleResults({ requestedSymbols, loadCandles, signal, timeoutMs }) {
+  if (signal?.aborted) throw cancellationError(signal);
+  const controller = new AbortController();
+  const settled = new Array(requestedSymbols.length).fill(null);
+  let accepting = true;
+  let timer;
+  let resolveCancelled;
+  const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
+  const abortFromParent = () => {
+    controller.abort(signal?.reason);
+    resolveCancelled("cancelled");
+  };
+  signal?.addEventListener?.("abort", abortFromParent, { once: true });
+  if (signal?.aborted) abortFromParent();
+  const jobs = requestedSymbols.map(async (symbol, index) => {
+    try {
+      if (controller.signal.aborted) throw cancellationError(signal);
+      const loaded = normalizeLoadedCandles(await loadCandles(symbol, DEFAULT_CANDLE_COUNT, { signal: controller.signal }));
+      if (accepting) settled[index] = { status: "fulfilled", value: structuredClone({ symbol, ...loaded }) };
+    } catch (reason) {
+      if (accepting) settled[index] = { status: "rejected", reason };
+    }
+  });
+  try {
+    const completed = Promise.all(jobs).then(() => "completed");
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), Math.max(50, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+    });
+    const winner = await Promise.race([completed, deadline, cancelled]);
+    // Seal before aborting pending providers: their abort callbacks and later
+    // resolve/reject paths are observed but can no longer change this snapshot.
+    accepting = false;
+    if (signal?.aborted || winner === "cancelled") throw cancellationError(signal);
+    if (winner === "timeout") controller.abort(new Error("周期结果指标日线读取超时。"));
+    return { timedOut: winner === "timeout", results: settled.map((item) => item ?? { status: "timed_out" }) };
+  } finally {
+    accepting = false;
+    clearTimeout(timer);
+    signal?.removeEventListener?.("abort", abortFromParent);
+  }
+}
+
+function cancellationError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error("周期结果指标计算已取消。");
+  error.name = "AbortError";
+  return error;
 }
 
 /**
@@ -299,6 +342,7 @@ export function summarizeTradePricePath(metrics, { maxSegments = 72 } = {}) {
       realizedQuantity: finiteOrNull(path?.metrics?.realizedQuantity),
       openQuantity: finiteOrNull(path?.metrics?.openQuantity),
       linkedSelectionGrossPnl: finiteOrNull(path?.metrics?.linkedSelectionGrossPnl),
+      contractMultiplier: positiveFiniteOrNull(path?.metrics?.contractMultiplier),
       rawBuyVwap: finiteOrNull(path?.metrics?.rawBuyVwap),
       rawSellVwap: finiteOrNull(path?.metrics?.rawSellVwap),
     },
@@ -319,7 +363,7 @@ export function summarizeTradePricePath(metrics, { maxSegments = 72 } = {}) {
       },
     },
     marketDataCoverage: Array.isArray(metrics?.coverage?.candleSources)
-      ? metrics.coverage.candleSources.slice(0, MAX_METRIC_SYMBOLS)
+      ? metrics.coverage.candleSources.slice(0, MAX_METRIC_SYMBOLS + 1)
       : [],
   };
 }
@@ -346,11 +390,14 @@ export function calculateExecutionGrossPnl({
   if (!linkedExecutionCount) return unavailableExecutionPnl("no_linked_executions", coverage);
   if (missingExecutionCount) return unavailableExecutionPnl("linked_executions_missing_from_archive", coverage);
 
+  const optionMultiplierIssue = validateOptionContractMultipliers(executions);
+  if (optionMultiplierIssue) return unavailableExecutionPnl(optionMultiplierIssue, coverage);
+
   const normalized = executions.map(normalizeExecutionForPnl);
   if (normalized.some((item) => !item)) return unavailableExecutionPnl("execution_fields_incomplete", coverage);
   const groups = new Map();
   for (const item of normalized.sort((left, right) => Date.parse(left.doneAt) - Date.parse(right.doneAt))) {
-    const key = `${item.symbol}|${item.currency}`;
+    const key = `${item.symbol}|${item.currency}|${item.contractMultiplier}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(item);
   }
@@ -364,14 +411,18 @@ export function calculateExecutionGrossPnl({
     for (const item of records) {
       used += 1;
       if (item.side === "buy") {
-        lots.push({ quantity: item.quantity, price: item.price });
+        lots.push({
+          quantity: item.quantity,
+          price: item.price,
+          contractMultiplier: item.contractMultiplier,
+        });
         continue;
       }
       let remaining = item.quantity;
       while (remaining > 0 && lots.length) {
         const lot = lots[0];
         const matched = Math.min(remaining, lot.quantity);
-        gross += (item.price - lot.price) * matched;
+        gross += (item.price - lot.price) * matched * lot.contractMultiplier;
         realizedQuantity += matched;
         lot.quantity -= matched;
         remaining -= matched;
@@ -385,10 +436,12 @@ export function calculateExecutionGrossPnl({
     coverage.usedExecutionCount += used;
     const symbol = records[0].symbol;
     const currency = records[0].currency;
+    const contractMultiplier = records[0].contractMultiplier;
     const inventoryEvidence = startingInventoryEvidence(startingPortfolio, symbol, startAt);
     bySymbol.push({
       symbol,
       currency,
+      contractMultiplier,
       linkedRoundTripGrossPnl: invalidReason ? null : round(gross),
       accountRealizedGrossPnl: null,
       realizedQuantity: invalidReason ? null : round(realizedQuantity, 6),
@@ -494,6 +547,7 @@ function selectedPathActivitiesAsExecutions(tradePricePath) {
     side: item.side,
     quantity: item.quantity,
     price: item.price,
+    contractMultiplier: item.contractMultiplier,
     currency: item.currency,
     doneAt: item.at,
   }));
@@ -577,12 +631,38 @@ function normalizeExecutionForPnl(value) {
     : sideText.includes("sell") || sideText === "s" ? "sell"
       : null;
   const symbol = normalizeSymbol(value?.symbol);
-  const quantity = Number(value?.quantity);
-  const price = Number(value?.price);
+  const quantity = finiteOrNull(value?.quantity);
+  const price = finiteOrNull(value?.price);
   const doneAt = optionalIso(value?.doneAt);
   const currency = String(value?.currency ?? inferCurrency(symbol) ?? "").trim().toUpperCase() || null;
-  if (!side || !symbol || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price <= 0 || !doneAt || !currency) return null;
-  return { side, symbol, quantity, price, doneAt, currency };
+  const contractMultiplier = inferInstrumentType(symbol) === "option"
+    ? positiveFiniteOrNull(value?.contractMultiplier)
+    : 1;
+  if (!side || !symbol || quantity == null || quantity <= 0 || price == null || price <= 0
+    || !doneAt || !currency || contractMultiplier == null) return null;
+  return { side, symbol, quantity, price, doneAt, currency, contractMultiplier };
+}
+
+function validateOptionContractMultipliers(executions) {
+  const optionRows = (Array.isArray(executions) ? executions : [])
+    .filter((item) => inferInstrumentType(normalizeSymbol(item?.symbol)) === "option");
+  if (!optionRows.length) return null;
+  if (optionRows.some((item) => positiveFiniteOrNull(item?.contractMultiplier) == null)) {
+    return "option_contract_multiplier_unavailable";
+  }
+  const bySymbol = new Map();
+  for (const item of optionRows) {
+    const symbol = normalizeSymbol(item?.symbol);
+    const multiplier = positiveFiniteOrNull(item?.contractMultiplier);
+    if (!bySymbol.has(symbol)) bySymbol.set(symbol, multiplier);
+    else if (bySymbol.get(symbol) !== multiplier) return "option_contract_multiplier_conflict";
+  }
+  return null;
+}
+
+function positiveFiniteOrNull(value) {
+  const number = finiteOrNull(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 function inferCurrency(symbol) {
@@ -616,8 +696,8 @@ function startingInventoryEvidence(value, symbol, cycleStartAt) {
     return { status: "unknown", snapshotAt, quantity: null, reason: "eligible_starting_portfolio_snapshot_unavailable" };
   }
   const matching = value.positions.filter((item) => normalizeSymbol(item?.symbol) === symbol);
-  const quantities = matching.map((item) => Number(item?.quantity));
-  if (quantities.some((quantity) => !Number.isFinite(quantity))) {
+  const quantities = matching.map((item) => finiteOrNull(item?.quantity));
+  if (quantities.some((quantity) => quantity == null)) {
     return { status: "unknown", snapshotAt, quantity: null, reason: "starting_quantity_invalid" };
   }
   const quantity = round(quantities.reduce((sum, item) => sum + item, 0), 6);
@@ -652,7 +732,8 @@ function combineMetricStatus(value) {
   if (value.tradePricePath) statuses.push(value.tradePricePath.status);
   const candleEvidenceDegraded = Array.isArray(value.coverage?.candleSources)
     && value.coverage.candleSources.some((item) => item?.partial === true || item?.source === "persistent_fallback");
-  value.status = statuses.every((status) => status === "available") && !candleEvidenceDegraded
+  const cycleSymbolsOmitted = Number(value.coverage?.cycleSymbolCoverage?.omittedCount ?? 0) > 0;
+  value.status = statuses.every((status) => status === "available") && !candleEvidenceDegraded && !cycleSymbolsOmitted
     ? "available"
     : statuses.some((status) => ["available", "partial"].includes(status))
       ? "partial"
@@ -662,7 +743,7 @@ function combineMetricStatus(value) {
 
 function validBar(bar) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(bar?.tradeDate ?? ""))
-    && [bar?.open, bar?.high, bar?.low, bar?.close].every((value) => Number.isFinite(Number(value)));
+    && [bar?.open, bar?.high, bar?.low, bar?.close].every((value) => finiteOrNull(value) != null);
 }
 
 function inClosedRange(value, startAt, endAt) {
@@ -709,7 +790,9 @@ function cleanReason(error) {
 }
 
 function finiteOrNull(value) {
-  if (value == null || value === "") return null;
+  if (value == null || typeof value === "boolean") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  if (!["number", "string"].includes(typeof value)) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

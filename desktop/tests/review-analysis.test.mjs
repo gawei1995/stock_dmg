@@ -16,6 +16,7 @@ test("review analysis contains only broker records explicitly linked to selected
       eventSession: "amc",
       brokerLinks: {
         revision: 3,
+        accountScopeId: "scope-primary",
         orderIds: ["order-selected"],
         executionIds: ["trade-selected"],
         confirmedAt: "2026-08-10T00:00:00.000Z",
@@ -28,6 +29,7 @@ test("review analysis contains only broker records explicitly linked to selected
     rules: [],
   };
   const archive = {
+    accountScopeId: "scope-primary",
     source: "Longbridge MCP · read only",
     syncedAt: "2026-08-10T00:00:00.000Z",
     orders: [
@@ -39,7 +41,17 @@ test("review analysis contains only broker records explicitly linked to selected
       { tradeId: "trade-not-selected", orderId: "order-not-selected", symbol: "NVDA.US", price: 190 },
     ],
   };
-  const run = buildReviewAnalysisRun({ workspace, archive, caseIds: ["case-1"], runId: "run-1" });
+  const run = buildReviewAnalysisRun({
+    workspace,
+    archive,
+    caseIds: ["case-1"],
+    runId: "run-1",
+    portfolio: {
+      syncedAt: "2026-08-10T00:00:00.000Z",
+      account: { baseCurrency: "USD", netAssets: 125_000 },
+      totals: { positionsGrossMarketValueBase: 100_000 },
+    },
+  });
 
   assert.equal(run.context.scope, "review");
   assert.equal(run.context.reviewMode, "single_event");
@@ -48,6 +60,8 @@ test("review analysis contains only broker records explicitly linked to selected
   assert.deepEqual(run.analysisContext.cases[0].orders.map((item) => item.recordRef), ["order-1"]);
   assert.deepEqual(run.analysisContext.cases[0].executions.map((item) => item.recordRef), ["execution-1"]);
   assert.equal(run.analysisContext.cases[0].brokerAssociation.revision, 3);
+  assert.equal(run.analysisContext.portfolioSummary.netAssets, 125_000);
+  assert.equal(run.analysisContext.portfolioSummary.grossExposurePercent, 80);
   assert.doesNotMatch(JSON.stringify(run), /order-not-selected|trade-not-selected/);
   assert.doesNotMatch(JSON.stringify(run), /order-selected|trade-selected/);
   assert.match(run.task, /\$review-earnings-decisions/);
@@ -57,14 +71,14 @@ test("review analysis contains only broker records explicitly linked to selected
 test("multi-case review is always an explicitly selected case set", () => {
   const workspace = {
     cases: [
-      { id: "a", symbol: "AAPL.US", fiscalQuarter: "2026 Q2", brokerLinks: { orderIds: ["oa"], confirmedAt: "2026-01-01T00:00:00Z" } },
-      { id: "b", symbol: "MSFT.US", fiscalQuarter: "2026 Q2", brokerLinks: { orderIds: ["ob"], confirmedAt: "2026-01-01T00:00:00Z" } },
-      { id: "c", symbol: "AAPL.US", fiscalQuarter: "2026 Q3", brokerLinks: { orderIds: ["oc"], confirmedAt: "2026-01-01T00:00:00Z" } },
+      { id: "a", symbol: "AAPL.US", fiscalQuarter: "2026 Q2", brokerLinks: { accountScopeId: "scope-primary", orderIds: ["oa"], confirmedAt: "2026-01-01T00:00:00Z" } },
+      { id: "b", symbol: "MSFT.US", fiscalQuarter: "2026 Q2", brokerLinks: { accountScopeId: "scope-primary", orderIds: ["ob"], confirmedAt: "2026-01-01T00:00:00Z" } },
+      { id: "c", symbol: "AAPL.US", fiscalQuarter: "2026 Q3", brokerLinks: { accountScopeId: "scope-primary", orderIds: ["oc"], confirmedAt: "2026-01-01T00:00:00Z" } },
     ],
     tests: [],
     rules: [],
   };
-  const archive = { orders: [], executions: [] };
+  const archive = { accountScopeId: "scope-primary", orders: [], executions: [] };
   assert.equal(buildReviewAnalysisRun({ workspace, archive, caseIds: ["a", "b"] }).context.reviewMode, "selected_case_set");
   assert.equal(buildReviewAnalysisRun({ workspace, archive, caseIds: ["a", "c"] }).context.reviewMode, "selected_case_set");
   assert.deepEqual(selectReviewCaseIds(workspace, { fiscalQuarter: "2026 Q2" }), []);
@@ -79,6 +93,7 @@ test("review analysis surfaces missing linked records instead of reconstructing 
         symbol: "MU.US",
         fiscalQuarter: "待确认季度",
         brokerLinks: {
+          accountScopeId: "scope-primary",
           orderIds: ["missing-order"],
           executionIds: ["missing-trade"],
           confirmedAt: "2026-01-01T00:00:00Z",
@@ -88,7 +103,7 @@ test("review analysis surfaces missing linked records instead of reconstructing 
       tests: [],
       rules: [],
     },
-    archive: { orders: [], executions: [] },
+    archive: { accountScopeId: "scope-primary", orders: [], executions: [] },
     caseIds: ["case-1"],
     portfolio: { positions: [{ symbol: "MU.US", quantity: 500 }] },
   });
@@ -109,6 +124,7 @@ test("broker warnings downgrade review evidence even when legacy completeness sa
         symbol: "AAPL.US",
         fiscalQuarter: "FY2026 Q3",
         brokerLinks: {
+          accountScopeId: "scope-primary",
           orderIds: ["o-warning"],
           executionIds: [],
           confirmedAt: "2026-08-10T00:00:00.000Z",
@@ -119,6 +135,7 @@ test("broker warnings downgrade review evidence even when legacy completeness sa
       rules: [],
     },
     archive: {
+      accountScopeId: "scope-primary",
       source: "Longbridge MCP · read only",
       syncedAt: "2026-08-10T00:00:00.000Z",
       completeness: { orders: "complete", executions: "windowed" },
@@ -147,7 +164,7 @@ test("single-case evidence excludes tests from another quarter that merely share
         id: "selected-q2",
         symbol: "NVDA.US",
         fiscalQuarter: "FY2026 Q2",
-        brokerLinks: { orderIds: ["o1"], confirmedAt: "2026-01-01T00:00:00Z" },
+        brokerLinks: { accountScopeId: "scope-primary", orderIds: ["o1"], confirmedAt: "2026-01-01T00:00:00Z" },
         ruleIds: ["rule-1"],
       }],
       tests: [
@@ -157,7 +174,7 @@ test("single-case evidence excludes tests from another quarter that merely share
       ],
       rules: [{ id: "rule-1", title: "候选规则" }],
     },
-    archive: { orders: [], executions: [] },
+    archive: { accountScopeId: "scope-primary", orders: [], executions: [] },
     caseIds: ["selected-q2"],
   });
 
@@ -175,4 +192,33 @@ test("review analysis rejects unconfirmed cases and never silently truncates ove
   assert.throws(() => selectReviewCaseIds({}, {
     caseIds: Array.from({ length: 101 }, (_, index) => `case-${index}`),
   }), /最多分析 100/);
+});
+
+test("review analysis rejects legacy-unbound and cross-account broker links", () => {
+  const baseCase = {
+    id: "scoped-case",
+    symbol: "AAPL.US",
+    brokerLinks: {
+      orderIds: ["order-1"],
+      confirmedAt: "2026-08-01T00:00:00.000Z",
+    },
+    ruleIds: [],
+  };
+  assert.throws(() => buildReviewAnalysisRun({
+    workspace: { cases: [baseCase], tests: [], rules: [] },
+    archive: { accountScopeId: "scope-current", orders: [], executions: [] },
+    caseIds: ["scoped-case"],
+  }), /缺少匿名账户作用域/);
+  assert.throws(() => buildReviewAnalysisRun({
+    workspace: {
+      cases: [{
+        ...baseCase,
+        brokerLinks: { ...baseCase.brokerLinks, accountScopeId: "scope-old" },
+      }],
+      tests: [],
+      rules: [],
+    },
+    archive: { accountScopeId: "scope-current", orders: [], executions: [] },
+    caseIds: ["scoped-case"],
+  }), /不同匿名账户作用域/);
 });

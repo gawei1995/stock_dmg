@@ -1,3 +1,8 @@
+import {
+  PORTFOLIO_VALUATION_GATE_SCHEMA_VERSION,
+  stablePortfolioValuationGateHash,
+} from "./portfolio-valuation-gate.mjs";
+
 export const PORTFOLIO_FRESHNESS_MAX_AGE_MS = 2 * 60 * 1000;
 
 export function portfolioSnapshotAgeMs(portfolio, now = Date.now()) {
@@ -20,6 +25,8 @@ export function portfolioFreshness(portfolio, {
       : sourceStatus === "live" || sourceStatus === "degraded"
         ? ageMs != null && ageMs <= maxAgeMs ? "fresh" : "stale"
         : "unknown";
+  const valuationGate = portfolioValuationGateFreshness(portfolio?.valuationGate);
+  const snapshotFreshForSizing = state === "fresh";
   return {
     state,
     sourceStatus,
@@ -30,7 +37,65 @@ export function portfolioFreshness(portfolio, {
     expiresAt: Number.isFinite(snapshotTimestamp)
       ? new Date(snapshotTimestamp + maxAgeMs).toISOString()
       : null,
-    freshForSizing: state === "fresh",
+    snapshotFreshForSizing,
+    valuationGate,
+    freshForSizing: snapshotFreshForSizing && valuationGate.readyForSizing,
+  };
+}
+
+/**
+ * Treat the host valuation gate as an independently verified prerequisite.
+ * Missing, malformed, tampered, or non-passing gates fail closed; a recent
+ * account response can never promote stale per-symbol marks.
+ */
+export function portfolioValuationGateFreshness(gate) {
+  if (!gate || typeof gate !== "object" || Array.isArray(gate)) {
+    return {
+      status: "missing",
+      valid: false,
+      readyForSizing: false,
+      hash: null,
+      reason: "valuation_gate_missing",
+    };
+  }
+  if (gate.schemaVersion !== PORTFOLIO_VALUATION_GATE_SCHEMA_VERSION) {
+    return {
+      status: "invalid",
+      valid: false,
+      readyForSizing: false,
+      hash: typeof gate.hash === "string" ? gate.hash : null,
+      reason: "valuation_gate_schema_unsupported",
+    };
+  }
+  try {
+    const expectedHash = stablePortfolioValuationGateHash(gate);
+    if (gate.hash !== expectedHash) {
+      return {
+        status: "invalid",
+        valid: false,
+        readyForSizing: false,
+        hash: typeof gate.hash === "string" ? gate.hash : null,
+        reason: "valuation_gate_hash_mismatch",
+      };
+    }
+  } catch {
+    return {
+      status: "invalid",
+      valid: false,
+      readyForSizing: false,
+      hash: typeof gate.hash === "string" ? gate.hash : null,
+      reason: "valuation_gate_malformed",
+    };
+  }
+  const outcomeStatus = String(gate.outcome?.status ?? "unknown");
+  const readyForSizing = outcomeStatus === "pass"
+    && gate.outcome?.readyForSizing === true;
+  return {
+    status: outcomeStatus,
+    valid: true,
+    readyForSizing,
+    hash: gate.hash,
+    reason: readyForSizing ? null : "valuation_gate_not_ready",
   };
 }
 
@@ -58,7 +123,9 @@ export function withPortfolioFreshness(portfolio, {
     freshness: {
       ...measured,
       state: normalizedState,
-      freshForSizing: normalizedState === "fresh",
+      snapshotFreshForSizing: normalizedState === "fresh",
+      freshForSizing: normalizedState === "fresh"
+        && measured.valuationGate.readyForSizing,
       reason: reason == null ? portfolio.freshness?.reason ?? null : String(reason).slice(0, 300),
     },
   };

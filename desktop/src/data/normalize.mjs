@@ -6,6 +6,12 @@ const number = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const finiteNumberOrNull = (value) => {
+  if (value == null || value === "" || typeof value === "boolean") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 export function normalizePortfolio({
   positions,
   balances,
@@ -32,6 +38,7 @@ export function normalizePortfolio({
   const quoteList = normalizeQuoteList(quotes);
   const quoteMap = new Map(quoteList.map((quote) => [quote.symbol, quote]));
   const fxGraph = buildFxGraph(exchangeRates);
+  const fxRequired = portfolioRequiresFx(rawPositions, rawBalances, baseCurrency);
   const account = aggregateBalances(rawBalances, baseCurrency, fxGraph);
   const netAssetsBase = account.netAssets > 0 ? account.netAssets : null;
 
@@ -43,6 +50,12 @@ export function normalizePortfolio({
     const quantity = number(position.quantity);
     const grossQuantity = number(position.gross_quantity, Math.abs(quantity));
     const costPrice = number(position.cost_price, NaN);
+    const costValue = number(position.cost_value, NaN);
+    const grossCostValue = number(position.gross_cost_value, NaN);
+    const costBasisAvailable = position.cost_basis_complete !== false
+      && Number.isFinite(costPrice)
+      && Number.isFinite(costValue)
+      && Number.isFinite(grossCostValue);
     const currency = String(position.currency || baseCurrency).toUpperCase();
     const contractMultiplier = instrumentType === "option"
       ? number(
@@ -80,11 +93,11 @@ export function normalizePortfolio({
     const nativeGrossValue = nativePricingAvailable
       ? grossQuantity * lastPrice * contractMultiplier
       : null;
-    const nativeCostValue = nativePricingAvailable
-      ? number(position.cost_value, quantity * number(costPrice)) * contractMultiplier
+    const nativeCostValue = costBasisAvailable && Number.isFinite(contractMultiplier)
+      ? costValue * contractMultiplier
       : null;
-    const nativeGrossCostValue = nativePricingAvailable
-      ? number(position.gross_cost_value, Math.abs(quantity * number(costPrice))) * contractMultiplier
+    const nativeGrossCostValue = costBasisAvailable && Number.isFinite(contractMultiplier)
+      ? grossCostValue * contractMultiplier
       : null;
     const regularNativeNetValue = regularNativePricingAvailable
       ? quantity * regularMark.price * contractMultiplier
@@ -121,7 +134,11 @@ export function normalizePortfolio({
       availableQuantity: number(position.available_quantity),
       direction: quantity > 0 ? "long" : quantity < 0 ? "short" : "hedged",
       hasOffsettingLegs: Boolean(position.has_offsetting_legs),
-      costPrice: Number.isFinite(costPrice) ? costPrice : null,
+      costPrice: costBasisAvailable ? costPrice : null,
+      costBasisStatus: costBasisAvailable ? "available" : "missing",
+      costBasisLimitation: costBasisAvailable
+        ? null
+        : `${position.symbol} 的非零持仓缺少完整成本价；市值与权重仍可计算，但成本及盈亏保持为空。`,
       lastPrice,
       regularLastPrice: regularNativePricingAvailable ? regularMark.price : null,
       prevClose: Number.isFinite(prevClose) ? prevClose : null,
@@ -200,8 +217,18 @@ export function normalizePortfolio({
     (position) => !position.quoteTimestamp,
   ).length;
   const cleanQuoteErrors = quoteErrors.map((error) => String(error)).slice(0, 50);
-  const cleanSourceErrors = normalizeSourceErrors(sourceErrors);
+  const allSourceErrors = normalizeSourceErrors(sourceErrors);
+  const ignoredFxErrors = fxRequired
+    ? []
+    : allSourceErrors.filter(isFxSourceIssue);
+  const cleanSourceErrors = fxRequired
+    ? allSourceErrors
+    : allSourceErrors.filter((error) => !isFxSourceIssue(error));
   const cleanSourceWarnings = normalizeSourceErrors(sourceWarnings);
+  const effectiveFxStatus = fxRequired ? fxStatus : "not_required";
+  const missingCostBasisSymbols = normalized
+    .filter((position) => position.costBasisStatus === "missing")
+    .map((position) => position.symbol);
   const valuationComplete =
     unpricedPositionCount === 0
     && missingTimestampCount === 0
@@ -230,16 +257,17 @@ export function normalizePortfolio({
       marginCall: account.marginCall,
       valuationComplete: account.valuationComplete,
       unconvertedCurrencies: account.unconvertedCurrencies,
+      missingFields: account.missingFields,
       cashInfos: account.cashInfos.map((cash) => ({
         currency: cash.currency,
-        availableCash: number(cash.available_cash),
-        withdrawCash: number(cash.withdraw_cash),
-        frozenCash: number(cash.frozen_cash),
-        settlingCash: number(cash.settling_cash),
+        availableCash: finiteNumberOrNull(cash.available_cash),
+        withdrawCash: finiteNumberOrNull(cash.withdraw_cash),
+        frozenCash: finiteNumberOrNull(cash.frozen_cash),
+        settlingCash: finiteNumberOrNull(cash.settling_cash),
       })),
     },
     fx: {
-      status: fxStatus,
+      status: effectiveFxStatus,
       provider: cleanMetadataValue(fxMetadata.provider, 100),
       providerCode: cleanMetadataValue(fxMetadata.providerCode, 20),
       asOf: cleanMetadataValue(fxMetadata.asOf, 20),
@@ -282,7 +310,12 @@ export function normalizePortfolio({
       quoteErrors: cleanQuoteErrors,
       sourceErrors: cleanSourceErrors,
       sourceWarnings: cleanSourceWarnings,
-      fxStatus,
+      ignoredFxErrors,
+      fxStatus: effectiveFxStatus,
+      fxRequired,
+      costBasisComplete: missingCostBasisSymbols.length === 0,
+      missingCostBasisPositionCount: missingCostBasisSymbols.length,
+      missingCostBasisSymbols,
       accountValuationComplete: account.valuationComplete,
       quoteAsOfPolicy: "oldest_available_native_mark",
     },
@@ -313,7 +346,23 @@ export function aggregatePositions(positions) {
   for (const position of positions) {
     if (!position?.symbol) continue;
     const quantity = number(position.quantity);
-    const costPrice = number(position.cost_price);
+    const costPrice = number(position.cost_price, NaN);
+    const explicitCostValue = number(position.cost_value, NaN);
+    const explicitGrossCostValue = number(position.gross_cost_value, NaN);
+    const legCostValue = Number.isFinite(explicitCostValue)
+      ? explicitCostValue
+      : Number.isFinite(costPrice)
+        ? quantity * costPrice
+        : NaN;
+    const legGrossCostValue = Number.isFinite(explicitGrossCostValue)
+      ? explicitGrossCostValue
+      : Number.isFinite(costPrice)
+        ? Math.abs(quantity * costPrice)
+        : Number.isFinite(legCostValue)
+          ? Math.abs(legCostValue)
+          : NaN;
+    const legCostBasisAvailable = quantity === 0
+      || (Number.isFinite(legCostValue) && Number.isFinite(legGrossCostValue));
     const current = grouped.get(position.symbol) ?? {
       ...position,
       quantity: 0,
@@ -323,23 +372,39 @@ export function aggregatePositions(positions) {
       gross_cost_value: 0,
       has_positive_leg: false,
       has_negative_leg: false,
+      cost_basis_complete: true,
+      missing_cost_basis_leg_count: 0,
     };
     current.quantity += quantity;
     current.available_quantity += number(position.available_quantity);
     current.gross_quantity += Math.abs(quantity);
-    current.cost_value += quantity * costPrice;
-    current.gross_cost_value += Math.abs(quantity * costPrice);
+    if (legCostBasisAvailable) {
+      current.cost_value += Number.isFinite(legCostValue) ? legCostValue : 0;
+      current.gross_cost_value += Number.isFinite(legGrossCostValue) ? legGrossCostValue : 0;
+    } else {
+      current.cost_basis_complete = false;
+      current.missing_cost_basis_leg_count += 1;
+    }
     current.has_positive_leg ||= quantity > 0;
     current.has_negative_leg ||= quantity < 0;
     current.has_offsetting_legs = current.has_positive_leg && current.has_negative_leg;
-    current.cost_price = current.quantity
-      ? current.cost_value / current.quantity
-      : current.gross_quantity
-        ? current.gross_cost_value / current.gross_quantity
-        : 0;
+    current.cost_price = current.cost_basis_complete
+      ? current.quantity
+        ? current.cost_value / current.quantity
+        : current.gross_quantity
+          ? current.gross_cost_value / current.gross_quantity
+          : 0
+      : null;
     grouped.set(position.symbol, current);
   }
-  return [...grouped.values()];
+  return [...grouped.values()].map((position) => position.cost_basis_complete
+    ? position
+    : {
+      ...position,
+      cost_price: null,
+      cost_value: null,
+      gross_cost_value: null,
+    });
 }
 
 export function selectQuoteMark(quote) {
@@ -439,17 +504,27 @@ function nativeValuationLimitation({ symbol, instrumentType, mark, contractMulti
 
 function aggregateBalances(balances, baseCurrency, fxGraph) {
   const unconvertedCurrencies = new Set();
-  const convert = (value, currency) => {
+  const missingFields = new Set();
+  const convert = (value, currency, field) => {
+    const parsedValue = finiteNumberOrNull(value);
+    if (parsedValue == null) {
+      missingFields.add(field);
+      return null;
+    }
     const sourceCurrency = String(currency || baseCurrency).toUpperCase();
     const rate = findConversionRate(sourceCurrency, baseCurrency, fxGraph);
     if (!(rate > 0)) {
       unconvertedCurrencies.add(sourceCurrency);
       return null;
     }
-    return number(value) * rate;
+    return parsedValue * rate;
   };
   const sumMetric = (field) => {
-    const converted = balances.map((item) => convert(item[field], item.currency || baseCurrency));
+    const converted = balances.map((item) => convert(
+      item[field],
+      item.currency || baseCurrency,
+      field,
+    ));
     return converted.some((value) => value == null)
       ? null
       : converted.reduce((sum, value) => sum + value, 0);
@@ -468,8 +543,14 @@ function aggregateBalances(balances, baseCurrency, fxGraph) {
   };
   return {
     ...result,
-    valuationComplete: unconvertedCurrencies.size === 0 && result.netAssets > 0,
+    // Net assets and cash are the minimum account facts required by the
+    // valuation/risk layer. Optional buying-power and margin facts remain null
+    // when Longbridge omits them, but are never silently converted to zero.
+    valuationComplete: unconvertedCurrencies.size === 0
+      && result.netAssets > 0
+      && result.totalCash != null,
     unconvertedCurrencies: [...unconvertedCurrencies],
+    missingFields: [...missingFields],
   };
 }
 
@@ -480,6 +561,50 @@ function normalizeSourceErrors(errors) {
     kind: String(error?.kind ?? "tool").slice(0, 40),
     message: String(error?.message ?? "未知数据源错误").slice(0, 300),
   }));
+}
+
+function portfolioRequiresFx(positions, balances, baseCurrency) {
+  const base = String(baseCurrency ?? "USD").toUpperCase();
+  const positionNeedsFx = (Array.isArray(positions) ? positions : []).some((position) => {
+    const quantity = number(position?.quantity, NaN);
+    const currency = String(position?.currency || base).toUpperCase();
+    return Number.isFinite(quantity) && quantity !== 0 && currency !== base;
+  });
+  if (positionNeedsFx) return true;
+
+  return (Array.isArray(balances) ? balances : []).some((balance) => {
+    const currency = String(balance?.currency || base).toUpperCase();
+    const hasMaterialBalance = [
+      balance?.net_assets,
+      balance?.total_cash,
+      balance?.buy_power,
+      balance?.init_margin,
+      balance?.maintenance_margin,
+      balance?.margin_call,
+    ].some((value) => {
+      const parsed = number(value, NaN);
+      return Number.isFinite(parsed) && parsed !== 0;
+    });
+    if (currency !== base && hasMaterialBalance) return true;
+    return (Array.isArray(balance?.cash_infos) ? balance.cash_infos : []).some((cash) => {
+      const cashCurrency = String(cash?.currency || currency || base).toUpperCase();
+      if (cashCurrency === base) return false;
+      return [
+        cash?.available_cash,
+        cash?.withdraw_cash,
+        cash?.frozen_cash,
+        cash?.settling_cash,
+      ].some((value) => {
+        const parsed = number(value, NaN);
+        return Number.isFinite(parsed) && parsed !== 0;
+      });
+    });
+  });
+}
+
+function isFxSourceIssue(error) {
+  return new Set(["exchange_rate", "ecb_reference_rates"])
+    .has(String(error?.tool ?? "").toLowerCase());
 }
 
 function cleanMetadataValue(value, maxLength) {

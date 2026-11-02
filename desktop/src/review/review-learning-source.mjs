@@ -7,6 +7,38 @@
  * current or accepting new samples.
  */
 
+/** A source revision is not a new independent statistical decision package. */
+export function canonicalReviewEvidenceIdentity(record, { kind = "cycle" } = {}) {
+  const legacy = record?.legacySource && typeof record.legacySource === "object" ? record.legacySource : null;
+  const sourceCaseId = cleanId(legacy?.sourceCaseId) || (kind === "case" ? cleanId(record?.id) : "");
+  const sourceScope = cleanId(legacy?.accountScopeId);
+  const currentScope = cleanId(record?.brokerLinks?.accountScopeId ?? record?.brokerAssociation?.accountScopeId ?? record?.accountScopeId);
+  const accountScopeId = sourceScope || currentScope || null;
+  const conflict = Boolean(sourceScope && currentScope && sourceScope !== currentScope);
+  const reason = conflict ? "legacy_source_account_scope_conflict"
+    : legacy && !sourceCaseId ? "legacy_source_case_id_missing"
+      : legacy && !accountScopeId ? "legacy_source_account_scope_missing" : null;
+  const sourceId = sourceCaseId || cleanId(record?.id);
+  return {
+    key: sourceId && !reason ? JSON.stringify(["review-evidence/v1", accountScopeId, sourceCaseId ? "case" : kind, sourceId]) : null,
+    status: sourceId && !reason ? "identified" : "unavailable",
+    reason: reason ?? (!sourceId ? "review_evidence_id_missing" : null),
+    accountScopeId,
+    sourceCaseId: sourceCaseId || null,
+    sourceCycleId: kind === "cycle" ? cleanId(record?.id) || null : null,
+    sourceHash: cleanId(legacy?.sourceHash) || null,
+    migrated: Boolean(legacy),
+    boundary: "same_account_and_legacy_case_lineage_is_one_sample_regardless_of_migration_or_revision",
+  };
+}
+
+export function phaseRunFollowsLegacyMigration(cycle, run) {
+  if (!cycle?.legacySource) return true;
+  const migratedAt = Date.parse(String(cycle.legacySource.migratedAt ?? ""));
+  const completedAt = Date.parse(String(run?.completedAt ?? run?.recordedAt ?? ""));
+  return Number.isFinite(migratedAt) && Number.isFinite(completedAt) && completedAt >= migratedAt;
+}
+
 export function annotateLearningSources(workspace, cycleWorkspace) {
   const packages = (workspace?.validationPackages ?? []).map((item) => ({
     ...item,
@@ -30,6 +62,10 @@ export function learningSourceStatus(source, cycleWorkspace) {
   const sourceReviewCycleId = cleanId(source?.sourceReviewCycleId);
   const sourceRunId = cleanId(source?.sourceRunId);
   const sourcePhaseRunId = cleanId(source?.sourcePhaseRunId);
+  const cycle = (cycleWorkspace?.cycles ?? []).find((item) => String(item?.id ?? "") === sourceReviewCycleId);
+  if (cycle?.legacySource && (!sourceRunId && !sourcePhaseRunId)) {
+    return staleSource("legacy_source_requires_new_cycle_phase_run", sourcePhaseRunId, source);
+  }
   if (!sourceReviewCycleId || (!sourceRunId && !sourcePhaseRunId)) {
     return {
       sourceStatus: "untracked",
@@ -40,8 +76,9 @@ export function learningSourceStatus(source, cycleWorkspace) {
     };
   }
 
-  const cycle = (cycleWorkspace?.cycles ?? []).find((item) => String(item?.id ?? "") === sourceReviewCycleId);
   if (!cycle) return staleSource("source_cycle_missing", sourcePhaseRunId, source);
+  const identity = canonicalReviewEvidenceIdentity(cycle);
+  if (identity.status !== "identified") return staleSource(identity.reason, sourcePhaseRunId, source);
   const runs = [
     ...(cycle?.phaseRuns?.retrospective ?? []),
     ...(cycle?.phaseRuns?.outcome ?? []),
@@ -54,6 +91,7 @@ export function learningSourceStatus(source, cycleWorkspace) {
 
   const reasons = [];
   if (run.status !== "completed" || run.integrityStatus !== "valid") reasons.push("source_phase_run_invalid");
+  if (!phaseRunFollowsLegacyMigration(cycle, run)) reasons.push("legacy_result_is_not_a_new_cycle_phase_run");
   const samePhaseRuns = runs.filter((item) => (
     item?.phase === run.phase && item?.status === "completed" && item?.integrityStatus === "valid"
   ));
@@ -80,6 +118,8 @@ export function learningSourceStatus(source, cycleWorkspace) {
     sourcePhaseRunId: String(run.id),
     sourceEvidenceRevision: citedEvidenceRevision,
     sourceRetrospectiveVersion: citedRetrospectiveVersion,
+    canonicalEvidenceIdentity: identity,
+    sourceEvidencePosture: cycle.legacySource ? "historical_legacy_source_not_new_ex_ante" : null,
   };
 }
 

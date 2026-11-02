@@ -18,6 +18,103 @@ function bar(tradeDate, close, { high = close, low = close } = {}) {
   };
 }
 
+function metricsCycle(symbols = ["AAPL.US"]) {
+  return { symbols, startAt: "2026-08-03T00:00:00.000Z", endAt: "2026-08-31T21:00:00.000Z",
+    brokerLinks: { executionIds: [] } };
+}
+
+const completeBars = () => [bar("2026-08-03", 100), bar("2026-08-31", 110)];
+
+test("eight cycle symbols retain an independent QQQ benchmark request and complete coverage", async () => {
+  const symbols = Array.from({ length: 8 }, (_, index) => `T${index}.US`);
+  const calls = [];
+  const result = await buildReviewCycleOutcomeMetrics({ cycle: metricsCycle(symbols), archive: {},
+    loadCandles: async (symbol) => { calls.push(symbol); return completeBars(); } });
+  assert.deepEqual(calls, [...symbols, "QQQ.US"]);
+  assert.equal(result.pricePath.symbols.length, 8);
+  assert.equal(result.pricePath.benchmarkMetrics.status, "available");
+  assert.equal(result.pricePath.excessReturns.every((item) => item.valuePercent === 0), true);
+  assert.deepEqual(result.coverage.omittedSymbols, []);
+  assert.equal(result.coverage.cycleSymbolCoverage.omittedCount, 0);
+  assert.equal(result.coverage.benchmarkCoverage.independentRequestSlot, true);
+});
+
+test("stock budget is explicit, normalized duplicates do not consume it and a held benchmark shares one request", async () => {
+  const symbols = ["QQQ.US", "qqq.us", ...Array.from({ length: 9 }, (_, index) => `T${index}.US`)];
+  const calls = [];
+  const result = await buildReviewCycleOutcomeMetrics({ cycle: metricsCycle(symbols), archive: {},
+    loadCandles: async (symbol) => { calls.push(symbol); return completeBars(); } });
+  assert.equal(calls.filter((symbol) => symbol === "QQQ.US").length, 1);
+  assert.equal(calls.length, 8);
+  assert.equal(result.coverage.cycleSymbolCoverage.sourceCount, 10);
+  assert.equal(result.coverage.cycleSymbolCoverage.deliveredCount, 8);
+  assert.deepEqual(result.coverage.cycleSymbolCoverage.omittedSymbols, ["T7.US", "T8.US"]);
+  assert.equal(result.coverage.cycleSymbolCoverage.omittedCount, 2);
+  assert.equal(result.coverage.benchmarkCoverage.sharedWithCycleSymbol, true);
+  assert.ok(result.coverage.reasons.includes("metric_symbol_limit_reached"));
+  assert.equal(result.status, "partial");
+});
+
+test("global deadline preserves completed source and individual failure while timing out only unfinished source", async () => {
+  let resolveBenchmark;
+  let benchmarkSignal;
+  const result = await buildReviewCycleOutcomeMetrics({ cycle: metricsCycle(["AAPL.US", "BAD.US"]), archive: {}, timeoutMs: 50,
+    loadCandles: async (symbol, _count, { signal }) => {
+      if (symbol === "AAPL.US") return completeBars();
+      if (symbol === "BAD.US") throw new Error("provider permission denied");
+      benchmarkSignal = signal;
+      return new Promise((resolve) => { resolveBenchmark = resolve; });
+    } });
+  assert.equal(benchmarkSignal.aborted, true);
+  assert.deepEqual(result.coverage.loadedSymbols.map((item) => item.symbol), ["AAPL.US"]);
+  assert.deepEqual(result.coverage.failedSymbols, [
+    { symbol: "BAD.US", reason: "provider permission denied" }, { symbol: "QQQ.US", reason: "timeout" },
+  ]);
+  assert.equal(result.pricePath.symbols[0].periodReturnPercent, 10);
+  assert.equal(result.pricePath.benchmarkMetrics.status, "unavailable");
+  assert.equal(result.pricePath.status, "partial");
+  const before = JSON.stringify(result);
+  resolveBenchmark(completeBars());
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(JSON.stringify(result), before, "late source must not mutate returned evidence");
+});
+
+test("a late provider rejection is consumed after the deadline without changing completed evidence", async () => {
+  let rejectBenchmark;
+  const result = await buildReviewCycleOutcomeMetrics({ cycle: metricsCycle(), archive: {}, timeoutMs: 50,
+    loadCandles: async (symbol) => symbol === "QQQ.US"
+      ? new Promise((_resolve, reject) => { rejectBenchmark = reject; }) : completeBars() });
+  const before = JSON.stringify(result);
+  rejectBenchmark(new Error("late transport rejection"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(JSON.stringify(result), before);
+});
+
+test("cancel does not wait for a provider that ignores AbortSignal or downgrade to ordinary missing evidence", async () => {
+  const controller = new AbortController();
+  let providerStarted;
+  const started = new Promise((resolve) => { providerStarted = resolve; });
+  const pending = buildReviewCycleOutcomeMetrics({ cycle: metricsCycle(), archive: {}, signal: controller.signal, timeoutMs: 10_000,
+    loadCandles: async () => { providerStarted(); return new Promise(() => {}); } });
+  await started;
+  controller.abort(new Error("user cancelled uncooperative provider"));
+  let timer;
+  try {
+    await assert.rejects(Promise.race([pending, new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("cancel remained blocked")), 500);
+    })]), /user cancelled uncooperative provider/);
+  } finally { clearTimeout(timer); }
+});
+
+test("pre-aborted requests perform no provider work", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled before start"));
+  let calls = 0;
+  await assert.rejects(buildReviewCycleOutcomeMetrics({ cycle: metricsCycle(), archive: {}, signal: controller.signal,
+    loadCandles: async () => { calls += 1; return []; } }), /cancelled before start/);
+  assert.equal(calls, 0);
+});
+
 test("linked FIFO executions produce verifiable round-trip gross P&L while account cost basis and fees remain unavailable", () => {
   const result = calculateExecutionGrossPnl({
     linkedExecutionCount: 2,
@@ -76,6 +173,50 @@ test("a semantically excluded execution price can never enter deterministic P&L"
   });
   assert.equal(result.linkedRoundTripGrossPnl, null);
   assert.equal(result.reason, "execution_fields_incomplete");
+});
+
+test("boolean execution numerics never become a one-share one-dollar trade", () => {
+  const result = calculateExecutionGrossPnl({
+    linkedExecutionCount: 2,
+    startAt: "2026-08-01T00:00:00Z",
+    startingPortfolio: { snapshotAt: "2026-07-31T23:00:00Z", positions: [] },
+    executions: [
+      { symbol: "AAOI.US", side: "Buy", quantity: true, price: 10, currency: "USD", doneAt: "2026-08-01T14:00:00Z" },
+      { symbol: "AAOI.US", side: "Sell", quantity: 1, price: false, currency: "USD", doneAt: "2026-08-05T20:00:00Z" },
+    ],
+  });
+  assert.equal(result.status, "unavailable");
+  assert.equal(result.linkedRoundTripGrossPnl, null);
+  assert.equal(result.reason, "execution_fields_incomplete");
+});
+
+test("option execution P&L requires a real multiplier and applies it exactly once", () => {
+  const optionSymbol = "AAPL260918C250000.US";
+  const base = {
+    linkedExecutionCount: 2,
+    startAt: "2026-08-01T00:00:00Z",
+    startingPortfolio: { snapshotAt: "2026-07-31T23:00:00Z", positions: [] },
+  };
+  const withoutMultiplier = calculateExecutionGrossPnl({
+    ...base,
+    executions: [
+      { symbol: optionSymbol, side: "Buy", quantity: 1, price: 2, currency: "USD", doneAt: "2026-08-01T14:00:00Z" },
+      { symbol: optionSymbol, side: "Sell", quantity: 1, price: 3, currency: "USD", doneAt: "2026-08-05T20:00:00Z" },
+    ],
+  });
+  assert.equal(withoutMultiplier.status, "unavailable");
+  assert.equal(withoutMultiplier.reason, "option_contract_multiplier_unavailable");
+
+  const withMultiplier = calculateExecutionGrossPnl({
+    ...base,
+    executions: [
+      { symbol: optionSymbol, side: "Buy", quantity: 1, price: 2, contractMultiplier: 100, currency: "USD", doneAt: "2026-08-01T14:00:00Z" },
+      { symbol: optionSymbol, side: "Sell", quantity: 1, price: 3, contractMultiplier: 100, currency: "USD", doneAt: "2026-08-05T20:00:00Z" },
+    ],
+  });
+  assert.equal(withMultiplier.status, "available");
+  assert.equal(withMultiplier.linkedRoundTripGrossPnl, 100);
+  assert.equal(withMultiplier.bySymbol[0].contractMultiplier, 100);
 });
 
 test("outcome pipeline bounds Longbridge bars by cycle end and computes symbol, benchmark, excess, MFE and MAE", async () => {

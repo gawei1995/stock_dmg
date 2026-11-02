@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { activityFallsInReviewMonth } from "./review-calendar.mjs";
+import { canonicalReviewEvidenceIdentity } from "./review-learning-source.mjs";
 import {
   partitionReviewExecutions,
   partitionReviewOrders,
@@ -6,6 +8,9 @@ import {
 
 const REVIEW_PHASES = new Set(["blind", "outcome", "retrospective"]);
 const MAX_DELIVERED_TIMELINE_NODES = 100;
+const MAX_FROZEN_BLIND_ASSESSMENT_CHARS = 180_000;
+const MAX_PORTFOLIO_CONTEXT_POSITIONS = 200;
+const MAX_PORTFOLIO_CONTEXT_DETAILS = 20;
 
 /** Build a bounded, time-gated evidence run for a decision review cycle. */
 export function buildReviewCycleAnalysisRun({
@@ -18,12 +23,31 @@ export function buildReviewCycleAnalysisRun({
   portfolio = null,
   pointInTimeTechnical = null,
   deterministicOutcomeMetrics = null,
+  technicalValidation = null,
+  reconciliation = null,
   now = () => new Date(),
 } = {}) {
   const normalizedPhase = String(phase ?? "").trim();
   if (!REVIEW_PHASES.has(normalizedPhase)) throw new Error("复盘阶段必须是 blind、outcome 或 retrospective。");
   const cycle = (workspace?.cycles ?? []).find((item) => String(item?.id) === String(cycleId ?? ""));
   if (!cycle) throw new Error("未找到复盘周期。");
+  const canonicalEvidenceIdentity = canonicalReviewEvidenceIdentity(cycle);
+  if (cycle.legacySource && canonicalEvidenceIdentity.status !== "identified") {
+    throw new Error(`旧复盘迁移来源无法核验：${canonicalEvidenceIdentity.reason}；请核对原案例与匿名账户作用域。`);
+  }
+  const eventMetadata = sanitizeCycleEventMetadata(cycle?.eventMetadata);
+  if (eventMetadata && eventMetadata.timePrecision !== "exact"
+    && (cycle?.reviewMode !== "lightweight" || normalizedPhase !== "retrospective")) {
+    throw new Error("只有日期或盘前/盘后精度的事件只能进行轻量事后复盘；不得补造事件时点或放宽盲态门槛。");
+  }
+  const archiveAccountScopeId = cleanText(archive?.accountScopeId, 160);
+  const cycleAccountScopeId = cleanText(cycle?.brokerLinks?.accountScopeId, 160);
+  if (archiveAccountScopeId && uniqueStrings(cycle?.brokerLinks?.recordIds).length
+    && cycleAccountScopeId !== archiveAccountScopeId) {
+    throw new Error(cycleAccountScopeId
+      ? "复盘周期与当前长桥历史属于不同匿名账户作用域；已拒绝跨账户分析。"
+      : "该旧复盘缺少匿名账户作用域；请在当前账户重新选择订单后再分析。");
+  }
   const sealedVersion = latestSealedVersion(cycle);
   if (normalizedPhase !== "retrospective" && !sealedVersion) {
     throw new Error("请先封存事前四字段，再运行阶段一盲态复盘。");
@@ -145,15 +169,31 @@ export function buildReviewCycleAnalysisRun({
   const analysisTask = String(task || defaultCycleTask({ cycle, cycleType, phase: normalizedPhase }))
     .trim()
     .slice(0, 4_000);
-  const snapshotAt = archive?.syncedAt ?? workspace?.updatedAt ?? now().toISOString();
+  const knowledgeCutoffAt = normalizedPhase === "blind"
+    ? decisionTimeline.at(-1)?.knowledgeCutoffAt ?? cutoffAt
+    : null;
+  const snapshotAt = normalizedPhase === "blind"
+    ? knowledgeCutoffAt
+    : archive?.syncedAt ?? workspace?.updatedAt ?? now().toISOString();
   const evidenceRevision = positiveRevision(
     cycle?.evidenceRevision ?? cycle?.brokerLinks?.evidenceRevision ?? cycle?.brokerLinks?.revision,
   );
+  if (revealsOutcome && reconciliation != null && (
+    reconciliation.schemaVersion !== "review-reconciliation/v1"
+    || reconciliation.cycleId !== cycle.id
+    || reconciliation.cycleEvidenceRevision !== evidenceRevision
+    || reconciliation.accountScopeId !== (cycleAccountScopeId || null)
+    || reconciliation.window?.startAt !== optionalIso(cycle.startAt)
+    || reconciliation.window?.endAt !== optionalIso(cycle.endAt)
+  )) throw new Error("收益对账状态与本次周期、账户、证据版本或时间范围不一致；请重新生成对账证据。");
   const inputSnapshotHash = cleanText(workspace?.snapshotHash, 128);
 
   return {
     id: String(runId || `cycle-review-${Date.now()}`),
-    createdAt: now().toISOString(),
+    // Runtime timestamps are not decision-time evidence. Withhold the actual
+    // creation time from a blind projection instead of leaking a post-cutoff
+    // clock value (or mislabelling the cutoff as the creation time).
+    createdAt: normalizedPhase === "blind" ? null : now().toISOString(),
     elapsedMs: 0,
     task: analysisTask,
     state: normalizedPhase === "blind"
@@ -167,6 +207,7 @@ export function buildReviewCycleAnalysisRun({
       reviewRetrospectiveVersion: retrospectiveVersion?.version ?? null,
       reviewEvidenceRevision: evidenceRevision,
       reviewInputSnapshotHash: inputSnapshotHash,
+      knowledgeCutoffAt,
       cycleType,
       blindAssessmentId: blindAssessment?.assessmentId ?? null,
       snapshotAt,
@@ -180,20 +221,29 @@ export function buildReviewCycleAnalysisRun({
         cutoffAt,
         cycleEvidenceEndAt: normalizedPhase === "retrospective" ? cycleEvidenceEndAt : null,
         retrospectiveHasNoKnowledgeCutoff: normalizedPhase === "retrospective",
-        futureEvidencePhysicallyExcluded: normalizedPhase === "blind",
+        futureEvidencePhysicallyExcluded: normalizedPhase === "blind"
+          && decisionTimeline.length <= 1,
         firewallScope: normalizedPhase === "blind" && decisionTimeline.length
-          ? "per_node_capsule_plus_post_last_node_exclusion"
+          ? decisionTimeline.length === 1
+            ? "single_node_physical_cutoff"
+            : "multi_node_logical_gating_plus_post_last_node_exclusion"
           : "single_phase_cutoff",
+        formalBlindEligible: normalizedPhase === "blind" && decisionTimeline.length <= 1,
+        externalToolsHostBlocked: normalizedPhase === "blind",
         decisionTimelineNodeCount: decisionTimeline.length,
-        latestTimelineCutoffAt: decisionTimeline.at(-1)?.knowledgeCutoffAt ?? cutoffAt,
+        latestTimelineCutoffAt: knowledgeCutoffAt ?? cutoffAt,
         nodeCapsulesShareSingleModelRequest: normalizedPhase === "blind" && decisionTimeline.length > 0,
-        hiddenOrderCount: normalizedPhase === "blind" ? linkedOrders.length - visibleOrders.length : 0,
-        hiddenExecutionCount: normalizedPhase === "blind" ? linkedExecutions.length - visibleExecutions.length : 0,
-        postCycleOrderCount: linkedOrders.length - cycleBoundOrders.length,
-        postCycleExecutionCount: linkedExecutions.length - cycleBoundExecutions.length,
-        preCycleOrderCount: linkedOrders.filter((item) => beforeStart(orderAt(item), cycle?.startAt)).length,
-        preCycleExecutionCount: linkedExecutions.filter((item) => beforeStart(executionAt(item), cycle?.startAt)).length,
-        hiddenCheckpointCount: normalizedPhase === "blind" ? allCheckpoints.length - visibleCheckpoints.length : 0,
+        hiddenOrderCount: revealsOutcome ? linkedOrders.length - visibleOrders.length : undefined,
+        hiddenExecutionCount: revealsOutcome ? linkedExecutions.length - visibleExecutions.length : undefined,
+        postCycleOrderCount: revealsOutcome ? linkedOrders.length - cycleBoundOrders.length : undefined,
+        postCycleExecutionCount: revealsOutcome ? linkedExecutions.length - cycleBoundExecutions.length : undefined,
+        preCycleOrderCount: revealsOutcome
+          ? linkedOrders.filter((item) => beforeStart(orderAt(item), cycle?.startAt)).length
+          : undefined,
+        preCycleExecutionCount: revealsOutcome
+          ? linkedExecutions.filter((item) => beforeStart(executionAt(item), cycle?.startAt)).length
+          : undefined,
+        hiddenCheckpointCount: revealsOutcome ? allCheckpoints.length - visibleCheckpoints.length : undefined,
         outcomeAvailable: revealsOutcome,
       },
       cycle: {
@@ -206,9 +256,14 @@ export function buildReviewCycleAnalysisRun({
         benchmark: cleanText(cycle?.benchmark, 40),
         timezone: cleanText(cycle?.timezone, 80) ?? "Asia/Shanghai",
         startAt: optionalIso(cycle?.startAt),
-        endAt: optionalIso(cycle?.endAt),
+        endAt: revealsOutcome ? optionalIso(cycle?.endAt) : null,
         catalyst: cycleType === "catalyst" ? sanitizeCatalyst(cycle) : null,
-        status: cleanText(cycle?.status, 80),
+        eventMetadata,
+        legacySource: sanitizeLegacyCycleSource(cycle?.legacySource, { blind: !revealsOutcome }),
+        canonicalEvidenceIdentity: revealsOutcome ? canonicalEvidenceIdentity : null,
+        status: normalizedPhase === "blind"
+          ? "sealed_for_blind_review"
+          : cleanText(cycle?.status, 80),
         startCondition: cleanText(cycle?.startCondition, 2_000),
         endCondition: cleanText(cycle?.endCondition, 2_000),
         evidenceGrade,
@@ -224,26 +279,35 @@ export function buildReviewCycleAnalysisRun({
         brokerAssociation: {
           revision: evidenceRevision,
           evidenceRevision,
-          confirmedAt: optionalIso(cycle?.brokerLinks?.confirmedAt),
-          requestedRecordIds: eligibleRequestedRecordIds,
-          requestedRecordCount: eligibleRequestedRecordIds.length,
-          resolvedRecordCount: linkedOrderIds.length + linkedExecutionIds.length,
-          supplementalRecordCount: Math.max(
-            0,
-            linkedOrderIds.length + linkedExecutionIds.length - requestedRecordIds.length,
-          ),
+          accountScopeStatus: "matched",
+          confirmedAt: revealsOutcome ? optionalIso(cycle?.brokerLinks?.confirmedAt) : null,
+          requestedRecordIds: revealsOutcome ? eligibleRequestedRecordIds : undefined,
+          requestedRecordCount: revealsOutcome
+            ? eligibleRequestedRecordIds.length
+            : visibleOrders.filter((item) => requestedRecordIdSet.has(`order:${item?.orderId}`)).length
+              + visibleExecutions.filter((item) => requestedRecordIdSet.has(`execution:${item?.tradeId}`)).length,
+          resolvedRecordCount: revealsOutcome
+            ? linkedOrderIds.length + linkedExecutionIds.length
+            : visibleOrders.length + visibleExecutions.length,
+          supplementalRecordCount: revealsOutcome
+            ? Math.max(0, linkedOrderIds.length + linkedExecutionIds.length - requestedRecordIds.length)
+            : undefined,
           selectionPolicy: "user_selected_records_define_trade_path; resolved_parent_and_sibling_records_are_supplemental",
-          linkedOrderCount: linkedOrderIds.length,
-          linkedExecutionCount: linkedExecutionIds.length,
-          eligibleLinkedOrderCount: linkedOrders.length,
-          eligibleLinkedExecutionCount: linkedExecutions.length,
-          excludedAuditOrderCount: excludedAuditOrders.length,
-          excludedAuditExecutionCount: excludedAuditExecutions.length,
-          excludedAuditOrderReasons: countExcludedReviewReasons(excludedAuditOrders),
-          excludedAuditExecutionReasons: countExcludedReviewReasons(excludedAuditExecutions),
+          linkedOrderCount: revealsOutcome ? linkedOrderIds.length : visibleOrders.length,
+          linkedExecutionCount: revealsOutcome ? linkedExecutionIds.length : visibleExecutions.length,
+          eligibleLinkedOrderCount: revealsOutcome ? linkedOrders.length : visibleOrders.length,
+          eligibleLinkedExecutionCount: revealsOutcome ? linkedExecutions.length : visibleExecutions.length,
+          excludedAuditOrderCount: revealsOutcome ? excludedAuditOrders.length : undefined,
+          excludedAuditExecutionCount: revealsOutcome ? excludedAuditExecutions.length : undefined,
+          excludedAuditOrderReasons: revealsOutcome
+            ? countExcludedReviewReasons(excludedAuditOrders)
+            : undefined,
+          excludedAuditExecutionReasons: revealsOutcome
+            ? countExcludedReviewReasons(excludedAuditExecutions)
+            : undefined,
           evidenceFilterPolicyVersion: 2,
-          missingOrderCount: missingOrderIds.length,
-          missingExecutionCount: missingExecutionIds.length,
+          missingOrderCount: revealsOutcome ? missingOrderIds.length : undefined,
+          missingExecutionCount: revealsOutcome ? missingExecutionIds.length : undefined,
         },
         orders: visibleOrders.map((item) => sanitizeOrder(item, {
           startAt: cycle?.startAt,
@@ -261,7 +325,9 @@ export function buildReviewCycleAnalysisRun({
               ? "selected_order_fill"
               : "supplemental_sibling_execution",
         })),
-        startingPortfolio: sanitizePortfolioSnapshot(cycle?.startingPortfolio ?? cycle?.portfolioSnapshot),
+        startingPortfolio: sanitizePortfolioSnapshot(cycle?.startingPortfolio ?? cycle?.portfolioSnapshot, {
+          includeEvidenceMetadata: revealsOutcome,
+        }),
         // A live portfolio fetched during review is not a historical cycle-end snapshot.
         endingPortfolio,
         currentPortfolioContext,
@@ -284,15 +350,25 @@ export function buildReviewCycleAnalysisRun({
       },
       dataCoverage: {
         brokerSource: archive?.source ?? "Longbridge MCP · read only",
-        brokerSyncedAt: archive?.syncedAt ?? null,
-        brokerRange: archive?.range ?? null,
-        completeness: archive?.completeness ?? {},
-        parentOrderBackfill: sanitizeParentOrderBackfill(archive?.parentOrderBackfill),
-        warnings: stringList(archive?.warnings, 20),
+        brokerAccountScopeStatus: "matched",
+        brokerSyncedAt: revealsOutcome ? archive?.syncedAt ?? null : null,
+        brokerRange: revealsOutcome ? archive?.range ?? null : null,
+        completeness: revealsOutcome ? archive?.completeness ?? {} : {},
+        parentOrderBackfill: revealsOutcome
+          ? sanitizeParentOrderBackfill(archive?.parentOrderBackfill)
+          : null,
+        warnings: revealsOutcome ? stringList(archive?.warnings, 20) : [],
+        blindProjection: normalizedPhase === "blind" ? "cutoff_filtered_without_future_counts" : null,
       },
       pointInTimeTechnical: sanitizePointInTimeTechnical(pointInTimeTechnical),
       deterministicOutcomeMetrics: revealsOutcome
         ? sanitizeDeterministicOutcomeMetrics(deterministicOutcomeMetrics)
+        : null,
+      technicalValidation: revealsOutcome
+        ? sanitizeTechnicalValidation(technicalValidation)
+        : null,
+      reconciliation: revealsOutcome && reconciliation?.schemaVersion === "review-reconciliation/v1"
+        ? structuredClone(reconciliation)
         : null,
       evidencePolicy: {
         evidenceLabels: [
@@ -303,11 +379,15 @@ export function buildReviewCycleAnalysisRun({
           "technical_fact",
           "derived_metric",
           "agent_inference",
+          ...(cycle.legacySource ? ["historical_legacy_source_not_new_ex_ante"] : []),
         ],
         narrativeStageIndependentFromTechnicalTemperature: true,
         emaOrFibRequired: false,
         orderWrite: false,
         ruleAutoPromotion: false,
+        legacyMigrationCreatesNoNewExAnteSeal: true,
+        legacyResultReferencesAreNotCurrentPhaseRuns: true,
+        oneSamplePerCanonicalEvidenceIdentity: true,
       },
     },
     technical: null,
@@ -318,9 +398,11 @@ export function buildReviewCycleAnalysisRun({
       {
         source: archive?.source ?? "Longbridge MCP · read only",
         tool: "review:cycle-broker-history",
-        asOf: archive?.syncedAt ?? null,
+        asOf: normalizedPhase === "blind" ? knowledgeCutoffAt : archive?.syncedAt ?? null,
         records: visibleOrders.length + visibleExecutions.length,
-        status: brokerEvidenceStatus(archive, missingOrderIds, missingExecutionIds),
+        status: normalizedPhase === "blind"
+          ? visibleOrders.length + visibleExecutions.length ? "succeeded" : "degraded"
+          : brokerEvidenceStatus(archive, missingOrderIds, missingExecutionIds),
         summary: normalizedPhase === "blind"
           ? decisionTimeline.length
             ? `按 ${decisionTimeline.length} 个节点证据胶囊交付券商事实；每个节点只含严格早于其自身 knowledgeCutoffAt 的首次可知事实。`
@@ -332,7 +414,7 @@ export function buildReviewCycleAnalysisRun({
       {
         source: "本机加密决策周期台账",
         tool: `review:decision-cycle:${normalizedPhase}`,
-        asOf: workspace?.updatedAt ?? null,
+        asOf: normalizedPhase === "blind" ? knowledgeCutoffAt : workspace?.updatedAt ?? null,
         records: 1,
         status: evidenceGrade === "contaminated" ? "degraded" : "succeeded",
         summary: `${cycleTypeLabel(cycleType)} · ${phaseLabel(normalizedPhase)} · ${evidenceGrade}`,
@@ -347,18 +429,30 @@ export function buildReviewCycleAnalysisRun({
           ? "已基于关联成交和周期内长桥日线计算可核验结果指标。"
           : "部分或全部结果指标不可计算；coverage/reasons 已明确记录，模型不得用临时查询替代。",
       }] : []),
+      ...(revealsOutcome && technicalValidation ? [{
+        source: "本机加密技术雷达 + 宿主结果指标",
+        tool: "review:technical-validation-sample",
+        asOf: technicalValidation?.entrySnapshot?.batch?.recordedAt ?? null,
+        records: technicalValidation?.sampleCandidate?.status === "available" ? 1 : 0,
+        status: technicalValidation?.status === "complete" ? "succeeded" : "degraded",
+        summary: technicalValidation?.entrySnapshot?.batch
+          ? "已把首个框选 Buy 之前最后一批技术雷达，与本次宿主验证结果做防未来泄漏关联；当前只作为历史校准样本。"
+          : "首个框选 Buy 之前没有可用技术雷达批次；技术验证样本保持 N/A。",
+      }] : []),
     ],
     safeguards: {
       orderWrite: false,
       brokerFactsImmutable: true,
       userExAnteVersioned: true,
       futureEvidenceExcludedInBlind: normalizedPhase === "blind",
+      blindFormalStatisticsEligible: normalizedPhase === "blind" && decisionTimeline.length <= 1,
       blindTimelineCapsulesShareSingleModelRequest: normalizedPhase === "blind" && decisionTimeline.length > 0,
       outcomeRequiresBlindAssessment: normalizedPhase === "outcome",
       retrospectiveHasNoBlindAssessment: normalizedPhase === "retrospective",
       retrospectiveRecollectionIsNotExAnteEvidence: normalizedPhase === "retrospective",
       forwardHypothesisEffectiveOnlyFromSavedAt: normalizedPhase === "retrospective",
       ruleAutoPromotion: false,
+      technicalValidationAutomaticPromotion: false,
     },
     capabilities: {
       modelNarration: true,
@@ -366,6 +460,7 @@ export function buildReviewCycleAnalysisRun({
       skills: true,
       mcp: true,
       brokerHistory: Boolean(archive?.syncedAt),
+      technicalValidation: Boolean(technicalValidation),
     },
   };
 }
@@ -443,6 +538,42 @@ function sanitizeDeterministicOutcomeMetrics(value) {
       provenance: {
         deterministicHostCalculation: true,
         modelLookupAllowedAsMetricSubstitute: false,
+      },
+    };
+  }
+}
+
+function sanitizeTechnicalValidation(value) {
+  if (!value || typeof value !== "object") return null;
+  try {
+    const cloned = JSON.parse(JSON.stringify(value));
+    return {
+      ...cloned,
+      status: cleanText(cloned?.status, 80) ?? "unavailable",
+      reasonCodes: stringList(cloned?.reasonCodes, 40),
+      provenance: {
+        ...(cloned?.provenance && typeof cloned.provenance === "object"
+          ? cloned.provenance
+          : {}),
+        deterministic: true,
+        currentPortfolioLookupAllowed: false,
+        currentHoldingInferenceAllowed: false,
+        formalRulePolicy: "historical calibration is discovery-only; forward validation and human review are required",
+      },
+    };
+  } catch {
+    return {
+      status: "unavailable",
+      reasonCodes: ["technical_validation_serialization_failed"],
+      entrySnapshot: null,
+      outcome: null,
+      riskR: null,
+      sampleCandidate: null,
+      ruleCandidate: null,
+      provenance: {
+        deterministic: true,
+        currentPortfolioLookupAllowed: false,
+        currentHoldingInferenceAllowed: false,
       },
     };
   }
@@ -577,7 +708,7 @@ function hydrateDecisionTimeline({
       : "complete";
     return {
       nodeId: cleanText(node?.nodeId, 240) ?? `timeline-node-${index + 1}`,
-      timelineIndex: Number.isFinite(Number(node?.timelineIndex)) ? Number(node.timelineIndex) : index,
+      timelineIndex: finiteOrNull(node?.timelineIndex) ?? index,
       nodeType: cleanText(node?.nodeType, 80),
       sourceId: cleanText(node?.sourceId, 240),
       sourceSequence: finiteOrNull(node?.sourceSequence),
@@ -773,7 +904,7 @@ function sanitizeSealedVersion(value) {
   const snapshot = value?.snapshot ?? {};
   const exAnte = snapshot?.exAnte ?? value?.exAnte ?? snapshot;
   return {
-    version: Number.isFinite(Number(value?.version)) ? Number(value.version) : null,
+    version: finiteOrNull(value?.version),
     sealedAt: optionalIso(value?.sealedAt),
     cutoffAt: requiredCutoff(value),
     timing: normalizeEvidenceGrade(value?.evidenceGrade ?? value?.timing),
@@ -804,6 +935,15 @@ function sanitizeSealedVersion(value) {
 
 function summarizeBlindRun(value) {
   const result = value?.result && typeof value.result === "object" ? value.result : {};
+  const sourceSummary = String(
+    value?.summary
+      ?? result?.summary
+      ?? result?.body
+      ?? result?.conclusion?.body
+      ?? result?.conclusion?.headline
+      ?? "",
+  ).trim();
+  const summary = sourceSummary.slice(0, MAX_FROZEN_BLIND_ASSESSMENT_CHARS);
   return {
     assessmentId: cleanText(value?.assessmentId ?? value?.id ?? value?.runId, 200),
     threadId: cleanText(value?.threadId, 220),
@@ -814,14 +954,16 @@ function summarizeBlindRun(value) {
       160,
     ),
     resultHash: cleanText(value?.resultHash, 160),
-    summary: cleanText(
-      value?.summary
-        ?? result?.summary
-        ?? result?.body
-        ?? result?.conclusion?.body
-        ?? result?.conclusion?.headline,
-      12_000,
-    ),
+    summary: summary || null,
+    summaryHash: sourceSummary
+      ? `sha256:${createHash("sha256").update(sourceSummary).digest("hex")}`
+      : null,
+    sourceCharacterCount: sourceSummary.length,
+    deliveredCharacterCount: summary.length,
+    truncated: summary.length !== sourceSummary.length,
+    truncationReason: summary.length !== sourceSummary.length
+      ? "frozen_blind_assessment_exceeds_transport_safety_limit"
+      : null,
     frozen: true,
   };
 }
@@ -839,6 +981,7 @@ function sanitizeOrder(item, { startAt = null, endAt = null, selectionRole = nul
     executedQuantity: finiteOrNull(item?.executedQuantity),
     submittedPrice: finiteOrNull(item?.submittedPrice),
     executedPrice: finiteOrNull(item?.executedPrice),
+    contractMultiplier: positiveFiniteOrNull(item?.contractMultiplier),
     currency: item?.currency ?? null,
     submittedAt: optionalIso(item?.submittedAt),
     updatedAt: optionalIso(item?.updatedAt),
@@ -856,6 +999,7 @@ function sanitizeExecution(item, { startAt = null, endAt = null, selectionRole =
     side: item?.side ?? null,
     quantity: finiteOrNull(item?.quantity),
     price: finiteOrNull(item?.price),
+    contractMultiplier: positiveFiniteOrNull(item?.contractMultiplier),
     reportedPrice: finiteOrNull(item?.reportedPrice),
     priceAudit: sanitizeExecutionPriceAudit(item?.priceAudit),
     currency: item?.currency ?? null,
@@ -878,25 +1022,144 @@ function sanitizeExecutionPriceAudit(value) {
   };
 }
 
-function sanitizePortfolioSnapshot(value) {
+function sanitizePortfolioSnapshot(value, { includeEvidenceMetadata = true } = {}) {
   if (!value || typeof value !== "object") return null;
-  return {
-    snapshotAt: optionalIso(value?.snapshotAt ?? value?.syncedAt),
-    baseCurrency: cleanText(value?.baseCurrency ?? value?.account?.baseCurrency, 20),
-    netAssets: finiteOrNull(value?.netAssets ?? value?.totals?.netAssets),
-    cashRatioPercent: finiteOrNull(value?.cashRatioPercent ?? value?.totals?.cashRatio),
-    grossExposurePercent: finiteOrNull(value?.grossExposurePercent ?? value?.totals?.grossExposurePercent),
+  const netAssets = finiteOrNull(
+    value?.account?.netAssets
+      ?? value?.netAssets
+      ?? value?.totals?.netAssets
+      ?? value?.summary?.totalAssets,
+  );
+  const grossNotional = finiteOrNull(value?.totals?.positionsGrossMarketValueBase ?? value?.summary?.grossExposure);
+  const cash = finiteOrNull(value?.cash ?? value?.account?.totalCash ?? value?.summary?.cash);
+  const reportingCurrency = cleanText(value?.baseCurrency ?? value?.account?.baseCurrency ?? value?.summary?.reportingCurrency, 20);
+  const rawHoldings = !Array.isArray(value.positions) && Array.isArray(value.holdings);
+  const sourcePositions = Array.isArray(value.positions) ? value.positions : rawHoldings ? value.holdings : null;
+  const sourceQuality = value.dataQuality && typeof value.dataQuality === "object" ? value.dataQuality : null;
+  const sourceValuation = value.valuation ?? value.snapshotValuation ?? null;
+  const regularClosePricesOnly = sourceValuation?.methodVersion === "regular-close-v2";
+  const issues = Array.isArray(sourceQuality?.issues) ? sourceQuality.issues : [];
+  const rates = Array.isArray(value?.fx?.rates) ? value.fx.rates : [];
+  const positionCoverage = compactProjectionCoverage(sourcePositions, MAX_PORTFOLIO_CONTEXT_POSITIONS);
+  const explicitGrossExposure = finiteOrNull(
+    value?.grossExposurePercent
+      ?? value?.totals?.grossExposurePercent,
+  );
+  const snapshot = {
+    snapshotAt: optionalIso(value?.snapshotAt ?? value?.syncedAt ?? value?.capturedAt),
+    snapshotId: cleanText(value?.snapshotId, 160),
+    kind: cleanText(value?.kind, 40),
+    baseCurrency: reportingCurrency,
+    netAssets,
+    cash,
+    units: { netAssets: reportingCurrency, cash: reportingCurrency, weightPercent: "percent_of_net_assets",
+      quantity: "shares_or_contracts_as_reported", marketValue: "per_position_currency",
+      marketValueInReportingCurrency: reportingCurrency },
+    cashRatioPercent: finiteOrNull(value?.cashRatioPercent ?? value?.totals?.cashRatio)
+      ?? (cash != null && netAssets != null && netAssets > 0 ? cash / netAssets * 100 : null),
+    grossExposurePercent: explicitGrossExposure
+      ?? (netAssets != null && netAssets > 0 && grossNotional != null
+        ? (grossNotional / netAssets) * 100
+        : null),
     top1WeightPercent: finiteOrNull(value?.top1WeightPercent ?? value?.totals?.top1Weight),
-    positions: (Array.isArray(value?.positions) ? value.positions : []).slice(0, 200).map((item) => ({
-      symbol: item?.symbol ?? null,
+    positions: (sourcePositions ?? []).slice(0, MAX_PORTFOLIO_CONTEXT_POSITIONS).map((item) => ({
+      symbol: cleanText(item?.symbol, 80),
       quantity: finiteOrNull(item?.quantity),
-      weightPercent: finiteOrNull(item?.weightPercent ?? item?.weight),
+      weightPercent: finiteOrNull(item?.weightPercent)
+        ?? (rawHoldings && finiteOrNull(item?.weight) != null ? Number(item.weight) * 100 : finiteOrNull(item?.weight)),
       marketValue: finiteOrNull(item?.marketValue),
-      currency: item?.currency ?? null,
-      group: item?.group ?? null,
+      currency: cleanText(item?.currency, 20),
+      marketValueInReportingCurrency: finiteOrNull(item?.valueInReportingCurrency ?? item?.marketValueBase),
+      group: cleanText(item?.group, 80),
     })),
+    positionCoverage,
+    accountScope: compactPortfolioAccountScope(value),
+    valuation: sourceValuation && typeof sourceValuation === "object" ? {
+      session: cleanText(sourceValuation.session, 40),
+      methodVersion: cleanText(sourceValuation.methodVersion, 80),
+      quoteAsOf: optionalIso(sourceValuation.quoteAsOf),
+      quoteLatestAsOf: optionalIso(sourceValuation.quoteLatestAsOf),
+      observedAt: optionalIso(sourceValuation.observedAt),
+      totalAssetsBasis: cleanText(sourceValuation.totalAssetsBasis, 100),
+      brokerObservedNetAssets: finiteOrNull(sourceValuation.brokerObservedNetAssets),
+      afterHoursMarksExcluded: booleanOrNull(sourceValuation.afterHoursMarksExcluded),
+      pricesOnlyNotReconciledInventory: regularClosePricesOnly,
+    } : null,
+    fx: value.fx && typeof value.fx === "object" ? {
+      status: cleanText(value.fx.status, 40),
+      reportingCurrency,
+      source: cleanText(value.fx.source ?? value.fx.provider, 120),
+      retrievedAt: optionalIso(value.fx.retrievedAt ?? value.fx.fetchedAt),
+      asOf: optionalIso(value.fx.asOf),
+      rates: rates.slice(0, MAX_PORTFOLIO_CONTEXT_DETAILS).map((rate) => ({
+        base: cleanText(rate?.base, 20), quote: cleanText(rate?.quote, 20),
+        rate: positiveFiniteOrNull(rate?.rate), asOf: optionalIso(rate?.asOf), source: cleanText(rate?.source, 120),
+      })),
+      rateCoverage: compactProjectionCoverage(Array.isArray(value.fx.rates) ? rates : null, MAX_PORTFOLIO_CONTEXT_DETAILS),
+    } : null,
+    dataQuality: sourceQuality || regularClosePricesOnly ? {
+      sourceStatus: cleanText(sourceQuality?.status, 40),
+      status: regularClosePricesOnly && sourceQuality?.status !== "unavailable" ? "partial" : cleanText(sourceQuality?.status, 40),
+      completeForPeriodReturn: regularClosePricesOnly ? false : booleanOrNull(sourceQuality?.completeForPeriodReturn),
+      issues: issues.slice(0, MAX_PORTFOLIO_CONTEXT_DETAILS).map((item) => ({
+        code: cleanText(item?.code, 120), field: cleanText(item?.field, 120), message: cleanText(item?.message, 300),
+      })),
+      issueCoverage: compactProjectionCoverage(Array.isArray(sourceQuality?.issues) ? issues : null, MAX_PORTFOLIO_CONTEXT_DETAILS),
+      limitations: [
+        ...(regularClosePricesOnly ? ["regular_close_prices_only_inventory_cash_not_reconciled"] : []),
+        ...(positionCoverage.omittedCount > 0 ? ["portfolio_positions_partially_delivered"] : []),
+      ],
+    } : null,
+    provenance: compactPortfolioProvenance(value.provenance, value.integrity),
+  };
+  if (includeEvidenceMetadata) return snapshot;
+  // Preserve the existing blind boundary. Newly exposed retrieval timestamps,
+  // FX and quality narratives may have been recorded after the knowledge cut;
+  // do not add those to blind replay without a separate cutoff-aware contract.
+  return {
+    snapshotAt: snapshot.snapshotAt, baseCurrency: snapshot.baseCurrency, netAssets: snapshot.netAssets,
+    cashRatioPercent: snapshot.cashRatioPercent, grossExposurePercent: snapshot.grossExposurePercent,
+    top1WeightPercent: snapshot.top1WeightPercent,
+    units: snapshot.units,
+    provenanceQualification: "metadata_not_verified_at_knowledge_cutoff",
+    positions: snapshot.positions.map(({ marketValueInReportingCurrency: _converted, ...item }) => item),
   };
 }
+
+function compactProjectionCoverage(values, maximum) {
+  return { sourceCount: Array.isArray(values) ? values.length : null,
+    deliveredCount: Array.isArray(values) ? Math.min(values.length, maximum) : 0,
+    omittedCount: Array.isArray(values) ? Math.max(0, values.length - maximum) : null,
+    status: !Array.isArray(values) ? "missing" : values.length > maximum ? "partial" : "complete" };
+}
+
+function compactPortfolioAccountScope(value) {
+  const scope = value.accountScope ?? value.accountScopeIdentity;
+  const scopeId = cleanText(scope?.scopeId ?? value.accountScopeId, 160);
+  if (!scope && !scopeId) return null;
+  // Do not carry account numbers, account identifiers, OAuth subjects or raw
+  // account records into the model. scopeId is the host-owned opaque partition.
+  return { scopeId, broker: cleanText(scope?.broker, 80), environment: cleanText(scope?.environment, 40),
+    status: cleanText(scope?.status, 40), version: cleanText(scope?.version, 80),
+    accountCount: Array.isArray(scope?.accounts) ? scope.accounts.length : null,
+    verified: booleanOrNull(value.provenance?.accountScopeVerified) };
+}
+
+function compactPortfolioProvenance(value, integrity) {
+  if ((!value || typeof value !== "object") && (!integrity || typeof integrity !== "object")) return null;
+  const source = value ?? {};
+  const hash = (input) => typeof input === "string" && /^[a-f0-9]{64}$/i.test(input) ? input : null;
+  return { source: cleanText(source.source, 160), provider: cleanText(source.provider, 80),
+    transport: cleanText(source.transport, 80), freshness: cleanText(source.freshness, 40),
+    fetchedAt: optionalIso(source.fetchedAt), recordedAt: optionalIso(source.recordedAt),
+    sourceSnapshotId: cleanText(source.sourceSnapshotId, 160), cacheAgeMs: finiteOrNull(source.cacheAgeMs),
+    integrityStatus: cleanText(source.integrityStatus, 60),
+    contentHash: hash(integrity?.contentHash), entryHash: hash(integrity?.entryHash),
+    accountScopeVerified: booleanOrNull(source.accountScopeVerified),
+    accountScopeLimitation: cleanText(source.accountScopeLimitation, 300) };
+}
+
+function booleanOrNull(value) { return typeof value === "boolean" ? value : null; }
 
 function sanitizeCycleEndPortfolio(value, startAt, endAt) {
   const snapshot = sanitizePortfolioSnapshot(value);
@@ -965,10 +1228,78 @@ function sanitizeOutcome(value) {
 }
 
 function sanitizeCatalyst(cycle) {
+  const metadata = sanitizeCycleEventMetadata(cycle?.eventMetadata);
   return {
     kind: cleanText(cycle?.eventKind ?? cycle?.catalyst?.kind, 80),
-    eventAt: optionalIso(cycle?.eventAt ?? cycle?.catalystAt ?? cycle?.catalyst?.eventAt),
+    eventAt: metadata && metadata.timePrecision !== "exact" ? null
+      : optionalIso(cycle?.eventAt ?? cycle?.catalystAt ?? cycle?.catalyst?.eventAt ?? metadata?.eventAt),
     eventId: cleanText(cycle?.eventId ?? cycle?.catalyst?.eventId, 180),
+  };
+}
+
+function sanitizeCycleEventMetadata(value) {
+  if (!value || typeof value !== "object") return null;
+  const eventDate = /^\d{4}-\d{2}-\d{2}$/.test(String(value.eventDate ?? "")) ? value.eventDate : null;
+  const timePrecision = ["exact", "session", "date"].includes(value.timePrecision) ? value.timePrecision : "date";
+  return {
+    eventDate,
+    timePrecision,
+    eventAt: timePrecision === "exact" ? optionalIso(value.eventAt) : null,
+    session: ["bmo", "amc", "intraday", "unknown"].includes(value.session) ? value.session : "unknown",
+    fiscalQuarter: cleanText(value.fiscalQuarter, 80),
+    timezone: cleanText(value.timezone, 80),
+    source: cleanText(value.source, 300),
+    eventCandidateId: cleanText(value.eventCandidateId, 180),
+    symbol: cleanText(value.symbol, 40),
+    status: cleanText(value.status, 80),
+    confidence: cleanText(value.confidence, 80),
+    precisionPolicy: "date_and_session_are_not_exact_timestamps_do_not_infer_cutoff_from_them",
+  };
+}
+
+function sanitizeLegacyCycleSource(value, { blind = false } = {}) {
+  if (!value || typeof value !== "object") return null;
+  const boundary = {
+    sourceCaseId: cleanText(value.sourceCaseId, 240),
+    evidencePosture: "historical_legacy_source_not_new_ex_ante",
+    eligibleAsExAnteEvidence: false,
+    resultsAreCurrentPhaseRuns: false,
+    migrationCreatesIndependentSample: false,
+  };
+  if (blind) return { ...boundary, contentsWithheldForBlind: true };
+  const draft = value.originalJudgment ?? {};
+  const textFields = ["myView", "thesis", "marketView", "expectationGap", "narrativeStage", "technicalEvidence",
+    "supportingEvidence", "contradictingEvidence", "plannedAction", "invalidation", "fundamentalView", "technicalView"];
+  const numericFields = ["marketTemperature", "riskBudgetR", "bullProbability", "baseProbability", "bearProbability",
+    "bullPayoffR", "basePayoffR", "bearPayoffR"];
+  const originalJudgment = Object.fromEntries([
+    ...textFields.map((key) => [key, cleanText(draft[key], 6_000)]),
+    ...numericFields.map((key) => [key, finiteOrNull(draft[key])]),
+  ]);
+  const referenceProjection = (items, keys) => {
+    const source = Array.isArray(items) ? items : [];
+    return {
+      sourceCount: source.length,
+      omittedCount: Math.max(0, source.length - 100),
+      references: source.slice(0, 100).map((item) => Object.fromEntries(keys.map((key) => [key,
+        ["version", "revision", "evidenceRevision"].includes(key) ? finiteOrNull(item?.[key]) : cleanText(item?.[key], 240),
+      ]))),
+      policy: "historical_reference_only_not_current_phase_or_broker_evidence",
+    };
+  };
+  return {
+    ...boundary,
+    sourceHash: cleanText(value.sourceHash, 160),
+    accountScopeId: cleanText(value.accountScopeId, 160),
+    migratedAt: optionalIso(value.migratedAt),
+    originalJudgment,
+    originalJudgmentLabel: "historical_user_text_preserved_not_newly_sealed",
+    associationVersions: referenceProjection(value.associationVersions,
+      ["revision", "evidenceRevision", "hash", "changedAt", "confirmedAt"]),
+    sealedVersionReferences: referenceProjection(value.sealedVersionReferences,
+      ["version", "hash", "sealedAt", "knowledgeCutoffAt", "snapshotHash"]),
+    resultReferences: referenceProjection(value.resultReferences,
+      ["kind", "sourceCaseId", "hash", "updatedAt"]),
   };
 }
 
@@ -1082,9 +1413,16 @@ function cleanText(value, limit) {
 }
 
 function finiteOrNull(value) {
-  if (value == null || value === "") return null;
+  if (value == null || typeof value === "boolean") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  if (!["number", "string"].includes(typeof value)) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function positiveFiniteOrNull(value) {
+  const number = finiteOrNull(value);
+  return number != null && number > 0 ? number : null;
 }
 
 function positiveRevision(value) {

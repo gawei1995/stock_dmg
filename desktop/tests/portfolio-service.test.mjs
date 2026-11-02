@@ -4,8 +4,10 @@ import {
   canonicalizeLongbridgeExchangeRates,
   PortfolioService,
   PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
+  selectCompletedMarketSeriesBars,
 } from "../src/data/portfolio-service.mjs";
 import { buildFxGraph, findConversionRate } from "../src/data/normalize.mjs";
+import { LongbridgeClient } from "../src/mcp/longbridge-client.mjs";
 
 const liveUsdSelfRate = () => ({ exchanges: [{
   base_currency: "USD",
@@ -85,7 +87,94 @@ test("live Longbridge MCP FX keeps HKD assets in the correct USD magnitude", asy
   assert.equal(portfolio.dataQuality.valuationComplete, true);
   assert.equal(portfolio.valuationSchemaVersion, PORTFOLIO_SNAPSHOT_SCHEMA_VERSION);
   assert.equal(portfolio.freshness.state, "fresh");
+  assert.equal(portfolio.freshness.snapshotFreshForSizing, true);
+  assert.equal(portfolio.freshness.freshForSizing, false);
+  assert.equal(portfolio.valuationGate.outcome.status, "block");
+  assert.ok(portfolio.valuationGate.outcome.blockingReasonCodes.includes(
+    "quote_older_than_latest_completed_session",
+  ));
+  assert.ok(portfolio.valuationGate.outcome.blockingReasonCodes.includes(
+    "net_asset_reconciliation_failed",
+  ));
+  assert.equal(portfolio.accountScopeIdentity.status, "unverified");
+  assert.equal(portfolio.accountScopeIdentity.scopeId, null);
+  assert.doesNotMatch(JSON.stringify(portfolio.accountScopeIdentity), /117679|7709/);
+});
+
+test("portfolio derives an opaque account scope before raw broker identifiers are discarded", async () => {
+  const longbridge = {
+    endpoint: "https://mcp.longbridge.com/v2",
+    async call(name) {
+      if (name === "stock_positions") return {
+        list: [{
+          account_id: "REAL-BROKER-ACCOUNT-42",
+          account_channel: "margin",
+          stock_info: [],
+        }],
+      };
+      if (name === "account_balance") return [{
+        account_id: "REAL-BROKER-ACCOUNT-42",
+        currency: "USD",
+        net_assets: "1000",
+        total_cash: "1000",
+        buy_power: "1000",
+      }];
+      if (name === "exchange_rate") return liveUsdSelfRate();
+      if (name === "quote" || name === "option_quote") return [];
+      throw new Error(`unexpected tool ${name}`);
+    },
+  };
+  const portfolio = await new PortfolioService({
+    longbridge,
+    store: { async set() {}, async get() { return null; } },
+  }).refresh();
+  assert.equal(portfolio.accountScopeIdentity.status, "verified");
+  assert.match(portfolio.accountScopeIdentity.scopeId, /^broker-scope-v1-[0-9a-f]{64}$/);
+  assert.doesNotMatch(JSON.stringify(portfolio), /REAL-BROKER-ACCOUNT-42/);
+});
+
+test("portfolio service attaches a passing gate for a coherent official close valuation", async () => {
+  const assessedAt = "2026-08-30T16:00:00.000Z";
+  const quoteAt = "2026-08-28T19:59:00.000Z";
+  const longbridge = coherentUsdLongbridge({ quoteAt });
+  const saved = [];
+  const portfolio = await new PortfolioService({
+    longbridge,
+    store: {
+      async set(key, value) { saved.push([key, value]); },
+      async get() { return null; },
+    },
+    clock: () => Date.parse(assessedAt),
+  }).refresh();
+
+  assert.equal(portfolio.syncedAt, assessedAt);
+  assert.equal(portfolio.valuationGate.outcome.status, "pass");
+  assert.equal(portfolio.valuationGate.positions[0].quote.state, "accepted_market_closed");
+  assert.match(portfolio.valuationGate.hash, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(portfolio.freshness.state, "fresh");
+  assert.equal(portfolio.freshness.valuationGate.valid, true);
   assert.equal(portfolio.freshness.freshForSizing, true);
+  assert.equal(saved.at(-1)[1].valuationGate.hash, portfolio.valuationGate.hash);
+});
+
+test("portfolio service keeps the account snapshot fresh but blocks sizing on one stale live mark", async () => {
+  const assessedAt = "2026-08-31T14:00:00.000Z";
+  const longbridge = coherentUsdLongbridge({ quoteAt: "2026-08-31T13:50:00.000Z" });
+  const portfolio = await new PortfolioService({
+    longbridge,
+    store: { async set() {}, async get() { return null; } },
+    clock: () => new Date(assessedAt),
+  }).refresh();
+
+  assert.equal(portfolio.freshness.state, "fresh");
+  assert.equal(portfolio.freshness.snapshotFreshForSizing, true);
+  assert.equal(portfolio.freshness.freshForSizing, false);
+  assert.equal(portfolio.status, "degraded");
+  assert.equal(portfolio.valuationGate.accountSync.status, "pass");
+  assert.equal(portfolio.valuationGate.positions[0].quote.state, "stale_active");
+  assert.ok(portfolio.valuationGate.outcome.blockingReasonCodes.includes(
+    "quote_stale_active_session",
+  ));
 });
 
 test("an old ambiguous-FX portfolio snapshot is never restored", async () => {
@@ -120,6 +209,7 @@ test("an old ambiguous-FX portfolio snapshot is never restored", async () => {
   assert.equal(cached.holdingsStatus, "cached");
   assert.equal(cached.freshness.state, "cached");
   assert.equal(cached.freshness.freshForSizing, false);
+  assert.equal(cached.freshness.valuationGate.reason, "valuation_gate_missing");
 });
 
 test("Longbridge FX never guesses an unanchored or mixed provider convention", () => {
@@ -306,7 +396,71 @@ test("missing OPRA degrades only option valuation and still returns the real por
   assert.match(portfolio.dataQuality.quoteErrors[0], /OPRA permission required/);
 });
 
-test("exchange-rate 463 falls back to ECB reference rates and keeps USD portfolio weights", async () => {
+test("new holdings are saved on repeated refresh despite an isError=false option permission failure", async () => {
+  const saved = new Map();
+  const store = { async get(key) { return saved.get(key); }, async set(key, value) { saved.set(key, value); } };
+  const longbridge = new LongbridgeClient({ store, openExternal: async () => {} });
+  let includeOption = false;
+  longbridge.transport = { async close() { assert.fail("market-data permission must not disconnect holdings"); } };
+  longbridge.client = { async callTool({ name, arguments: args }) {
+    let payload;
+    if (name === "stock_positions") payload = { list: [{ account_id: "test-account", stock_info: [
+      { symbol: "AAPL.US", quantity: "10", cost_price: "100", currency: "USD", market: "US" },
+      ...(includeOption ? [{ symbol: "TEST260918P100000.US", quantity: "2", cost_price: "1", currency: "USD", market: "US" }] : []),
+    ] }] };
+    else if (name === "account_balance") payload = [{ currency: "USD", net_assets: "10000", total_cash: "8000", buy_power: "16000" }];
+    else if (name === "exchange_rate") payload = liveUsdSelfRate();
+    else if (name === "quote") payload = args.symbols.map((symbol) => ({ symbol, last_done: "200", timestamp: "1767225600" }));
+    else if (name === "option_quote") payload = { error_code: 301604, message: "no quote access", recoverable: "none" };
+    else assert.fail(`unexpected tool ${name}`);
+    return { isError: false, content: [{ type: "text", text: JSON.stringify(payload) }] };
+  } };
+  for (const name of ["stock_positions", "account_balance", "exchange_rate", "quote", "option_quote"]) longbridge.tools.set(name, {});
+  const service = new PortfolioService({ longbridge, store });
+  assert.equal((await service.refresh()).positions.length, 1);
+  includeOption = true;
+  for (let repeat = 0; repeat < 2; repeat += 1) {
+    const portfolio = await service.refresh();
+    assert.equal(portfolio.positions.length, 2);
+    assert.equal(portfolio.positions.find((p) => p.symbol === "AAPL.US").weight, 20);
+    const option = portfolio.positions.find((p) => p.instrumentType === "option");
+    assert.equal(option.quantity, 2);
+    assert.equal(option.marketValueBase, null);
+    assert.equal(option.weight, null);
+    assert.match(portfolio.dataQuality.quoteErrors[0], /TEST260918P100000.US.*301604.*no quote access/);
+    assert.equal(portfolio.freshness.state, "fresh");
+    assert.equal(portfolio.freshness.freshForSizing, false);
+    assert.equal(saved.get("portfolioSnapshot").positions.length, 2);
+    assert.equal(longbridge.connected, true);
+  }
+});
+
+test("empty or malformed quote payloads are visible per-symbol failures, never silent successes", async () => {
+  for (const payload of [[], { list: [] }, { unexpected: [] }]) {
+    const longbridge = {
+      endpoint: "https://mcp.longbridge.com/v2",
+      async call(name) {
+        if (name === "stock_positions") return { list: [{ stock_info: [
+          { symbol: "AAPL.US", quantity: "1", cost_price: "100", currency: "USD", market: "US" },
+        ] }] };
+        if (name === "account_balance") return [{ currency: "USD", net_assets: "1000" }];
+        if (name === "exchange_rate") return liveUsdSelfRate();
+        if (name === "quote") return payload;
+        assert.fail(`unexpected tool ${name}`);
+      },
+    };
+    const service = new PortfolioService({ longbridge, store: { async get() {}, async set() {} } });
+    const portfolio = await service.refresh();
+    assert.equal(portfolio.positions.length, 1);
+    assert.equal(portfolio.positions[0].quantity, 1);
+    assert.equal(portfolio.positions[0].marketValueBase, null);
+    assert.equal(portfolio.dataQuality.quoteErrors.length, 1);
+    assert.match(portfolio.dataQuality.quoteErrors[0], /AAPL.US/);
+    assert.equal(portfolio.freshness.freshForSizing, false);
+  }
+});
+
+test("USD-only portfolio marks fallback FX as not required while keeping weights", async () => {
   const saved = [];
   const longbridge = {
     endpoint: "https://mcp.longbridge.cn/v2",
@@ -372,9 +526,14 @@ test("exchange-rate 463 falls back to ECB reference rates and keeps USD portfoli
   const position = portfolio.positions[0];
 
   assert.equal(portfolio.holdingsStatus, "live");
-  assert.equal(portfolio.status, "live");
+  assert.equal(portfolio.status, "degraded");
+  assert.equal(portfolio.dataQuality.valuationComplete, true);
+  assert.equal(portfolio.freshness.snapshotFreshForSizing, true);
+  assert.equal(portfolio.freshness.freshForSizing, false);
+  assert.equal(portfolio.valuationGate.outcome.status, "block");
   assert.equal(portfolio.account.baseCurrency, "USD");
-  assert.equal(portfolio.dataQuality.fxStatus, "reference");
+  assert.equal(portfolio.dataQuality.fxStatus, "not_required");
+  assert.equal(portfolio.dataQuality.fxRequired, false);
   assert.equal(portfolio.dataQuality.sourceErrors.length, 0);
   assert.equal(portfolio.dataQuality.sourceWarnings[0].tool, "exchange_rate");
   assert.equal(portfolio.dataQuality.sourceWarnings[0].code, 463);
@@ -388,6 +547,78 @@ test("exchange-rate 463 falls back to ECB reference rates and keeps USD portfoli
   assert.equal(position.marketValueBase, 2000);
   assert.ok(Math.abs(position.weight - (2000 / (100000 * 1.1435 / 8.9653)) * 100) < 1e-9);
   assert.equal(saved.some(([key]) => key === "portfolioSnapshot"), true);
+});
+
+function coherentUsdLongbridge({ quoteAt }) {
+  const quoteTimestamp = String(Math.floor(Date.parse(quoteAt) / 1000));
+  return {
+    endpoint: "https://mcp.longbridge.com/v2",
+    async call(name, args) {
+      if (name === "stock_positions") {
+        return { list: [{ stock_info: [{
+          symbol: "AAPL.US",
+          quantity: "10",
+          available_quantity: "10",
+          cost_price: "100",
+          currency: "USD",
+          market: "US",
+        }] }] };
+      }
+      if (name === "account_balance") {
+        assert.deepEqual(args, { currency: "USD" });
+        return [{
+          currency: "USD",
+          net_assets: "10000",
+          total_cash: "8000",
+          buy_power: "8000",
+        }];
+      }
+      if (name === "exchange_rate") return liveUsdSelfRate();
+      if (name === "quote") {
+        return args.symbols.map((symbol) => ({
+          symbol,
+          last_done: "200",
+          prev_close: "198",
+          timestamp: quoteTimestamp,
+        }));
+      }
+      if (name === "option_quote") return [];
+      throw new Error(`unexpected tool ${name}`);
+    },
+  };
+}
+
+test("USD-only portfolio stays live when both FX providers fail", async () => {
+  const base = coherentUsdLongbridge({ quoteAt: "2026-08-28T19:59:00.000Z" });
+  const longbridge = {
+    ...base,
+    async call(name, args) {
+      if (name === "exchange_rate") {
+        const error = new Error("status error: 463");
+        error.code = 463;
+        error.kind = "gateway";
+        throw error;
+      }
+      return base.call(name, args);
+    },
+  };
+  const statuses = [];
+  const portfolio = await new PortfolioService({
+    longbridge,
+    store: { async set() {}, async get() { return null; } },
+    referenceFxProvider: { async latest() { throw new Error("ECB offline"); } },
+    onStatus: (value) => statuses.push(value),
+    clock: () => Date.parse("2026-08-30T16:00:00.000Z"),
+  }).refresh();
+
+  assert.equal(portfolio.status, "live");
+  assert.equal(portfolio.dataQuality.valuationComplete, true);
+  assert.equal(portfolio.dataQuality.fxStatus, "not_required");
+  assert.equal(portfolio.dataQuality.fxRequired, false);
+  assert.equal(portfolio.dataQuality.sourceErrors.length, 0);
+  assert.equal(portfolio.dataQuality.ignoredFxErrors.length, 2);
+  assert.equal(statuses.at(-1).state, "ready");
+  assert.doesNotMatch(statuses.at(-1).message, /汇率不可用|跨币种/);
 });
 
 test("both Longbridge and ECB FX failures preserve holdings but suspend cross-currency weights", async () => {
@@ -529,11 +760,60 @@ test("concurrent refresh requests share one real Longbridge synchronization", as
   };
   const store = { async set() {}, async get() { return null; } };
   const service = new PortfolioService({ longbridge, store });
-  const [first, second] = await Promise.all([service.refresh(), service.refresh()]);
+  const sameGeneration = () => true;
+  const [first, second] = await Promise.all([
+    service.refresh({ commitGuard: sameGeneration }),
+    service.refresh({ commitGuard: sameGeneration }),
+  ]);
   assert.equal(first.syncedAt, second.syncedAt);
   assert.equal(calls.get("stock_positions"), 1);
   assert.equal(calls.get("account_balance"), 1);
   assert.equal(calls.get("exchange_rate"), 1);
+});
+
+test("a refresh that returns after authorization rotation cannot repopulate the portfolio cache", async () => {
+  let resolvePositions;
+  const positionsGate = new Promise((resolve) => { resolvePositions = resolve; });
+  const saved = [];
+  const longbridge = {
+    endpoint: "https://mcp.longbridge.com/v2",
+    async call(name) {
+      if (name === "stock_positions") return positionsGate;
+      if (name === "account_balance") {
+        return [{
+          account_id: "OLD-ACCOUNT",
+          currency: "USD",
+          net_assets: "1000",
+          total_cash: "1000",
+          buy_power: "1000",
+        }];
+      }
+      if (name === "exchange_rate") return liveUsdSelfRate();
+      throw new Error(`unexpected tool ${name}`);
+    },
+  };
+  const store = {
+    async set(key, value) { saved.push([key, structuredClone(value)]); },
+    async get() { return null; },
+  };
+  let currentGeneration = 4;
+  const statuses = [];
+  const service = new PortfolioService({
+    longbridge,
+    store,
+    onStatus: (status) => statuses.push(status),
+  });
+  const refresh = service.refresh({ commitGuard: () => currentGeneration === 4 });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  currentGeneration = 5;
+  resolvePositions({ list: [{ account_id: "OLD-ACCOUNT", stock_info: [] }] });
+  await assert.rejects(refresh, (error) => {
+    assert.equal(error.code, "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION");
+    return true;
+  });
+  assert.equal(saved.some(([key]) => key === "portfolioSnapshot"), false);
+  assert.deepEqual(statuses.map((item) => item.phase ?? item.state), ["positions"]);
 });
 
 test("account and FX requests start while positions are still in flight", async () => {
@@ -770,6 +1050,45 @@ test("candlesWithCoverage returns complete fresh persistent evidence without a l
   assert.ok(result.coverage.cacheAgeMs >= 0);
 });
 
+test("requireLive bypasses a fresh persistent series for Agent sizing evidence", async () => {
+  let liveCalls = 0;
+  const fetchedAt = new Date(Date.now() - 60_000).toISOString();
+  const service = new PortfolioService({
+    store: { async get() { return null; }, async set() {} },
+    marketHistoryStore: {
+      async getSeries() {
+        return {
+          candles: normalizedDailyBars(21),
+          fetchedAt,
+          storedAt: fetchedAt,
+        };
+      },
+      async putSeries(input) {
+        return {
+          candles: input.candles,
+          fetchedAt: input.fetchedAt,
+          storedAt: input.fetchedAt,
+        };
+      },
+    },
+    longbridge: {
+      endpoint: "https://mcp.longbridge.com/v2",
+      connected: true,
+      async call() {
+        liveCalls += 1;
+        return rawDailyBars(21);
+      },
+    },
+  });
+
+  const result = await service.candlesWithCoverage("AAPL.US", 21, {
+    preferPersistent: true,
+    requireLive: true,
+  });
+  assert.equal(liveCalls, 1);
+  assert.equal(result.coverage.source, "live");
+});
+
 test("insufficient persistent history is an explicit partial fallback when Longbridge is disconnected", async () => {
   let liveCalls = 0;
   const fetchedAt = new Date(Date.now() - 60_000).toISOString();
@@ -885,6 +1204,92 @@ test("live candle normalization rejects null and empty OHLC instead of creating 
   });
   await assert.rejects(service.candles("AAPL.US", 21), /no_valid_daily_candles/);
 });
+
+test("hourly market series keeps same-day bars and excludes an unconfirmed terminal bar", async () => {
+  const calls = [];
+  const rows = [
+    hourlyBar("2026-08-28T13:30:00.000Z", 100),
+    hourlyBar("2026-08-28T14:30:00.000Z", 101),
+    hourlyBar("2026-08-28T15:30:00.000Z", 102),
+  ];
+  const marketSeriesStore = {
+    async getSeries() { return null; },
+    async putSeries(input) {
+      return {
+        fetchedAt: input.fetchedAt,
+        storedAt: input.fetchedAt,
+        bars: input.bars,
+      };
+    },
+  };
+  const service = new PortfolioService({
+    longbridge: {
+      endpoint: "https://mcp.longbridge.sg/mcp",
+      connected: true,
+      async call(name, args) {
+        calls.push([name, args]);
+        return { candlesticks: rows };
+      },
+    },
+    store: { async get() { return null; }, async set() {} },
+    marketSeriesStore,
+  });
+
+  const result = await service.marketSeriesWithCoverage("AAPL.US", "1h", 3, {
+    requireLive: true,
+  });
+
+  assert.equal(result.bars.length, 3);
+  assert.equal(result.completedBars.length, 2);
+  assert.equal(result.completedBarsOnly, true);
+  assert.equal(result.finality.terminalBarStatus, "unconfirmed_terminal_excluded");
+  assert.equal(result.coverage.period, "1h");
+  assert.deepEqual(calls[0], ["candlesticks", {
+    symbol: "AAPL.US",
+    period: "1h",
+    count: 3,
+    forward_adjust: true,
+    trade_sessions: "intraday",
+  }]);
+});
+
+test("provider-confirmed terminal hourly bar is admitted but a forming bar is not", () => {
+  const completed = selectCompletedMarketSeriesBars([
+    hourlyBar("2026-08-28T13:30:00.000Z", 100),
+    { ...hourlyBar("2026-08-28T14:30:00.000Z", 101), isClosed: true },
+  ], "1h");
+  assert.equal(completed.bars.length, 2);
+  assert.equal(completed.terminalBarStatus, "provider_confirmed_closed");
+
+  const forming = selectCompletedMarketSeriesBars([
+    hourlyBar("2026-08-28T13:30:00.000Z", 100),
+    { ...hourlyBar("2026-08-28T14:30:00.000Z", 101), barStatus: "forming" },
+  ], "1h");
+  assert.equal(forming.bars.length, 1);
+  assert.equal(forming.terminalBarStatus, "provider_marked_forming");
+});
+
+test("one unlabelled hourly bar cannot be attested as completed", () => {
+  const result = selectCompletedMarketSeriesBars([
+    hourlyBar("2026-08-28T13:30:00.000Z", 100),
+  ], "1h");
+  assert.equal(result.attested, false);
+  assert.deepEqual(result.bars, []);
+  assert.equal(result.terminalBarStatus, "unconfirmed_terminal_excluded");
+});
+
+function hourlyBar(timestamp, close) {
+  return {
+    timestamp,
+    trade_date: timestamp.slice(0, 10),
+    open: String(close - 0.25),
+    high: String(close + 0.5),
+    low: String(close - 0.5),
+    close: String(close),
+    volume: "1000",
+    trade_session: "Intraday",
+  };
+}
 
 function normalizedDailyBars(count) {
   return Array.from({ length: count }, (_, index) => {

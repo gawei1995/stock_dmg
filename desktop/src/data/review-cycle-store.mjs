@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { assertLegacyCaseMigration, normalizeLegacySource, normalizeReviewEventMetadata, reviewEventDayRange } from "../review/review-case-migration.mjs";
 
 const NO_MUTATION = Symbol("review-cycle-store-no-mutation");
 
@@ -142,7 +143,7 @@ export class ReviewCycleStore {
   }
 
   /** Atomically creates an order-first cycle with its validated broker closure. */
-  async createLinkedCycle({ cycle: input, links, retrospectiveNote = null } = {}) {
+  async createLinkedCycle({ cycle: input, links, retrospectiveNote = null, commitGuard = null } = {}) {
     return this.#mutate((workspace) => {
       if (workspace.cycles.length + workspace.quarantinedCycles.length >= MAX_CYCLES) {
         throw new Error(`复盘周期最多保留 ${MAX_CYCLES} 个。`);
@@ -161,7 +162,28 @@ export class ReviewCycleStore {
       }
       workspace.cycles.unshift(cycle);
       return cycle;
-    });
+    }, { commitGuard });
+  }
+
+  /** Explicit, account-bound, one-write migration; the legacy store stays read-only. */
+  async migrateLegacyCase({ migration, expectedSourceHash, confirmed, commitGuard = null } = {}) {
+    if (confirmed !== true) throw new Error("请先预览并明确确认旧案例迁移。");
+    const prepared = structuredClone(migration);
+    const source = assertLegacyCaseMigration(prepared, expectedSourceHash);
+    return this.#mutate((workspace) => {
+      const existing = workspace.cycles.find((item) => item.legacySource?.sourceCaseId === source.sourceCaseId
+        && item.legacySource.accountScopeId === source.accountScopeId);
+      if (existing) return noMutation({ cycle: existing, created: false, sourceCaseId: source.sourceCaseId, sourceHash: existing.legacySource.sourceHash });
+      if (prepared.preview.existingCycleId || !prepared.cycle || !prepared.links) throw new Error("已迁移周期不存在，请重新预览；不会凭缺失证据创建替代周期。");
+      if (workspace.cycles.length + workspace.quarantinedCycles.length >= MAX_CYCLES) throw new Error(`复盘周期最多保留 ${MAX_CYCLES} 个。`);
+      const createdAt = this.#nowIso();
+      const cycle = buildCycle({ id: requiredNewId(this.idFactory(), workspace), createdAt, input: { ...prepared.cycle, reviewMode: "lightweight" } });
+      mergeBrokerLinks(cycle, prepared.links, createdAt, { reason: prepared.links.reason });
+      if (!cycle.brokerLinks.recordIds.length || cycle.brokerLinks.records.length !== cycle.brokerLinks.recordIds.length) throw new Error("迁移的关联证据不完整。");
+      cycle.legacySource = normalizeLegacySource({ ...source, migratedAt: createdAt });
+      workspace.cycles.unshift(cycle);
+      return { cycle, created: true, sourceCaseId: source.sourceCaseId, sourceHash: source.sourceHash };
+    }, { commitGuard });
   }
 
   async update(cycleId, patch = {}) {
@@ -176,7 +198,7 @@ export class ReviewCycleStore {
       }
       const immutableFactsChanged = [
         "type", "cycleType", "scope", "symbol", "symbols", "benchmark", "startAt", "endAt", "catalystAt", "eventAt",
-        "eventKind", "startCondition", "endCondition", "month",
+        "eventKind", "eventMetadata", "startCondition", "endCondition", "month",
       ].some((key) => patch?.[key] != null);
       const hasImmutableEvidence = cycle.exAnteVersions.length
         || cycle.checkpoints.length
@@ -185,7 +207,7 @@ export class ReviewCycleStore {
         || cycle.phaseRuns.outcome.length;
       const immutableKeysExceptEnd = [
         "type", "cycleType", "scope", "symbol", "symbols", "benchmark", "startAt", "catalystAt", "eventAt",
-        "eventKind", "startCondition", "endCondition", "month", "timezone",
+        "eventKind", "eventMetadata", "startCondition", "endCondition", "month", "timezone",
       ];
       const closesOpenPosition = cycle.cycleType === "position_lifecycle"
         && cycle.endAt == null
@@ -206,6 +228,9 @@ export class ReviewCycleStore {
         }
         const corePatch = { ...patch };
         if (patch?.catalystAt == null && patch?.eventAt != null) corePatch.catalystAt = patch.eventAt;
+        if (corePatch.catalystAt != null && patch?.eventMetadata == null) {
+          corePatch.eventMetadata = { ...cycle.eventMetadata, eventAt: corePatch.catalystAt, eventDate: null, timePrecision: "exact" };
+        }
         if (patch?.symbols == null && patch?.symbol != null) corePatch.symbols = [patch.symbol];
         const normalized = normalizeCycleCore({ ...cycle, ...corePatch }, cycle.cycleType);
         cycle.scope = normalized.scope;
@@ -215,6 +240,7 @@ export class ReviewCycleStore {
         cycle.endAt = normalized.endAt;
         cycle.catalystAt = normalized.catalystAt;
         cycle.eventKind = normalized.eventKind;
+        cycle.eventMetadata = normalized.eventMetadata;
         cycle.startCondition = normalized.startCondition;
         cycle.endCondition = normalized.endCondition;
         cycle.month = normalized.month;
@@ -352,6 +378,7 @@ export class ReviewCycleStore {
         endAt: cycle.endAt,
         catalystAt: cycle.catalystAt,
         eventKind: cycle.eventKind,
+        ...(cycle.eventMetadata ? { eventMetadata: cycle.eventMetadata } : {}),
         startCondition: cycle.startCondition,
         endCondition: cycle.endCondition,
         month: cycle.month,
@@ -409,7 +436,7 @@ export class ReviewCycleStore {
       if (!changed) return noMutation(cycle.brokerLinks);
       cycle.updatedAt = linkedAt;
       return cycle.brokerLinks;
-    });
+    }, { commitGuard: input?.commitGuard });
   }
 
   async linkCycleRecords(cycleOrRequest, input = null) {
@@ -437,7 +464,7 @@ export class ReviewCycleStore {
       if (!changed) return noMutation(cycle.brokerLinks);
       cycle.updatedAt = changedAt;
       return cycle.brokerLinks;
-    });
+    }, { commitGuard: input?.commitGuard });
   }
 
   async replaceCycleBrokerRecords(cycleOrRequest, input = null) {
@@ -663,9 +690,11 @@ export class ReviewCycleStore {
     });
   }
 
-  async #mutate(operation) {
+  async #mutate(operation, { commitGuard = null } = {}) {
     const mutation = this.queue.then(async () => {
+      assertCommitGuard(commitGuard);
       const workspace = normalizeWorkspace(await this.store.get(STORE_KEY));
+      assertCommitGuard(commitGuard);
       if (workspace.quarantinedCycles.length) {
         throw new Error("检测到损坏或冲突的复盘周期；已隔离原始数据并停止写入，请先完成恢复。");
       }
@@ -673,7 +702,9 @@ export class ReviewCycleStore {
       if (result?.[NO_MUTATION] === true) return structuredClone(result.value);
       workspace.revision += 1;
       workspace.updatedAt = this.#nowIso();
-      await this.store.set(STORE_KEY, workspace);
+      assertCommitGuard(commitGuard);
+      await this.store.set(STORE_KEY, workspace, commitGuard ? { commitGuard } : undefined);
+      assertCommitGuard(commitGuard);
       return structuredClone(result);
     });
     this.queue = mutation.then(() => undefined, () => undefined);
@@ -690,6 +721,11 @@ export class ReviewCycleStore {
 
 function noMutation(value) {
   return { [NO_MUTATION]: true, value };
+}
+
+function assertCommitGuard(guard) {
+  if (guard == null) return;
+  if (typeof guard !== "function" || guard() !== true) throw new Error("账户或授权已变化，复盘写入已取消。");
 }
 
 function buildCycle({ id, createdAt, input }) {
@@ -723,6 +759,7 @@ function buildCycle({ id, createdAt, input }) {
     checkpoints: [],
     nextCheckpointSequence: 1,
     phaseRuns: { blind: [], outcome: [], retrospective: [] },
+    legacySource: null,
   };
 }
 
@@ -732,9 +769,19 @@ function normalizeCycleCore(input, cycleType) {
   const timezone = normalizeTimeZone(input?.timezone);
   let endAt = optionalIso(input?.endAt);
   let catalystAt = null;
+  const eventMetadata = cycleType === "catalyst" || input?.eventMetadata != null
+    ? normalizeReviewEventMetadata(input?.eventMetadata, {
+      catalystAt: input?.catalystAt ?? input?.eventAt,
+      eventDate: input?.eventDate, eventTimePrecision: input?.eventTimePrecision,
+      eventSession: input?.eventSession, fiscalQuarter: input?.fiscalQuarter,
+      symbol: symbols.length === 1 ? symbols[0] : null, timezone,
+    }) : null;
   if (cycleType === "catalyst") {
     if (!symbols.length) throw new Error("财报/催化剂周期至少需要一个标的。");
-    catalystAt = requiredIso(input?.catalystAt ?? input?.eventAt, "财报/催化剂周期需要明确 catalystAt。");
+    catalystAt = eventMetadata.eventAt;
+    const lightweight = normalizeReviewMode(input?.reviewMode) === "lightweight";
+    if (!catalystAt && (!lightweight || !eventMetadata.eventDate)) throw new Error("财报/催化剂周期需要明确 catalystAt；仅有真实事件日期时只能创建轻量复盘。");
+    if (eventMetadata.timePrecision === "exact" && !catalystAt) throw new Error("exact 事件精度需要真实 catalystAt。");
     if (!endAt) throw new Error("财报/催化剂周期需要结束时间。");
   } else if (cycleType === "position_lifecycle") {
     if (symbols.length !== 1) throw new Error("单一持仓生命周期必须且只能包含一个标的。");
@@ -785,6 +832,7 @@ function normalizeCycleCore(input, cycleType) {
     eventKind: cycleType === "catalyst"
       ? enumValue(input?.eventKind ?? input?.event?.kind, ["earnings", "fomc", "product", "regulatory", "other"], "other")
       : null,
+    eventMetadata,
     startCondition: cycleType === "position_lifecycle" ? cleanText(input?.startCondition, 2_000) : null,
     endCondition: cycleType === "position_lifecycle" ? cleanText(input?.endCondition, 2_000) : null,
     month,
@@ -1012,6 +1060,7 @@ function calculateEligibility(cycle, sealedAt, exAnte, excludedEvidenceCount) {
 }
 
 function mergeBrokerLinks(cycle, input, linkedAt, { reason = "追加关联券商证据" } = {}) {
+  const accountScopeId = mergedBrokerAccountScope(cycle.brokerLinks?.accountScopeId, input?.accountScopeId);
   const suppliedRecordCount = Array.isArray(input.records) ? input.records.length : 0;
   if (suppliedRecordCount > MAX_BROKER_RECORDS) {
     throw new Error(`每次最多关联 ${MAX_BROKER_RECORDS} 条券商记录。`);
@@ -1064,13 +1113,14 @@ function mergeBrokerLinks(cycle, input, linkedAt, { reason = "追加关联券商
   }
   const activeIds = new Set(recordIds);
   const selection = {
+    accountScopeId,
     requestedRecordIds,
     recordIds,
     orderIds,
     executionIds,
     records: [...archiveById.values()].filter((item) => activeIds.has(item.id)).sort(compareBrokerRecords),
-    activityStartAt: cycle.cycleType === "trade_window" ? cycle.startAt : null,
-    activityEndAt: cycle.cycleType === "trade_window" ? cycle.endAt : null,
+    activityStartAt: canReplaceActivityRange(cycle) ? cycle.startAt : null,
+    activityEndAt: canReplaceActivityRange(cycle) ? cycle.endAt : null,
   };
   if (sameBrokerEvidence(cycle.brokerLinks, selection)) return false;
   appendBrokerLinkVersion(cycle, selection, linkedAt, reason);
@@ -1079,6 +1129,7 @@ function mergeBrokerLinks(cycle, input, linkedAt, { reason = "追加关联券商
 }
 
 function replaceBrokerLinks(cycle, input, changedAt, { reason = "重新选择关联券商证据" } = {}) {
+  const accountScopeId = mergedBrokerAccountScope(cycle.brokerLinks?.accountScopeId, input?.accountScopeId);
   const suppliedRecordCount = Array.isArray(input.records) ? input.records.length : 0;
   if (suppliedRecordCount > MAX_BROKER_RECORDS) {
     throw new Error(`每次最多关联 ${MAX_BROKER_RECORDS} 条券商记录。`);
@@ -1115,6 +1166,7 @@ function replaceBrokerLinks(cycle, input, changedAt, { reason = "重新选择关
   const activeIds = new Set(recordIds);
   const activityRange = replacementActivityRange(cycle, input, changedAt);
   const selection = {
+    accountScopeId,
     requestedRecordIds,
     recordIds,
     orderIds,
@@ -1126,7 +1178,7 @@ function replaceBrokerLinks(cycle, input, changedAt, { reason = "重新选择关
   validateRetainedFactsWithinReplacementRange(cycle, activityRange);
   if (sameBrokerEvidence(cycle.brokerLinks, selection)) return false;
   appendBrokerLinkVersion(cycle, selection, changedAt, reason);
-  if (cycle.cycleType === "trade_window") {
+  if (canReplaceActivityRange(cycle)) {
     cycle.startAt = activityRange.activityStartAt;
     cycle.endAt = activityRange.activityEndAt;
   }
@@ -1137,8 +1189,8 @@ function replacementActivityRange(cycle, input, changedAt) {
   const suppliedStart = input?.activityStartAt ?? input?.startAt;
   const suppliedEnd = input?.activityEndAt ?? input?.endAt;
   const supplied = suppliedStart != null || suppliedEnd != null;
-  if (cycle.cycleType !== "trade_window") {
-    if (supplied) throw new Error("只有订单区间复盘可以随券商证据重算活动范围。");
+  if (!canReplaceActivityRange(cycle)) {
+    if (supplied) throw new Error("只有订单区间或轻量财报复盘可以随券商证据重算活动范围。");
     return { activityStartAt: null, activityEndAt: null };
   }
   if (supplied && (suppliedStart == null || suppliedEnd == null)) {
@@ -1157,7 +1209,18 @@ function replacementActivityRange(cycle, input, changedAt) {
   if (Date.parse(activityStartAt) > Date.parse(changedAt) || Date.parse(activityEndAt) > Date.parse(changedAt)) {
     throw new Error("订单活动范围不能晚于本次实际证据更新时间。");
   }
+  normalizeCycleCore({ ...cycle, startAt: activityStartAt, endAt: activityEndAt }, cycle.cycleType);
+  if (cycle.cycleType === "catalyst" && !cycle.catalystAt) {
+    const eventRange = reviewEventDayRange(cycle.eventMetadata);
+    if (Date.parse(activityStartAt) > Date.parse(eventRange.startAt) || Date.parse(activityEndAt) < Date.parse(eventRange.endAt)) {
+      throw new Error("重选财报周期范围不能排除原事件日期；日期边界不是发布时间。");
+    }
+  }
   return { activityStartAt, activityEndAt };
+}
+
+function canReplaceActivityRange(cycle) {
+  return cycle.cycleType === "trade_window" || (cycle.cycleType === "catalyst" && cycle.reviewMode === "lightweight");
 }
 
 function validateExplicitExecutionAnchorsWithinRange(selection, { activityStartAt, activityEndAt }) {
@@ -1180,7 +1243,7 @@ function validateExplicitExecutionAnchorsWithinRange(selection, { activityStartA
 }
 
 function validateRetainedFactsWithinReplacementRange(cycle, { activityStartAt, activityEndAt }) {
-  if (cycle.cycleType !== "trade_window" || !activityStartAt || !activityEndAt) return;
+  if (!canReplaceActivityRange(cycle) || !activityStartAt || !activityEndAt) return;
   const startMs = Date.parse(activityStartAt);
   const endMs = Date.parse(activityEndAt);
   const startingSnapshotAt = Date.parse(String(cycle?.startingPortfolio?.snapshotAt ?? ""));
@@ -1217,6 +1280,7 @@ function appendBrokerLinkVersion(cycle, selection, changedAt, reason) {
     evidenceRevision,
     changedAt,
     reason: cleanText(reason, 500) || "更新关联券商证据",
+    accountScopeId: selection.accountScopeId ?? null,
     requestedRecordIds: [...selection.requestedRecordIds],
     recordIds: [...selection.recordIds],
     orderIds: [...selection.orderIds],
@@ -1239,6 +1303,7 @@ function brokerLinksFromVersion(version) {
   return {
     revision: version.evidenceRevision,
     evidenceRevision: version.evidenceRevision,
+    accountScopeId: normalizeBrokerAccountScopeId(version.accountScopeId),
     requestedRecordIds: [...(version.requestedRecordIds ?? [])],
     recordIds: [...version.recordIds],
     orderIds: [...version.orderIds],
@@ -1291,6 +1356,7 @@ function brokerSelectionDifference(left, right) {
 
 function sameBrokerEvidence(left, right) {
   const normalized = (value) => ({
+    accountScopeId: normalizeBrokerAccountScopeId(value?.accountScopeId),
     requestedRecordIds: [...(value?.requestedRecordIds ?? [])].sort(),
     recordIds: [...(value?.recordIds ?? [])].sort(),
     orderIds: [...(value?.orderIds ?? [])].sort(),
@@ -1458,6 +1524,7 @@ function buildBlindCycleSnapshot(cycle, requestedVersion) {
     endAt: version.snapshot.endAt,
     catalystAt: version.snapshot.catalystAt,
     eventKind: version.snapshot.eventKind,
+    ...(version.snapshot.eventMetadata ? { eventMetadata: structuredClone(version.snapshot.eventMetadata) } : {}),
     startCondition: version.snapshot.startCondition,
     endCondition: version.snapshot.endCondition,
     month: version.snapshot.month,
@@ -1677,6 +1744,7 @@ function normalizeWorkspace(value) {
     : (value && typeof value === "object" ? value : {});
   const cycles = [];
   const ids = new Set();
+  const migratedSources = new Set();
   const quarantinedCycles = (Array.isArray(source.quarantinedCycles) ? source.quarantinedCycles : [])
     .map((item) => structuredClone(item));
   const overflowCycles = [];
@@ -1687,12 +1755,14 @@ function normalizeWorkspace(value) {
     }
     let normalizationError = null;
     const cycle = normalizePersistedCycle(raw, (error) => { normalizationError = error; });
-    if (!cycle || ids.has(cycle.id)) {
+    const sourceIdentity = cycle?.legacySource ? JSON.stringify([cycle.legacySource.accountScopeId, cycle.legacySource.sourceCaseId]) : null;
+    const duplicateSource = sourceIdentity && migratedSources.has(sourceIdentity);
+    if (!cycle || ids.has(cycle.id) || duplicateSource) {
       quarantinedCycles.push({
         id: cleanId(raw?.id),
-        reason: ids.has(cleanId(raw?.id)) ? "duplicate_cycle_id" : "malformed_cycle",
+        reason: duplicateSource ? "duplicate_legacy_source" : ids.has(cleanId(raw?.id)) ? "duplicate_cycle_id" : "malformed_cycle",
         detail: cleanText(
-          ids.has(cleanId(raw?.id))
+          duplicateSource ? "同一账户的旧案例被迁移为多个周期；已隔离重复来源以避免重复计样本。" : ids.has(cleanId(raw?.id))
             ? `复盘周期 ID ${cleanId(raw?.id)} 重复。`
             : (normalizationError?.message || "复盘周期无法读取。"),
           1_000,
@@ -1703,6 +1773,7 @@ function normalizeWorkspace(value) {
       continue;
     }
     ids.add(cycle.id);
+    if (sourceIdentity) migratedSources.add(sourceIdentity);
     cycles.push(cycle);
   }
   if (overflowCycles.length) {
@@ -1732,7 +1803,7 @@ function normalizePersistedCycle(raw, onError = () => {}) {
       raw?.brokerLinks,
       raw?.brokerLinkVersions,
       optionalIso(raw?.updatedAt) ?? createdAt,
-      cycleType === "trade_window" ? { activityStartAt: core.startAt, activityEndAt: core.endAt } : null,
+      canReplaceActivityRange({ cycleType, reviewMode: raw?.reviewMode }) ? { activityStartAt: core.startAt, activityEndAt: core.endAt } : null,
     );
     const cycle = {
       id: cleanId(raw?.id),
@@ -1762,8 +1833,10 @@ function normalizePersistedCycle(raw, onError = () => {}) {
       checkpoints: [],
       nextCheckpointSequence: 1,
       phaseRuns: normalizePhaseRuns(raw?.phaseRuns),
+      legacySource: normalizeLegacySource(raw?.legacySource),
     };
     if (!cycle.id) throw new Error("复盘周期 ID 无效。");
+    if (cycle.legacySource && cycle.legacySource.accountScopeId !== cycle.brokerLinks.accountScopeId) throw new Error("迁移来源与周期券商证据账户不一致。");
     cycle.exAnteVersions = normalizeVersions(raw?.exAnteVersions, cycle);
     cycle.checkpoints = normalizeCheckpoints(raw?.checkpoints, cycle);
     const allRunIds = [
@@ -1827,6 +1900,9 @@ function normalizeVersions(values, cycle) {
       eventKind: hasOwn(storedSnapshot, "eventKind")
         ? enumValue(storedSnapshot.eventKind, ["earnings", "fomc", "product", "regulatory", "other"], null)
         : cycle.eventKind,
+      ...(hasOwn(storedSnapshot, "eventMetadata")
+        ? { eventMetadata: normalizeReviewEventMetadata(storedSnapshot.eventMetadata) }
+        : {}),
       startCondition: hasOwn(storedSnapshot, "startCondition")
         ? cleanText(storedSnapshot.startCondition, 2_000)
         : cycle.startCondition,
@@ -2064,6 +2140,7 @@ function normalizePersistedBrokerLinks(value) {
   return {
     revision: positiveIntegerOrNull(value?.evidenceRevision ?? value?.revision),
     evidenceRevision: positiveIntegerOrNull(value?.evidenceRevision ?? value?.revision),
+    accountScopeId: normalizeBrokerAccountScopeId(value?.accountScopeId),
     requestedRecordIds,
     recordIds: allRecordIds,
     orderIds,
@@ -2109,6 +2186,7 @@ function normalizePersistedBrokerState(rawLinks, rawVersions, fallbackChangedAt,
       evidenceRevision,
       changedAt,
       reason: cleanText(raw?.reason, 500) || "历史券商证据版本",
+      accountScopeId: selection.accountScopeId,
       requestedRecordIds: [...selection.requestedRecordIds],
       recordIds: [...selection.recordIds],
       orderIds: [...selection.orderIds],
@@ -2136,6 +2214,7 @@ function normalizePersistedBrokerState(rawLinks, rawVersions, fallbackChangedAt,
       evidenceRevision,
       changedAt,
       reason: latest ? "迁移当前券商关联快照" : "迁移旧版券商关联",
+      accountScopeId: legacyLinks.accountScopeId,
       requestedRecordIds: [...legacyLinks.requestedRecordIds],
       recordIds: [...legacyLinks.recordIds],
       orderIds: [...legacyLinks.orderIds],
@@ -2346,6 +2425,7 @@ function emptyBrokerLinks() {
   return {
     revision: null,
     evidenceRevision: null,
+    accountScopeId: null,
     requestedRecordIds: [],
     recordIds: [],
     orderIds: [],
@@ -2356,6 +2436,20 @@ function emptyBrokerLinks() {
     lastLinkedAt: null,
     confirmedAt: null,
   };
+}
+
+function mergedBrokerAccountScope(existing, incoming) {
+  const current = normalizeBrokerAccountScopeId(existing);
+  const next = normalizeBrokerAccountScopeId(incoming);
+  if (current && next && current !== next) {
+    throw new Error("所选券商证据属于另一匿名账户作用域；已拒绝跨账户合并。请为当前账户新建复盘周期。");
+  }
+  return next ?? current ?? null;
+}
+
+function normalizeBrokerAccountScopeId(value) {
+  const text = String(value ?? "").trim();
+  return /^[A-Za-z0-9._:-]{8,160}$/.test(text) ? text : null;
 }
 
 function normalizeTimeZone(value) {
@@ -2528,7 +2622,9 @@ function hasOwn(value, key) {
 }
 
 function finiteOrNull(value) {
-  if (value == null || value === "") return null;
+  if (value == null || typeof value === "boolean") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  if (!["number", "string"].includes(typeof value)) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
