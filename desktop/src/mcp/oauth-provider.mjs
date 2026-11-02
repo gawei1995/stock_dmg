@@ -12,11 +12,18 @@ const REQUIRED_READ_SCOPES = new Set(LONGBRIDGE_READ_SCOPE.split(" "));
  * Secrets are stored only through EncryptedStore (Electron safeStorage).
  */
 export class DesktopOAuthProvider {
-  constructor({ redirectUrl, store, onRedirect, keyPrefix = "longbridge" }) {
+  constructor({
+    redirectUrl,
+    store,
+    onRedirect,
+    keyPrefix = "longbridge",
+    commitGuard = () => true,
+  }) {
     this._redirectUrl = redirectUrl;
     this.store = store;
     this.onRedirect = onRedirect;
     this.keyPrefix = keyPrefix;
+    this.commitGuard = typeof commitGuard === "function" ? commitGuard : () => false;
     this._state = randomBytes(24).toString("base64url");
   }
 
@@ -49,6 +56,7 @@ export class DesktopOAuthProvider {
   }
 
   async saveClientInformation(value) {
+    this.#assertCommitAllowed();
     await this.store.set(this.#key("clientInformation"), value);
   }
 
@@ -58,6 +66,7 @@ export class DesktopOAuthProvider {
 
   async saveTokens(value) {
     const previous = await this.tokens();
+    this.#assertCommitAllowed();
     await this.store.set(this.#key("tokens"), {
       ...value,
       refresh_token: value.refresh_token ?? previous?.refresh_token,
@@ -81,6 +90,7 @@ export class DesktopOAuthProvider {
   }
 
   async saveCodeVerifier(value) {
+    this.#assertCommitAllowed();
     await this.store.set(this.#key("codeVerifier"), value);
   }
 
@@ -91,6 +101,7 @@ export class DesktopOAuthProvider {
   }
 
   async saveDiscoveryState(value) {
+    this.#assertCommitAllowed();
     await this.store.set(this.#key("discoveryState"), value);
   }
 
@@ -100,20 +111,31 @@ export class DesktopOAuthProvider {
 
   async invalidateCredentials(scope) {
     if (scope === "all" || scope === "tokens") {
+      this.#assertCommitAllowed();
       await this.store.delete(this.#key("tokens"));
     }
     if (scope === "all" || scope === "client") {
+      this.#assertCommitAllowed();
       await this.store.delete(this.#key("clientInformation"));
     }
     if (scope === "all" || scope === "verifier") {
+      this.#assertCommitAllowed();
       await this.store.delete(this.#key("codeVerifier"));
     }
     if (scope === "all" || scope === "discovery") {
+      this.#assertCommitAllowed();
       await this.store.delete(this.#key("discoveryState"));
     }
   }
 
   #key(name) {
     return `${this.keyPrefix}:${name}`;
+  }
+
+  #assertCommitAllowed() {
+    if (this.commitGuard()) return;
+    const error = new Error("Longbridge authorization changed before OAuth state could be saved.");
+    error.code = "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION";
+    throw error;
   }
 }

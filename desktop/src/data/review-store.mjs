@@ -1,8 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
+import { canonicalReviewEvidenceIdentity, phaseRunFollowsLegacyMigration } from "../review/review-learning-source.mjs";
 
 const STORE_KEY = "reviewWorkspaceV1";
 const SCHEMA_VERSION = 1;
 const NO_MUTATION = Symbol("review-store-no-mutation");
+const DETERMINISTIC_PROTOCOL_METRICS = new Set([
+  "net_r",
+  "expectancy_r",
+  "win_rate",
+  "payoff_ratio",
+]);
+const SUCCESS_OPERATORS = new Set(["gt", "gte", "lt", "lte"]);
+const FORMAL_PROTOCOL_SAMPLE_FLOOR = 20;
 const CASE_STATUSES = new Set([
   "draft",
   "frozen",
@@ -37,9 +46,9 @@ export class ReviewStore {
     this.queue = Promise.resolve();
   }
 
-  async snapshot() {
+  async snapshot({ cycles } = {}) {
     const value = await this.store.get(STORE_KEY);
-    return normalizeWorkspace(value);
+    return reconcileSampleEvidenceIdentities(normalizeWorkspace(value), { cycles });
   }
 
   async createCase(input) {
@@ -89,6 +98,7 @@ export class ReviewStore {
         eventAt,
         origin: "longbridge_records",
         brokerLinks: {
+          accountScopeId: requiredAccountScopeId(input?.accountScopeId),
           orderIds: uniqueIds(input?.orderIds),
           executionIds: uniqueIds(input?.executionIds),
           confirmedAt: now,
@@ -193,13 +203,18 @@ export class ReviewStore {
   }
 
   async replaceBrokerRecords(caseId, {
+    accountScopeId = null,
     orderIds = [],
     executionIds = [],
     reason = "更新关联订单与成交",
   } = {}) {
     return this.#mutate((workspace) => {
       const reviewCase = requiredCase(workspace, caseId);
-      const selection = normalizeBrokerLinkSelection({ orderIds, executionIds });
+      const selection = normalizeBrokerLinkSelection({
+        accountScopeId: requiredAccountScopeId(accountScopeId),
+        orderIds,
+        executionIds,
+      });
       if (!hasBrokerLinkSelection(selection)) {
         throw new Error("复盘案例至少需要关联一笔长桥订单或成交。");
       }
@@ -224,6 +239,165 @@ export class ReviewStore {
       reviewCase.updatedAt = changedAt;
       return reviewCase.brokerLinks;
     });
+  }
+
+  /**
+   * Host-only append path for a deterministic, forward outcome. The renderer
+   * must pass only test/cycle identifiers to the Electron host; the host
+   * resolves every numeric value and hash from persisted review evidence before
+   * calling this method.
+   */
+  async recordVerifiedProtocolSample(input = {}) {
+    return this.#mutate((workspace) => {
+      const test = requiredTest(workspace, input?.testId);
+      if (!isProtocolTest(test)) throw new Error("只有验证协议可以登记确定性样本。");
+      if (["retired", "completed"].includes(test.status)) {
+        throw new Error("已退役或已完成的验证不能继续追加样本。");
+      }
+      const reviewCycleId = cleanId(input?.reviewCycleId);
+      if (!reviewCycleId) throw new Error("确定性样本必须关联一个复盘周期。");
+      if (reviewCycleId === test.sourceReviewCycleId) {
+        throw new Error("形成假设的来源周期不能同时作为样本外验证。");
+      }
+      if (test.samples.some((sample) => sample.reviewCycleId === reviewCycleId)) {
+        throw new Error("该复盘周期已经纳入本验证；确定性样本不能覆盖或重复登记。");
+      }
+      const canonicalEvidenceIdentity = normalizeCanonicalSampleIdentity(input?.canonicalEvidenceIdentity, { reviewCycleId });
+      if (!canonicalEvidenceIdentity) throw new Error("确定性样本缺少宿主核验的账户与原始证据身份。");
+      if (test.samples.some((sample) => sampleIdentityKey(sample) === canonicalEvidenceIdentity.key)) {
+        throw new Error("同一原始案例或迁移证据已经纳入本验证，不能作为新的独立样本。");
+      }
+      const sourceCaseId = cleanId(test.sourceCaseId ?? (!test.sourceReviewCycleId ? test.caseId : null));
+      if (sourceCaseId && canonicalEvidenceIdentity.sourceCaseId === sourceCaseId
+        && (!test.accountScopeId || test.accountScopeId === canonicalEvidenceIdentity.accountScopeId)) {
+        throw new Error("形成假设的原始案例及其迁移别名不能作为样本外验证。");
+      }
+      const outcomeR = finiteOrNull(input?.outcomeR);
+      if (outcomeR == null) throw new Error("确定性样本缺少可核验的净 R。");
+      const verification = normalizeHostVerification(input?.verification);
+      if (Array.isArray(input?.cycles)) {
+        const currentCycle = input.cycles.find((cycle) => cleanId(cycle?.id) === reviewCycleId);
+        const currentIdentity = currentCycle ? canonicalReviewEvidenceIdentity(currentCycle) : null;
+        const currentRevision = positiveIntegerOrDefault(currentCycle?.evidenceRevision
+          ?? currentCycle?.brokerLinks?.evidenceRevision ?? currentCycle?.brokerLinks?.revision, 0);
+        if (currentIdentity?.key !== canonicalEvidenceIdentity.key || currentRevision !== verification.sourceEvidenceRevision
+          || !phaseRunFollowsLegacyMigration(currentCycle, { completedAt: verification.sourceCompletedAt })) {
+          throw new Error("样本身份或证据修订与宿主当前周期不一致，已拒绝登记。");
+        }
+        const sourceCycle = input.cycles.find((cycle) => cleanId(cycle?.id) === cleanId(test.sourceReviewCycleId));
+        if (sourceCycle && canonicalReviewEvidenceIdentity(sourceCycle).key === canonicalEvidenceIdentity.key) {
+          throw new Error("形成假设的原始案例及其迁移别名不能作为样本外验证。");
+        }
+      }
+      const technicalValidationRef = input?.technicalValidationRef
+        ? normalizeTechnicalValidationRef(input.technicalValidationRef, { hostVerified: true })
+        : null;
+      const recordedAt = this.now().toISOString();
+      const sample = {
+        id: this.idFactory(),
+        caseId: null,
+        reviewCycleId,
+        canonicalEvidenceIdentity,
+        evidenceIdentityStatus: "verified",
+        evidenceIdentityReason: null,
+        formalEvidenceEligible: true,
+        formalEligible: true,
+        recordedAt,
+        outcomeR,
+        benchmarkReturnPercent: finiteOrNull(input?.benchmarkReturnPercent),
+        outcomeSource: verification.engine,
+        outcomeVerified: true,
+        observationTiming: "forward",
+        technicalValidationRef,
+        verification,
+        notes: cleanText(input?.notes, 2_000),
+        censored: false,
+      };
+      test.samples.push(sample);
+      test.protocolEvaluation = null;
+      const target = Math.max(
+        FORMAL_PROTOCOL_SAMPLE_FLOOR,
+        positiveIntegerOrDefault(
+          test.decisionSampleTarget,
+          positiveIntegerOrDefault(test.minimumCases, FORMAL_PROTOCOL_SAMPLE_FLOOR),
+        ),
+      );
+      const formalCount = protocolFormalEventCount(test);
+      test.status = formalCount >= target ? "decision_due" : "collecting";
+      test.decisionSampleTarget = target;
+      test.decisionDueAt = test.status === "decision_due" ? recordedAt : null;
+      test.completedAt = null;
+      test.outcomeR = null;
+      test.outcomeSource = null;
+      test.outcomeVerified = false;
+      test.benchmarkReturnPercent = null;
+      test.censored = false;
+      return test;
+    }, { cycles: input?.cycles });
+  }
+
+  /**
+   * Host-only deterministic evaluation of the frozen protocol and sample set.
+   * No caller-supplied value, verdict or hash is accepted: those are derived
+   * inside the durable store from the protocol's verified forward samples.
+   */
+  async evaluateProtocol(input = {}) {
+    return this.#mutate((workspace) => {
+      const test = requiredTest(workspace, input?.testId);
+      const lockReason = deterministicProtocolLockReason(test);
+      if (lockReason) throw new Error(`${lockReason}；请创建 v2 并冻结机器可读门槛。`);
+      const formalCount = protocolFormalEventCount(test);
+      const minimum = deterministicProtocolMinimum(test);
+      if (formalCount < minimum) {
+        throw new Error(`确定性协议评估至少需要 ${minimum} 个合格前向样本。`);
+      }
+      const sampleSetHash = protocolSampleSetHash(test);
+      const protocolSpecHash = protocolEvaluationSpecHash(test);
+      const observedValue = deterministicProtocolObservedValue(test);
+      const passed = compareProtocolThreshold(
+        observedValue,
+        test.successOperator,
+        test.successThreshold,
+      );
+      const resultPayload = {
+        engine: "deterministic_review_protocol_v3_canonical",
+        protocolSpecHash,
+        sampleSetHash,
+        primaryMetric: test.primaryMetric,
+        successOperator: test.successOperator,
+        successThreshold: test.successThreshold,
+        observedValue,
+        evaluatedSampleCount: formalCount,
+        passed,
+      };
+      const evaluatedAt = this.now().toISOString();
+      test.protocolEvaluation = {
+        verified: true,
+        passed,
+        primaryMetric: test.primaryMetric,
+        successOperator: test.successOperator,
+        successThreshold: test.successThreshold,
+        observedValue,
+        evaluatedSampleCount: formalCount,
+        minimumRequired: minimum,
+        sampleSetHash,
+        protocolSpecHash,
+        resultHash: sha256(stableStringify(resultPayload)),
+        engine: resultPayload.engine,
+        evaluatedAt,
+        notes: passed
+          ? "宿主按冻结协议与正式前向样本确定性计算：达到成功门槛。"
+          : "宿主按冻结协议与正式前向样本确定性计算：未达到成功门槛。",
+      };
+      test.status = "decision_due";
+      test.decisionDueAt ??= evaluatedAt;
+      return test;
+    }, { cycles: input?.cycles });
+  }
+
+  /** Backward-compatible host alias. Verdict-like input fields are ignored. */
+  async commitProtocolEvaluation(input = {}) {
+    return this.evaluateProtocol({ testId: input?.testId, cycles: input?.cycles });
   }
 
   async updateBrokerRecords(caseId, input = {}) {
@@ -303,11 +477,13 @@ export class ReviewStore {
         cohort: proposal.testDesign.inclusion,
         exclusions: proposal.testDesign.exclusion,
         successCriteria: proposal.testDesign.successCriteria,
+        successOperator: proposal.testDesign.successOperator,
+        successThreshold: proposal.testDesign.successThreshold,
         strategyFamily: "agent_review_learning",
         status: "collecting",
         registeredAt: now,
         observationStartedAt: now,
-        decisionSampleTarget: proposal.testDesign.minCases,
+        decisionSampleTarget: Math.max(FORMAL_PROTOCOL_SAMPLE_FLOOR, proposal.testDesign.minCases),
         decisionRound: 1,
         decisionDueAt: null,
         completedAt: null,
@@ -465,6 +641,8 @@ export class ReviewStore {
         cohort: cleanText(input?.cohort, 3_000),
         exclusions: cleanText(input?.exclusions, 2_000),
         successCriteria: cleanText(input?.successCriteria, 2_000),
+        successOperator: enumValue(input?.successOperator, [...SUCCESS_OPERATORS], null),
+        successThreshold: finiteOrNull(input?.successThreshold),
         status: "registered",
         registeredAt: now,
         completedAt: null,
@@ -476,6 +654,10 @@ export class ReviewStore {
         censored: false,
         samples: [],
         protocolEvaluation: null,
+        decisionSampleTarget: Math.max(
+          FORMAL_PROTOCOL_SAMPLE_FLOOR,
+          Math.min(Math.max(nonNegativeIntegerOrNull(input?.minimumCases) ?? 20, 1), 10_000),
+        ),
       };
       workspace.tests.unshift(test);
       if (ruleId) {
@@ -490,11 +672,14 @@ export class ReviewStore {
     return this.#mutate((workspace) => {
       const test = requiredTest(workspace, testId);
       if (isProtocolTest(test)) {
-        const currentDecisionTarget = positiveIntegerOrDefault(
-          test.decisionSampleTarget,
-          positiveIntegerOrDefault(test.minimumCases, 20),
+        const currentDecisionTarget = Math.max(
+          FORMAL_PROTOCOL_SAMPLE_FLOOR,
+          positiveIntegerOrDefault(
+            test.decisionSampleTarget,
+            positiveIntegerOrDefault(test.minimumCases, FORMAL_PROTOCOL_SAMPLE_FLOOR),
+          ),
         );
-        const gateReached = protocolObservedEventCount(test) >= currentDecisionTarget;
+        const gateReached = protocolFormalEventCount(test) >= currentDecisionTarget;
         if (["decision_due", "completed", "retired"].includes(test.status) || gateReached) {
           throw new Error(test.status === "retired"
             ? "已退役的验证不能继续追加样本。"
@@ -519,10 +704,20 @@ export class ReviewStore {
         if (requestedReviewCycleId && test.samples.some((sample) => sample.reviewCycleId === requestedReviewCycleId)) {
           throw new Error("该复盘周期已经纳入本验证；样本为追加式记录，不能覆盖或重复登记。");
         }
+        const canonicalEvidenceIdentity = normalizeCanonicalSampleIdentity(input?.canonicalEvidenceIdentity, {
+          reviewCycleId: requestedReviewCycleId, caseId: requestedCaseId || test.caseId,
+        });
+        if (canonicalEvidenceIdentity && test.samples.some((sample) => sampleIdentityKey(sample) === canonicalEvidenceIdentity.key)) {
+          throw new Error("同一原始案例或迁移证据已经纳入本验证，不能作为新的独立样本。");
+        }
         const sample = {
           id: this.idFactory(),
           caseId: requestedCaseId || test.caseId || null,
           reviewCycleId: requestedReviewCycleId || null,
+          canonicalEvidenceIdentity,
+          evidenceIdentityStatus: canonicalEvidenceIdentity ? "verified" : "unresolved",
+          evidenceIdentityReason: canonicalEvidenceIdentity ? null : "sample_identity_not_resolved",
+          formalEvidenceEligible: false,
           formalEligible: false,
           recordedAt,
           outcomeR,
@@ -532,20 +727,25 @@ export class ReviewStore {
           observationTiming: enumValue(input?.observationTiming, [
             "forward", "overlapping", "historical", "unknown",
           ], "unknown"),
+          technicalValidationRef: normalizeTechnicalValidationRef(input?.technicalValidationRef),
           notes: cleanText(input?.notes, 2_000),
           censored,
         };
         test.samples.push(sample);
         // A renderer-entered result is one append-only observational sample,
         // never completion or verification of the multi-case protocol.
-        const decisionSampleTarget = positiveIntegerOrDefault(
-          test.decisionSampleTarget,
-          positiveIntegerOrDefault(test.minimumCases, 20),
+        const decisionSampleTarget = Math.max(
+          FORMAL_PROTOCOL_SAMPLE_FLOOR,
+          positiveIntegerOrDefault(
+            test.decisionSampleTarget,
+            positiveIntegerOrDefault(test.minimumCases, FORMAL_PROTOCOL_SAMPLE_FLOOR),
+          ),
         );
-        const observedEventCount = protocolObservedEventCount(test);
-        test.status = observedEventCount >= decisionSampleTarget ? "decision_due" : "collecting";
+        // Renderer-entered and historical samples remain calibration evidence.
+        // Only host-verified forward samples advance the formal decision gate.
+        test.status = "collecting";
         test.decisionSampleTarget = decisionSampleTarget;
-        test.decisionDueAt = test.status === "decision_due" ? recordedAt : null;
+        test.decisionDueAt = null;
         test.completedAt = null;
         test.outcomeR = null;
         test.outcomeSource = null;
@@ -572,7 +772,7 @@ export class ReviewStore {
       test.status = test.censored ? "censored" : "completed";
       test.completedAt = this.now().toISOString();
       return test;
-    });
+    }, { cycles: input?.cycles });
   }
 
   async createRule(input) {
@@ -613,7 +813,7 @@ export class ReviewStore {
     });
   }
 
-  async transitionRule(ruleId, { status, reason }) {
+  async transitionRule(ruleId, { status, reason, cycles }) {
     return this.#mutate((workspace) => {
       const rule = requiredRule(workspace, ruleId);
       const next = enumValue(status, [...RULE_STATUSES], null);
@@ -639,21 +839,18 @@ export class ReviewStore {
           throw new Error(`${next === "validated" ? "已验证规则" : "暂行原则"}至少需要 ${declaredMinimum} 个由确定性引擎核验的独立事件样本。`);
         }
         for (const protocol of protocols) {
-          if (!protocol.primaryMetric) {
-            throw new Error("测试协议的原始主指标尚未明确映射为可计算指标，不能正式晋级。");
-          }
+          const protocolLockReason = deterministicProtocolLockReason(protocol);
+          if (protocolLockReason) throw new Error(`${protocolLockReason}，不能正式晋级；请创建 v2。`);
           if (!cleanText(protocol.successCriteria, 2_000)) {
             throw new Error("测试协议缺少冻结的成功标准，不能正式晋级。");
           }
           const evaluation = protocol.protocolEvaluation;
-          const evaluatedMinimum = positiveIntegerOrDefault(protocol.minimumCases, 1);
-          if (protocol.status !== "completed"
-            || evaluation?.verified !== true
-            || evaluation?.passed !== true
-            || evaluation?.primaryMetric !== protocol.primaryMetric
-            || evaluation?.sampleSetHash !== protocolSampleSetHash(protocol)
-            || positiveIntegerOrDefault(evaluation?.evaluatedSampleCount, 0) !== protocolVerifiedEventCount(workspace, protocol)
-            || positiveIntegerOrDefault(evaluation?.evaluatedSampleCount, 0) < evaluatedMinimum) {
+          const evaluatedMinimum = deterministicProtocolMinimum(protocol);
+          if (!["completed", "decision_due"].includes(protocol.status)
+            || !protocolEvaluationIsCurrent(protocol, evaluation)
+            || evaluation.passed !== true
+            || positiveIntegerOrDefault(evaluation.evaluatedSampleCount, 0) !== protocolVerifiedEventCount(workspace, protocol)
+            || positiveIntegerOrDefault(evaluation.evaluatedSampleCount, 0) < evaluatedMinimum) {
             throw new Error("当前测试协议尚未由确定性引擎按声明指标、样本门槛和成功标准核验通过，不能正式晋级。");
           }
         }
@@ -680,7 +877,7 @@ export class ReviewStore {
         updateValidationPackageStatuses(workspace, rule, next);
       }
       return rule;
-    });
+    }, { cycles });
   }
 
   async addRuleReview(ruleId, input) {
@@ -719,7 +916,7 @@ export class ReviewStore {
       workspace.ruleReviews.unshift(review);
       rule.updatedAt = now;
       return review;
-    });
+    }, { cycles: input?.cycles });
   }
 
   /** Atomically supersede a decision-due validation with an editable v2. */
@@ -730,8 +927,9 @@ export class ReviewStore {
       if (!isProtocolTest(parentTest) || parentTest.ruleId !== parentRule.id) {
         throw new Error("v2 必须从同一条规则的验证协议建立。");
       }
-      if (parentTest.status !== "decision_due") {
-        throw new Error("只有达到本轮样本门槛并进入待决策的验证才能创建 v2。");
+      const parentProtocolLockReason = deterministicProtocolLockReason(parentTest);
+      if (parentTest.status !== "decision_due" && !parentProtocolLockReason) {
+        throw new Error("只有达到本轮样本门槛，或旧协议缺少机器可读门槛时，才能创建 v2。");
       }
       const now = this.now().toISOString();
       const childRuleId = this.idFactory();
@@ -744,6 +942,23 @@ export class ReviewStore {
         || parentRule.falsification;
       if (![title, condition, action, falsification].every(Boolean)) {
         throw new Error("v2 需要明确名称、条件、动作与失效条件。");
+      }
+      const primaryMetric = normalizeProposalMetric(input?.primaryMetric ?? parentTest.primaryMetric);
+      const successOperator = enumValue(
+        input?.successOperator ?? parentTest.successOperator,
+        [...SUCCESS_OPERATORS],
+        null,
+      );
+      const successThreshold = finiteOrNull(input?.successThreshold ?? parentTest.successThreshold);
+      const successCriteria = cleanText(input?.successCriteria, 2_000)
+        || cleanText(parentTest.successCriteria, 2_000);
+      const minimumCases = Math.min(Math.max(
+        nonNegativeIntegerOrNull(input?.minimumCases)
+          ?? positiveIntegerOrDefault(parentTest.minimumCases, FORMAL_PROTOCOL_SAMPLE_FLOOR),
+        1,
+      ), 10_000);
+      if (!primaryMetric || !successOperator || successThreshold == null || !successCriteria) {
+        throw new Error("v2 必须冻结受支持主指标、比较符、数值门槛与成功标准。");
       }
       const childRule = {
         ...structuredClone(parentRule),
@@ -776,11 +991,17 @@ export class ReviewStore {
         ruleId: childRuleId,
         title,
         hypothesis: condition,
+        primaryMetric,
+        metricSpec: primaryMetric,
+        minimumCases,
+        successCriteria,
+        successOperator,
+        successThreshold,
         status: "collecting",
         registeredAt: now,
         observationStartedAt: now,
         completedAt: null,
-        decisionSampleTarget: positiveIntegerOrDefault(parentTest.minimumCases, 20),
+        decisionSampleTarget: Math.max(FORMAL_PROTOCOL_SAMPLE_FLOOR, minimumCases),
         decisionRound: 1,
         decisionDueAt: null,
         retiredAt: null,
@@ -823,12 +1044,12 @@ export class ReviewStore {
       workspace.tests.unshift(childTest);
       workspace.ruleReviews.unshift(review);
       return { review, rule: childRule, test: childTest };
-    });
+    }, { cycles: input?.cycles });
   }
 
-  async #mutate(operation) {
+  async #mutate(operation, { cycles } = {}) {
     const mutation = this.queue.then(async () => {
-      const workspace = await this.snapshot();
+      const workspace = await this.snapshot({ cycles });
       const result = operation(workspace);
       if (result?.[NO_MUTATION] === true) return structuredClone(result.value);
       workspace.updatedAt = this.now().toISOString();
@@ -840,10 +1061,69 @@ export class ReviewStore {
   }
 }
 
+/** Pure host projection: reading provenance never writes or invents a sample. */
+export function reconcileSampleEvidenceIdentities(workspace, { cycles } = {}) {
+  const projected = structuredClone(workspace);
+  const cycleById = Array.isArray(cycles) ? new Map(cycles.map((cycle) => [cleanId(cycle?.id), cycle])) : null;
+  const caseById = new Map((projected.cases ?? []).map((reviewCase) => [cleanId(reviewCase?.id), reviewCase]));
+  for (const test of projected.tests ?? []) {
+    if (!isProtocolTest(test)) continue;
+    const sourceCycle = cycleById?.get(cleanId(test.sourceReviewCycleId));
+    const sourceCaseId = cleanId(test.sourceCaseId ?? (!test.sourceReviewCycleId ? test.caseId : null));
+    const sourceCase = sourceCaseId ? caseById.get(sourceCaseId) : null;
+    const sourceIdentity = sourceCycle ? canonicalReviewEvidenceIdentity(sourceCycle)
+      : sourceCase ? canonicalReviewEvidenceIdentity(sourceCase, { kind: "case" }) : null;
+    const sourceKey = sourceIdentity?.key ?? null;
+    for (const sample of test.samples) {
+      sample.formalEvidenceEligible = (sample.formalEvidenceEligible ?? sample.formalEligible) === true;
+      const existing = normalizeCanonicalSampleIdentity(sample.canonicalEvidenceIdentity, sample);
+      const record = sample.reviewCycleId ? cycleById?.get(sample.reviewCycleId) : caseById.get(sample.caseId || test.caseId);
+      let identity = existing;
+      let reason = sample.evidenceIdentityReason ?? (existing ? null : "sample_identity_not_resolved");
+      if (record) {
+        const candidate = canonicalReviewEvidenceIdentity(record, { kind: sample.reviewCycleId ? "cycle" : "case" });
+        identity = normalizeCanonicalSampleIdentity(candidate, sample);
+        reason = identity ? null : candidate.reason ?? "source_account_scope_missing";
+        if (existing && identity && existing.key !== identity.key) {
+          identity = existing;
+          reason = "sample_evidence_identity_conflict";
+        }
+        if (!reason && sample.outcomeVerified === true) {
+          const revision = positiveIntegerOrDefault(record.evidenceRevision ?? record.brokerLinks?.evidenceRevision ?? record.brokerLinks?.revision, 0);
+          if (!revision || revision !== sample.verification?.sourceEvidenceRevision) reason = "sample_evidence_revision_not_current";
+          if (sample.reviewCycleId && !phaseRunFollowsLegacyMigration(record, { completedAt: sample.verification?.sourceCompletedAt })) {
+            reason = "legacy_result_is_not_a_new_cycle_phase_run";
+          }
+          if (!sample.reviewCycleId && !caseEligibleForMetrics(projected, sample.caseId || test.caseId)) {
+            reason = "legacy_case_not_formal_evidence";
+          }
+        }
+      } else if (sample.reviewCycleId && cycleById) {
+        reason = "sample_source_cycle_missing";
+      } else if (!sample.reviewCycleId && !record) {
+        reason = "sample_source_case_missing";
+      }
+      if ((sourceKey && identity?.key === sourceKey)
+        || (sourceCaseId && identity?.sourceCaseId === sourceCaseId
+          && (!sourceIdentity?.accountScopeId || identity.accountScopeId === sourceIdentity.accountScopeId))) {
+        reason = "same_evidence_as_hypothesis_source";
+      }
+      sample.canonicalEvidenceIdentity = identity;
+      sample.evidenceIdentityStatus = reason === "sample_evidence_identity_conflict" ? "conflict"
+        : identity && !reason ? "verified" : "unresolved";
+      sample.evidenceIdentityReason = reason;
+      sample.formalEligible = sample.formalEvidenceEligible === true && sample.evidenceIdentityStatus === "verified";
+    }
+  }
+  projected.tests = (projected.tests ?? []).map(normalizePersistedTest);
+  return projected;
+}
+
 export function calculateRuleMetrics(workspace, ruleId) {
   const rule = (workspace?.rules ?? []).find((item) => item.id === ruleId);
   if (!rule) return null;
   const eligibleSamples = [];
+  const formalSamples = [];
   const unlinkedObservations = [];
   for (const test of (workspace?.tests ?? []).filter((item) => item.ruleId === ruleId)) {
     if (isProtocolTest(test)) {
@@ -858,32 +1138,25 @@ export function calculateRuleMetrics(workspace, ruleId) {
         if (caseId && !caseEligibleForMetrics(workspace, caseId)) continue;
         eligibleSamples.push({
           ...sample,
-          sampleKey: reviewCycleId ? `cycle:${reviewCycleId}` : `case:${caseId}`,
+          sampleKey: sampleIdentityKey(sample) ?? (reviewCycleId ? `unresolved-cycle:${reviewCycleId}` : `unresolved-case:${caseId}`),
         });
+        if (isFormalSample(sample)) formalSamples.push(sample);
       }
       continue;
     }
     if (test.status !== "completed" || test.censored || !caseEligibleForMetrics(workspace, test.caseId)) {
       continue;
     }
-    eligibleSamples.push({ ...test, sampleKey: test.caseId || test.id });
+    const reviewCase = workspace.cases?.find((item) => item.id === test.caseId);
+    const identity = reviewCase ? canonicalReviewEvidenceIdentity(reviewCase, { kind: "case" }) : null;
+    eligibleSamples.push({ ...test, sampleKey: identity?.key ?? `unresolved-case:${test.caseId || test.id}` });
   }
-  const onePerEvent = new Map();
-  for (const item of eligibleSamples) {
-    const sampleKey = item.sampleKey;
-    const current = onePerEvent.get(sampleKey);
-    const itemAt = item.recordedAt ?? item.completedAt ?? "";
-    const currentAt = current?.recordedAt ?? current?.completedAt ?? "";
-    if (!current || Date.parse(itemAt) >= Date.parse(currentAt)) {
-      onePerEvent.set(sampleKey, item);
-    }
-  }
-  const values = [...onePerEvent.values()]
+  const onePerEvent = uniqueLatestEvidenceSamples(eligibleSamples, (item) => item.sampleKey);
+  const values = onePerEvent
     .map((item) => item.outcomeR)
     .filter(Number.isFinite)
     .sort((a, b) => a - b);
-  const verifiedValues = [...onePerEvent.values()]
-    .filter((item) => item.outcomeVerified === true)
+  const verifiedValues = uniqueLatestEvidenceSamples(formalSamples, sampleIdentityKey)
     .map((item) => item.outcomeR)
     .filter(Number.isFinite);
   const unlinkedValues = unlinkedObservations
@@ -902,7 +1175,7 @@ export function calculateRuleMetrics(workspace, ruleId) {
   const decisionSampleTarget = protocols.length
     ? Math.max(...protocols.map((item) => positiveIntegerOrDefault(
       item.decisionSampleTarget,
-      positiveIntegerOrDefault(item.minimumCases, 20),
+      deterministicProtocolMinimum(item),
     )))
     : null;
   const decisionDue = protocols.some((item) => item.status === "decision_due");
@@ -913,6 +1186,10 @@ export function calculateRuleMetrics(workspace, ruleId) {
     unlinkedObservationCount: unlinkedValues.length,
     verifiedSampleCount: verifiedValues.length,
     manualSampleCount: values.length - verifiedValues.length,
+    calibrationSampleCount: onePerEvent.filter((item) => (
+      ["historical", "overlapping"].includes(item.observationTiming)
+    )).length,
+    unresolvedEvidenceIdentityCount: eligibleSamples.filter((item) => !sampleIdentityKey(item)).length,
     winCount: wins.length,
     lossCount: losses.length,
     winRatePercent: values.length ? round(wins.length / values.length * 100) : null,
@@ -937,7 +1214,7 @@ export function calculateRuleMetrics(workspace, ruleId) {
     decisionSampleTarget,
     decisionDue,
     progressPercent: decisionSampleTarget
-      ? round(Math.min(100, values.length / decisionSampleTarget * 100))
+      ? round(Math.min(100, verifiedValues.length / decisionSampleTarget * 100))
       : null,
     evidenceLabel: verifiedValues.length < 20
       ? values.length > verifiedValues.length
@@ -992,6 +1269,8 @@ function normalizePersistedTest(value) {
     "peak_gross_exposure",
   ], null);
   test.primaryHorizon = enumValue(test.primaryHorizon, ["t1", "t3", "t5", "t20", "next_quarter"], null);
+  test.successOperator = enumValue(test.successOperator, [...SUCCESS_OPERATORS], null);
+  test.successThreshold = finiteOrNull(test.successThreshold);
   test.samples = normalizePersistedTestSamples(test.samples, test);
 
   // Builds created by the earlier one-result model may have marked an entire
@@ -1014,18 +1293,20 @@ function normalizePersistedTest(value) {
 
   test.observationStartedAt = optionalIso(test.observationStartedAt ?? test.registeredAt);
   test.decisionRound = positiveIntegerOrDefault(test.decisionRound, 1);
-  test.decisionSampleTarget = positiveIntegerOrDefault(test.decisionSampleTarget, test.minimumCases);
+  test.decisionSampleTarget = Math.max(
+    FORMAL_PROTOCOL_SAMPLE_FLOOR,
+    positiveIntegerOrDefault(test.decisionSampleTarget, test.minimumCases),
+  );
   test.decisionDueAt = optionalIso(test.decisionDueAt);
-  const formallyCompleted = test.protocolEvaluation?.verified === true
-    && test.protocolEvaluation?.passed === true
-    && test.protocolEvaluation?.primaryMetric === test.primaryMetric
-    && test.protocolEvaluation?.sampleSetHash === protocolSampleSetHash(test)
-    && positiveIntegerOrDefault(test.protocolEvaluation?.evaluatedSampleCount, 0)
-      >= positiveIntegerOrDefault(test.minimumCases, 1);
+  test.protocolEvaluation = normalizePersistedProtocolEvaluation(test.protocolEvaluation, test);
+  const formallyCompleted = protocolEvaluationIsCurrent(test, test.protocolEvaluation)
+    && test.protocolEvaluation.passed === true
+    && positiveIntegerOrDefault(test.protocolEvaluation.evaluatedSampleCount, 0)
+      >= deterministicProtocolMinimum(test);
   if (!formallyCompleted) {
     if (test.status === "retired") {
       test.status = "retired";
-    } else if (protocolObservedEventCount(test) >= test.decisionSampleTarget) {
+    } else if (protocolFormalEventCount(test) >= test.decisionSampleTarget) {
       test.status = "decision_due";
       test.decisionDueAt ??= test.samples.at(-1)?.recordedAt ?? test.registeredAt ?? null;
     } else {
@@ -1039,6 +1320,10 @@ function normalizePersistedTest(value) {
     test.benchmarkReturnPercent = null;
     test.censored = false;
   }
+  // The renderer consumes this host result; it must not count cycle aliases
+  // independently or reconstruct the statistical eligibility algorithm.
+  test.formalUniqueSampleCount = protocolFormalEventCount(test);
+  test.formalIdentityMethod = "canonical-review-evidence/v1";
   return test;
 }
 
@@ -1058,19 +1343,42 @@ function normalizePersistedTestSample(value, test, index) {
   const recordedAt = optionalIso(value?.recordedAt ?? value?.completedAt ?? test?.registeredAt)
     ?? new Date(0).toISOString();
   const censored = Boolean(value?.censored);
+  const verification = normalizePersistedVerification(value?.verification);
+  const outcomeVerified = value?.outcomeVerified === true && Boolean(verification);
+  const observationTiming = enumValue(value?.observationTiming, [
+    "forward", "overlapping", "historical", "unknown",
+  ], "unknown");
+  const technicalValidationRef = normalizePersistedTechnicalValidationRef(
+    value?.technicalValidationRef,
+    outcomeVerified,
+  );
+  const technicalEvidenceValid = !value?.technicalValidationRef
+    || technicalValidationRef?.eligibleForFormalStatistics === true;
+  const caseId = cleanId(value?.caseId) || cleanId(test?.caseId);
+  const reviewCycleId = cleanId(value?.reviewCycleId);
+  const canonicalEvidenceIdentity = normalizeCanonicalSampleIdentity(value?.canonicalEvidenceIdentity, { caseId, reviewCycleId });
+  const evidenceIdentityStatus = canonicalEvidenceIdentity
+    ? enumValue(value?.evidenceIdentityStatus, ["verified", "unresolved", "conflict"], "verified") : "unresolved";
+  const formalEvidenceEligible = (value?.formalEvidenceEligible ?? value?.formalEligible) === true
+    && outcomeVerified && observationTiming === "forward" && technicalEvidenceValid;
   return {
     id: cleanId(value?.id) || `${cleanId(test?.id) || "test"}:sample-${index + 1}`,
-    caseId: cleanId(value?.caseId) || cleanId(test?.caseId),
-    reviewCycleId: cleanId(value?.reviewCycleId),
-    formalEligible: value?.formalEligible === true,
+    caseId,
+    reviewCycleId,
+    canonicalEvidenceIdentity,
+    evidenceIdentityStatus,
+    evidenceIdentityReason: cleanText(value?.evidenceIdentityReason, 160)
+      || (canonicalEvidenceIdentity ? null : "sample_identity_not_resolved"),
+    formalEvidenceEligible,
+    formalEligible: formalEvidenceEligible && evidenceIdentityStatus === "verified",
     recordedAt,
     outcomeR: censored ? null : finiteOrNull(value?.outcomeR),
     benchmarkReturnPercent: finiteOrNull(value?.benchmarkReturnPercent),
-    outcomeSource: value?.outcomeVerified === true ? cleanText(value?.outcomeSource, 120) : "manual",
-    outcomeVerified: value?.outcomeVerified === true,
-    observationTiming: enumValue(value?.observationTiming, [
-      "forward", "overlapping", "historical", "unknown",
-    ], "unknown"),
+    outcomeSource: outcomeVerified ? cleanText(value?.outcomeSource, 120) : "manual",
+    outcomeVerified,
+    observationTiming,
+    technicalValidationRef,
+    verification,
     notes: cleanText(value?.notes, 2_000),
     censored,
   };
@@ -1080,22 +1388,16 @@ function isProtocolTest(value) {
   return value?.testKind === "protocol" && Array.isArray(value?.samples);
 }
 
-function protocolObservedEventCount(protocol) {
-  const events = new Set();
-  for (const sample of protocol?.samples ?? []) {
-    if (sample?.censored === true) continue;
-    if (sample?.reviewCycleId) events.add(`cycle:${sample.reviewCycleId}`);
-    else if (sample?.caseId || protocol?.caseId) events.add(`case:${sample.caseId || protocol.caseId}`);
-  }
-  return events.size;
+function protocolFormalEventCount(protocol) {
+  return formalProtocolSamples(protocol).length;
 }
 
 function reopenLinkedValidation(workspace, rule, at, { advanceTarget = false } = {}) {
   let changed = false;
   for (const protocol of workspace.tests.filter((item) => item.ruleId === rule.id && isProtocolTest(item))) {
     if (protocol.status === "retired" || protocol.status === "decision_due" || !protocol.observationStartedAt) {
-      const observed = protocolObservedEventCount(protocol);
-      const minimum = positiveIntegerOrDefault(protocol.minimumCases, 20);
+      const observed = protocolFormalEventCount(protocol);
+      const minimum = deterministicProtocolMinimum(protocol);
       if (advanceTarget && protocol.status === "decision_due") {
         protocol.decisionRound = positiveIntegerOrDefault(protocol.decisionRound, 1) + 1;
         protocol.decisionSampleTarget = observed + Math.max(5, Math.ceil(minimum / 2));
@@ -1131,10 +1433,12 @@ function updateValidationPackageStatuses(workspace, rule, status) {
 }
 
 function protocolSampleSetHash(protocol) {
-  return sha256(stableStringify((protocol?.samples ?? []).map((sample) => ({
+  return sha256(stableStringify(formalProtocolSamples(protocol).map((sample) => ({
     id: sample.id,
     caseId: sample.caseId,
     reviewCycleId: sample.reviewCycleId,
+    canonicalEvidenceIdentity: sample.canonicalEvidenceIdentity,
+    evidenceIdentityStatus: sample.evidenceIdentityStatus,
     formalEligible: sample.formalEligible === true,
     recordedAt: sample.recordedAt,
     outcomeR: sample.outcomeR,
@@ -1142,25 +1446,310 @@ function protocolSampleSetHash(protocol) {
     outcomeSource: sample.outcomeSource,
     outcomeVerified: sample.outcomeVerified === true,
     observationTiming: sample.observationTiming,
+    technicalValidationRef: sample.technicalValidationRef ?? null,
+    verification: sample.verification ?? null,
     censored: sample.censored === true,
   }))));
 }
 
-function protocolVerifiedEventCount(workspace, protocol) {
-  const eventIds = new Set();
-  for (const sample of protocol?.samples ?? []) {
-    const caseId = sample.caseId || protocol.caseId || null;
-    const reviewCycleId = sample.reviewCycleId || null;
-    if ((!caseId && !reviewCycleId) || sample.censored || sample.outcomeVerified !== true) continue;
-    if (reviewCycleId) {
-      if (sample.formalEligible !== true) continue;
-      eventIds.add(`cycle:${reviewCycleId}`);
-      continue;
-    }
-    if (!caseEligibleForMetrics(workspace, caseId)) continue;
-    eventIds.add(`case:${caseId}`);
+function formalProtocolSamples(protocol) {
+  return uniqueLatestEvidenceSamples((protocol?.samples ?? []).filter(isFormalSample), sampleIdentityKey);
+}
+
+function isFormalSample(sample) {
+  return sample?.censored !== true && sample?.outcomeVerified === true
+    && sample?.formalEligible === true && sample?.observationTiming === "forward"
+    && Number.isFinite(sample?.outcomeR) && Boolean(sampleIdentityKey(sample));
+}
+
+function sampleIdentityKey(sample) {
+  if (sample?.evidenceIdentityStatus !== "verified") return null;
+  return normalizeCanonicalSampleIdentity(sample?.canonicalEvidenceIdentity, sample)?.key ?? null;
+}
+
+function normalizeCanonicalSampleIdentity(value, { reviewCycleId, caseId } = {}) {
+  if (!value || value.status !== "identified" || !cleanAccountScopeId(value.accountScopeId)) return null;
+  const sourceCaseId = cleanId(value.sourceCaseId);
+  const cycleId = cleanId(reviewCycleId);
+  const originalCaseId = cleanId(caseId);
+  if (cycleId && cleanId(value.sourceCycleId) !== cycleId) return null;
+  if (!cycleId && (!originalCaseId || sourceCaseId !== originalCaseId)) return null;
+  const expected = canonicalReviewEvidenceIdentity({ id: cycleId || originalCaseId,
+    brokerLinks: { accountScopeId: value.accountScopeId },
+    ...(cycleId && sourceCaseId ? { legacySource: {
+      sourceCaseId, accountScopeId: value.accountScopeId, sourceHash: value.sourceHash,
+    } } : {}),
+  }, { kind: cycleId ? "cycle" : "case" });
+  return expected.key === value.key ? expected : null;
+}
+
+function uniqueLatestEvidenceSamples(values, keyOf) {
+  const groups = new Map();
+  for (const item of values) {
+    const key = keyOf(item);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
   }
-  return eventIds.size;
+  const result = [];
+  for (const [key, rows] of [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    if (rows.length === 1) { result.push(rows[0]); continue; }
+    const timestamps = rows.map((item) => Date.parse(item.recordedAt ?? item.completedAt ?? ""));
+    if (timestamps.some((at) => !Number.isFinite(at))) continue;
+    const newest = Math.max(...timestamps);
+    const matches = rows.filter((_, index) => timestamps[index] === newest);
+    // No tie breaking on row order: ambiguous same-source outcomes are not independent evidence.
+    if (matches.length === 1) result.push(matches[0]);
+  }
+  return result;
+}
+
+function deterministicProtocolMinimum(test) {
+  return Math.max(
+    FORMAL_PROTOCOL_SAMPLE_FLOOR,
+    positiveIntegerOrDefault(test?.minimumCases, FORMAL_PROTOCOL_SAMPLE_FLOOR),
+  );
+}
+
+function deterministicProtocolLockReason(test) {
+  if (!isProtocolTest(test)) return "所选记录不是验证协议";
+  if (!DETERMINISTIC_PROTOCOL_METRICS.has(test?.primaryMetric)) {
+    return "旧协议的主指标不受确定性评估支持";
+  }
+  if (!SUCCESS_OPERATORS.has(test?.successOperator) || !Number.isFinite(test?.successThreshold)) {
+    return "旧协议缺少机器可读的比较符或数值门槛";
+  }
+  return null;
+}
+
+function protocolEvaluationSpec(test) {
+  return {
+    testId: cleanId(test?.id),
+    testKind: test?.testKind ?? null,
+    hypothesis: cleanText(test?.hypothesis, 2_000),
+    primaryMetric: test?.primaryMetric ?? null,
+    metricSpec: cleanText(test?.metricSpec, 500),
+    primaryHorizon: test?.primaryHorizon ?? null,
+    windowSpec: cleanText(test?.windowSpec, 500),
+    minimumCases: positiveIntegerOrDefault(test?.minimumCases, FORMAL_PROTOCOL_SAMPLE_FLOOR),
+    cohort: cleanText(test?.cohort, 3_000),
+    exclusions: cleanText(test?.exclusions, 2_000),
+    successCriteria: cleanText(test?.successCriteria, 2_000),
+    successOperator: test?.successOperator ?? null,
+    successThreshold: finiteOrNull(test?.successThreshold),
+    observationStartedAt: optionalIso(test?.observationStartedAt),
+    validationPackageId: cleanId(test?.validationPackageId),
+    sourceReviewCycleId: cleanId(test?.sourceReviewCycleId),
+    sourceRunId: cleanId(test?.sourceRunId),
+  };
+}
+
+function protocolEvaluationSpecHash(test) {
+  return sha256(stableStringify(protocolEvaluationSpec(test)));
+}
+
+function deterministicProtocolObservedValue(test) {
+  const values = formalProtocolSamples(test).map((sample) => sample.outcomeR);
+  if (!values.length) throw new Error("正式前向样本没有可核验的净 R。");
+  if (test.primaryMetric === "net_r") return round(sum(values));
+  if (test.primaryMetric === "expectancy_r") return round(sum(values) / values.length);
+  if (test.primaryMetric === "win_rate") {
+    return round(values.filter((value) => value > 0).length / values.length * 100);
+  }
+  if (test.primaryMetric === "payoff_ratio") {
+    const wins = values.filter((value) => value > 0);
+    const losses = values.filter((value) => value < 0);
+    if (!wins.length || !losses.length) {
+      throw new Error("赔率需要至少一个盈利样本和一个亏损样本，当前无法确定性计算。");
+    }
+    return round((sum(wins) / wins.length) / Math.abs(sum(losses) / losses.length));
+  }
+  throw new Error("冻结主指标不受确定性评估支持；请创建 v2。");
+}
+
+function compareProtocolThreshold(value, operator, threshold) {
+  if (operator === "gt") return value > threshold;
+  if (operator === "gte") return value >= threshold;
+  if (operator === "lt") return value < threshold;
+  if (operator === "lte") return value <= threshold;
+  throw new Error("冻结成功比较符无效；请创建 v2。");
+}
+
+function protocolEvaluationResultPayload(test, evaluation) {
+  return {
+    engine: "deterministic_review_protocol_v3_canonical",
+    protocolSpecHash: protocolEvaluationSpecHash(test),
+    sampleSetHash: protocolSampleSetHash(test),
+    primaryMetric: test.primaryMetric,
+    successOperator: test.successOperator,
+    successThreshold: test.successThreshold,
+    observedValue: finiteOrNull(evaluation?.observedValue),
+    evaluatedSampleCount: protocolFormalEventCount(test),
+    passed: evaluation?.passed === true,
+  };
+}
+
+function protocolEvaluationIsCurrent(test, evaluation) {
+  if (!evaluation || deterministicProtocolLockReason(test)) return false;
+  const expectedValue = (() => {
+    try {
+      return deterministicProtocolObservedValue(test);
+    } catch {
+      return null;
+    }
+  })();
+  if (expectedValue == null) return false;
+  const expectedPassed = compareProtocolThreshold(
+    expectedValue,
+    test.successOperator,
+    test.successThreshold,
+  );
+  const payload = protocolEvaluationResultPayload(test, {
+    observedValue: expectedValue,
+    passed: expectedPassed,
+  });
+  return evaluation.verified === true
+    && evaluation.engine === payload.engine
+    && evaluation.primaryMetric === payload.primaryMetric
+    && evaluation.successOperator === payload.successOperator
+    && evaluation.successThreshold === payload.successThreshold
+    && evaluation.observedValue === payload.observedValue
+    && evaluation.passed === payload.passed
+    && evaluation.evaluatedSampleCount === payload.evaluatedSampleCount
+    && evaluation.minimumRequired === deterministicProtocolMinimum(test)
+    && evaluation.sampleSetHash === payload.sampleSetHash
+    && evaluation.protocolSpecHash === payload.protocolSpecHash
+    && evaluation.resultHash === sha256(stableStringify(payload));
+}
+
+function normalizePersistedProtocolEvaluation(value, test) {
+  if (!value || typeof value !== "object") return null;
+  const evaluation = {
+    verified: value?.verified === true,
+    passed: value?.passed === true,
+    primaryMetric: enumValue(value?.primaryMetric, [...DETERMINISTIC_PROTOCOL_METRICS], null),
+    successOperator: enumValue(value?.successOperator, [...SUCCESS_OPERATORS], null),
+    successThreshold: finiteOrNull(value?.successThreshold),
+    observedValue: finiteOrNull(value?.observedValue),
+    evaluatedSampleCount: positiveIntegerOrDefault(value?.evaluatedSampleCount, 0),
+    minimumRequired: positiveIntegerOrDefault(value?.minimumRequired, 0),
+    sampleSetHash: normalizeSha256(value?.sampleSetHash),
+    protocolSpecHash: normalizeSha256(value?.protocolSpecHash),
+    resultHash: normalizeSha256(value?.resultHash),
+    engine: cleanText(value?.engine, 120),
+    evaluatedAt: optionalIso(value?.evaluatedAt),
+    notes: cleanText(value?.notes, 2_000),
+  };
+  return protocolEvaluationIsCurrent(test, evaluation) ? evaluation : null;
+}
+
+function normalizeHostVerification(value) {
+  const engine = cleanText(value?.engine, 120);
+  const sourceRunId = cleanId(value?.sourceRunId);
+  const sourceEvidenceRevision = positiveIntegerOrDefault(value?.sourceEvidenceRevision, 0);
+  const resultHash = normalizeSha256(value?.resultHash);
+  const sourceCompletedAt = optionalIso(value?.sourceCompletedAt);
+  if (!engine || !sourceRunId || !sourceEvidenceRevision || !resultHash || !sourceCompletedAt) {
+    throw new Error("确定性样本缺少引擎、运行、证据版本、完成时间或结果哈希。");
+  }
+  return {
+    engine,
+    sourceRunId,
+    sourceEvidenceRevision,
+    resultHash,
+    sourceCompletedAt,
+  };
+}
+
+function normalizePersistedVerification(value) {
+  if (!value || typeof value !== "object") return null;
+  const engine = cleanText(value?.engine, 120);
+  const sourceRunId = cleanId(value?.sourceRunId);
+  const sourceEvidenceRevision = positiveIntegerOrDefault(value?.sourceEvidenceRevision, 0);
+  const resultHash = normalizeSha256(value?.resultHash);
+  const sourceCompletedAt = optionalIso(value?.sourceCompletedAt);
+  if (!engine || !sourceRunId || !sourceEvidenceRevision || !resultHash || !sourceCompletedAt) return null;
+  return { engine, sourceRunId, sourceEvidenceRevision, resultHash, sourceCompletedAt };
+}
+
+function normalizeTechnicalValidationRef(value, { hostVerified = false } = {}) {
+  if (!value || typeof value !== "object") return null;
+  const sampleId = cleanText(value?.sampleId, 240);
+  const resultHash = normalizeSha256(value?.resultHash);
+  const ruleKey = cleanText(value?.ruleKey, 240);
+  const entryCutoffAt = optionalIso(value?.entryCutoffAt);
+  const exitAt = optionalIso(value?.exitAt);
+  const status = enumValue(value?.status, ["complete", "partial", "unavailable"], "unavailable");
+  const sampleStatus = enumValue(value?.sampleStatus, ["available", "unavailable"], "unavailable");
+  const protocolTiming = enumValue(value?.protocolTiming, [
+    "forward", "overlapping", "historical", "unknown",
+  ], "unknown");
+  const validationMode = enumValue(value?.validationMode, [
+    "walk_forward_candidate", "walk_forward", "historical_calibration",
+  ], "historical_calibration");
+  if (!sampleId && !resultHash && sampleStatus !== "available") return null;
+  const formalEligible = hostVerified
+    && status === "complete"
+    && sampleStatus === "available"
+    && protocolTiming === "forward"
+    && validationMode === "walk_forward"
+    && value?.eligibleForFormalStatistics === true
+    && Boolean(sampleId && resultHash);
+  if (hostVerified && !formalEligible) {
+    throw new Error("技术样本不满足已完成、前向、walk-forward 与结果哈希门槛。");
+  }
+  return {
+    status,
+    sampleStatus,
+    sampleId,
+    resultHash,
+    ruleKey,
+    radarTradingDate: cleanDate(value?.radarTradingDate),
+    radarRecordedAt: optionalIso(value?.radarRecordedAt),
+    entryCutoffAt,
+    exitAt,
+    protocolTiming,
+    validationMode,
+    eligibleForFormalStatistics: formalEligible,
+    formalEligibilityReason: cleanText(value?.formalEligibilityReason, 500)
+      ?? (formalEligible
+        ? "宿主已按持久化前向证据核验。"
+        : "候选样本尚未由确定性协议评估器核验。"),
+  };
+}
+
+function normalizePersistedTechnicalValidationRef(value, outcomeVerified) {
+  if (!value || typeof value !== "object") return null;
+  try {
+    return normalizeTechnicalValidationRef(value, {
+      hostVerified: outcomeVerified && value?.eligibleForFormalStatistics === true,
+    });
+  } catch {
+    return normalizeTechnicalValidationRef(value);
+  }
+}
+
+function normalizeSha256(value) {
+  const text = String(value ?? "").trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(text) ? text : null;
+}
+
+function cleanAccountScopeId(value) {
+  const text = String(value ?? "").trim();
+  return text ? text.slice(0, 160) : null;
+}
+
+function requiredAccountScopeId(value) {
+  const accountScopeId = cleanAccountScopeId(value);
+  if (!accountScopeId) {
+    throw new Error("长桥订单关联缺少匿名账户作用域；请在当前账户重新选择订单。");
+  }
+  return accountScopeId;
+}
+
+function protocolVerifiedEventCount(workspace, protocol) {
+  return formalProtocolSamples(protocol).filter((sample) => sample.reviewCycleId
+    || caseEligibleForMetrics(workspace, sample.caseId || protocol.caseId)).length;
 }
 
 function caseEligibleForMetrics(workspace, caseId) {
@@ -1273,6 +1862,7 @@ function normalizeBrokerLinkVersions(values, fallbackChangedAt = null) {
       revision: Math.max(candidate.requestedRevision, nextBrokerLinkRevision(versions)),
       changedAt: candidate.changedAt,
       reason: candidate.reason,
+      accountScopeId: candidate.accountScopeId,
       orderIds: candidate.orderIds,
       executionIds: candidate.executionIds,
     }));
@@ -1288,6 +1878,7 @@ function buildBrokerLinkVersion({
   revision,
   changedAt,
   reason,
+  accountScopeId,
   orderIds,
   executionIds,
 }) {
@@ -1295,13 +1886,14 @@ function buildBrokerLinkVersion({
     revision,
     changedAt: optionalIso(changedAt),
     reason: cleanText(reason, 240) || "更新关联订单与成交",
-    ...normalizeBrokerLinkSelection({ orderIds, executionIds }),
+    ...normalizeBrokerLinkSelection({ accountScopeId, orderIds, executionIds }),
   };
 }
 
 function brokerLinksFromVersion(version) {
   return {
     revision: version.revision,
+    accountScopeId: version.accountScopeId ?? null,
     orderIds: [...version.orderIds],
     executionIds: [...version.executionIds],
     confirmedAt: version.changedAt,
@@ -1311,6 +1903,7 @@ function brokerLinksFromVersion(version) {
 function emptyBrokerLinks() {
   return {
     revision: null,
+    accountScopeId: null,
     orderIds: [],
     executionIds: [],
     confirmedAt: null,
@@ -1319,6 +1912,7 @@ function emptyBrokerLinks() {
 
 function normalizeBrokerLinkSelection(value) {
   return {
+    accountScopeId: cleanAccountScopeId(value?.accountScopeId),
     orderIds: uniqueIds(value?.orderIds).sort(),
     executionIds: uniqueIds(value?.executionIds).sort(),
   };
@@ -1345,12 +1939,14 @@ function normalizeLearningProposal(value) {
     scope: cleanText(value?.candidateRule?.scope, 1_000),
   };
   const testDesign = {
-    metric: cleanText(value?.testDesign?.metric, 500),
+    metric: normalizeProposalMetric(value?.testDesign?.metric),
     window: cleanText(value?.testDesign?.window, 500),
     minCases: Math.min(Math.max(nonNegativeIntegerOrNull(value?.testDesign?.minCases) ?? 0, 1), 10_000),
     inclusion: cleanText(value?.testDesign?.inclusion, 3_000),
     exclusion: cleanText(value?.testDesign?.exclusion, 2_000),
     successCriteria: cleanText(value?.testDesign?.successCriteria, 2_000),
+    successOperator: enumValue(value?.testDesign?.successOperator, [...SUCCESS_OPERATORS], null),
+    successThreshold: finiteOrNull(value?.testDesign?.successThreshold),
   };
   const proposal = {
     hypothesis: cleanText(value?.hypothesis, 4_000),
@@ -1370,12 +1966,16 @@ function normalizeLearningProposal(value) {
     testDesign.inclusion,
     testDesign.exclusion,
     testDesign.successCriteria,
+    testDesign.successOperator,
     candidateRule.title,
     candidateRule.action,
     candidateRule.invalidation,
     candidateRule.scope,
   ];
-  if (required.some((item) => !item) || !Number.isInteger(testDesign.minCases) || testDesign.minCases < 1) {
+  if (required.some((item) => !item)
+    || testDesign.successThreshold == null
+    || !Number.isInteger(testDesign.minCases)
+    || testDesign.minCases < 1) {
     throw new Error("AI 验证草案缺少可证伪假设、测试口径或候选规则字段。");
   }
   if (!proposal.caveats.some((item) => item.includes("事前"))) {
@@ -1386,11 +1986,7 @@ function normalizeLearningProposal(value) {
 
 function normalizeProposalMetric(value) {
   const metric = String(value ?? "").trim().toLowerCase().replace(/[\s+-]+/g, "_");
-  const allowed = new Set([
-    "net_r", "relative_return", "drawdown", "hedge_value", "win_rate", "payoff_ratio",
-    "expectancy_r", "mae_r", "mfe_r", "action_adherence", "invalidation_latency", "peak_gross_exposure",
-  ]);
-  if (allowed.has(metric)) return metric;
+  if (DETERMINISTIC_PROTOCOL_METRICS.has(metric)) return metric;
   return null;
 }
 
@@ -1589,7 +2185,9 @@ function uniqueSymbols(values) {
 }
 
 function finiteOrNull(value) {
-  if (value == null || value === "") return null;
+  if (value == null || typeof value === "boolean") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  if (!["number", "string"].includes(typeof value)) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

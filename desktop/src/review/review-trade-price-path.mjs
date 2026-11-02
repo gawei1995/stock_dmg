@@ -71,9 +71,13 @@ export function deriveSelectedBuySellWindow({
   coverage.activityCount = activities.length;
   const symbols = unique(activities.map((item) => item.symbol));
   const currencies = unique(activities.map((item) => item.currency));
+  const contractMultipliers = unique(activities.map((item) => item.contractMultiplier));
   if (!activities.length) return unavailableWindow("no_executed_activity_in_selected_records", coverage);
   if (symbols.length !== 1) return unavailableWindow("selected_activities_must_have_one_symbol", coverage, activities);
   if (currencies.length !== 1) return unavailableWindow("selected_activities_must_have_one_currency", coverage, activities);
+  if (contractMultipliers.length !== 1) {
+    return unavailableWindow("option_contract_multiplier_conflict", coverage, activities);
+  }
   const ambiguousAt = opposingSidesAtSameInstant(activities);
   if (ambiguousAt) return unavailableWindow("ambiguous_buy_sell_order_at_same_timestamp", coverage, activities);
   const buys = activities.filter((item) => item.side === "buy");
@@ -154,8 +158,10 @@ export function buildReviewTradePricePath({
 
   const symbols = unique(activities.map((item) => item.symbol));
   const currencies = unique(activities.map((item) => item.currency));
+  const contractMultipliers = unique(activities.map((item) => item.contractMultiplier));
   if (symbols.length !== 1) return fail(base, "selected_activities_must_have_one_symbol");
   if (currencies.length !== 1) return fail(base, "selected_activities_must_have_one_currency");
+  if (contractMultipliers.length !== 1) return fail(base, "option_contract_multiplier_conflict");
   const symbol = symbols[0];
   const currency = currencies[0];
   base.symbol = symbol;
@@ -272,15 +278,21 @@ function normalizeSelectedActivities({ selectedOrders, selectedExecutions, allow
     if (String(value?.priceAudit?.status ?? "").toLowerCase() === "excluded") {
       return { ...result, error: "selected_execution_price_excluded" };
     }
+    const activitySymbol = value?.symbol ?? parent?.symbol;
+    const activityContractMultiplier = value?.contractMultiplier ?? parent?.contractMultiplier;
+    if (isOptionSymbol(activitySymbol) && finitePositive(activityContractMultiplier) == null) {
+      return { ...result, error: "option_contract_multiplier_unavailable" };
+    }
     const activity = normalizeActivity({
       id: `execution:${tradeId}`,
       source: "execution",
       orderId,
-      symbol: value?.symbol ?? parent?.symbol,
+      symbol: activitySymbol,
       side: value?.side ?? parent?.side,
       quantity: value?.quantity,
       price: value?.price,
       currency: value?.currency ?? parent?.currency,
+      contractMultiplier: activityContractMultiplier,
       at: value?.doneAt,
       sequence: value?.sequence,
     });
@@ -306,6 +318,9 @@ function normalizeSelectedActivities({ selectedOrders, selectedExecutions, allow
       result.ignoredUnfilledOrderCount += 1;
       continue;
     }
+    if (isOptionSymbol(value?.symbol) && finitePositive(value?.contractMultiplier) == null) {
+      return { ...result, error: "option_contract_multiplier_unavailable" };
+    }
     const activity = normalizeActivity({
       id: `order:${orderId}`,
       source: "order_aggregate",
@@ -315,6 +330,7 @@ function normalizeSelectedActivities({ selectedOrders, selectedExecutions, allow
       quantity,
       price: value?.executedPrice,
       currency: value?.currency,
+      contractMultiplier: value?.contractMultiplier,
       // submittedAt is intentionally not a fill timestamp.
       at: value?.executedAt ?? value?.doneAt ?? value?.updatedAt,
       sequence: value?.sequence,
@@ -398,15 +414,31 @@ function unavailableWindow(reason, coverage, activities = []) {
   };
 }
 
-function normalizeActivity({ id, source, orderId, symbol, side, quantity, price, currency, at, sequence }) {
+function normalizeActivity({
+  id,
+  source,
+  orderId,
+  symbol,
+  side,
+  quantity,
+  price,
+  currency,
+  contractMultiplier,
+  at,
+  sequence,
+}) {
   const normalizedSymbol = normalizeSymbol(symbol);
   const normalizedSide = normalizeSide(side);
   const normalizedQuantity = finitePositive(quantity);
   const normalizedPrice = finitePositive(price);
   const normalizedAt = optionalIso(at);
   const normalizedCurrency = normalizeCurrency(currency) ?? inferCurrency(normalizedSymbol);
+  const normalizedContractMultiplier = isOptionSymbol(normalizedSymbol)
+    ? finitePositive(contractMultiplier)
+    : 1;
   if (!id || !normalizedSymbol || !normalizedSide || normalizedQuantity == null
-    || normalizedPrice == null || !normalizedAt || !normalizedCurrency) return null;
+    || normalizedPrice == null || !normalizedAt || !normalizedCurrency
+    || normalizedContractMultiplier == null) return null;
   return {
     id,
     source,
@@ -416,8 +448,9 @@ function normalizeActivity({ id, source, orderId, symbol, side, quantity, price,
     quantity: normalizedQuantity,
     price: normalizedPrice,
     currency: normalizedCurrency,
+    contractMultiplier: normalizedContractMultiplier,
     at: normalizedAt,
-    sequence: Number.isFinite(Number(sequence)) ? Number(sequence) : null,
+    sequence: finiteNumberOrNull(sequence),
   };
 }
 
@@ -428,10 +461,14 @@ function parentConflict(value, parent) {
   const parentSide = normalizeSide(parent?.side);
   const ownCurrency = normalizeCurrency(value?.currency);
   const parentCurrency = normalizeCurrency(parent?.currency);
+  const ownContractMultiplier = finitePositive(value?.contractMultiplier);
+  const parentContractMultiplier = finitePositive(parent?.contractMultiplier);
   return Boolean(
     (ownSymbol && parentSymbol && ownSymbol !== parentSymbol)
     || (ownSide && parentSide && ownSide !== parentSide)
     || (ownCurrency && parentCurrency && ownCurrency !== parentCurrency)
+    || (ownContractMultiplier != null && parentContractMultiplier != null
+      && ownContractMultiplier !== parentContractMultiplier)
   );
 }
 
@@ -479,7 +516,9 @@ function matchLongLots(activities) {
     while (remaining > EPSILON && openLots.length) {
       const lot = openLots[0];
       const quantity = Math.min(remaining, lot.openQuantity);
-      const grossPnl = (activity.price - lot.buy.price) * quantity;
+      const grossPnl = (activity.price - lot.buy.price)
+        * quantity
+        * lot.buy.contractMultiplier;
       const cycle = {
         id: `cycle-${cycles.length + 1}`,
         lotId: lot.id,
@@ -500,7 +539,7 @@ function matchLongLots(activities) {
       lot.matchedQuantity += quantity;
       lot.openQuantity -= quantity;
       realizedGrossPnl += grossPnl;
-      realizedCost += lot.buy.price * quantity;
+      realizedCost += lot.buy.price * quantity * lot.buy.contractMultiplier;
       realizedQuantity += quantity;
       remaining -= quantity;
       if (lot.openQuantity <= EPSILON) {
@@ -540,12 +579,12 @@ function normalizeDailyBars(candles, symbol) {
   for (const value of candles) {
     const tradeDate = String(value?.tradeDate ?? "").trim();
     const barSymbol = value?.symbol == null ? null : normalizeSymbol(value.symbol);
-    const open = Number(value?.open);
-    const high = Number(value?.high);
-    const low = Number(value?.low);
-    const close = Number(value?.close);
+    const open = finitePositive(value?.open);
+    const high = finitePositive(value?.high);
+    const low = finitePositive(value?.low);
+    const close = finitePositive(value?.close);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)
-      || ![open, high, low, close].every((item) => Number.isFinite(item) && item > 0)
+      || [open, high, low, close].some((item) => item == null)
       || high < Math.max(open, close) || low > Math.min(open, close) || high < low) {
       return { error: "daily_candle_fields_invalid", bars: [] };
     }
@@ -736,6 +775,7 @@ function publicActivity(item) {
     quantity: round(item.quantity, 8),
     price: round(item.price, 8),
     currency: item.currency,
+    contractMultiplier: item.contractMultiplier,
     at: item.at,
   };
 }
@@ -748,6 +788,7 @@ function publicLot(lot) {
     buyActivityId: lot.buy.id,
     buyAt: lot.buy.at,
     buyPrice: round(lot.buy.price, 8),
+    contractMultiplier: lot.buy.contractMultiplier,
     originalQuantity: round(lot.originalQuantity, 8),
     matchedQuantity,
     openQuantity,
@@ -769,6 +810,7 @@ function publicCycle(cycle, pricePath) {
     quantity: round(cycle.quantity, 8),
     buyPrice: round(cycle.buy.price, 8),
     sellPrice: round(cycle.sell.price, 8),
+    contractMultiplier: cycle.buy.contractMultiplier,
     grossPnl: round(cycle.grossPnl),
     returnPercent: round(cycle.returnPercent),
     executionBasis: "raw_execution_fills",
@@ -787,6 +829,7 @@ function tradeMetrics(matched, currency, activities = []) {
       ? round((matched.realizedGrossPnl / matched.realizedCost) * 100)
       : null,
     currency,
+    contractMultiplier: activities[0]?.contractMultiplier ?? null,
     rawBuyVwap: weightedVwap(buys),
     rawSellVwap: weightedVwap(sells),
     executionBasis: "raw_execution_fills",
@@ -814,6 +857,7 @@ function emptyResult({ selectedOrders, selectedExecutions, candles }) {
       linkedSelectionGrossPnl: null,
       realizedReturnPercent: null,
       currency: null,
+      contractMultiplier: null,
       accountRealizedPnl: null,
       netPnl: null,
     },
@@ -921,6 +965,11 @@ function weightedVwap(activities) {
   return round(activities.reduce((sum, item) => sum + item.price * item.quantity, 0) / quantity, 8);
 }
 
+function isOptionSymbol(symbol) {
+  const localCode = String(symbol ?? "").trim().toUpperCase().split(".")[0];
+  return /\d{6}[CP]\d+$/.test(localCode);
+}
+
 function localClock(value, timeZone) {
   const date = new Date(value);
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -975,8 +1024,16 @@ function cleanId(value) {
 }
 
 function finitePositive(value) {
-  const number = Number(value);
+  const number = finiteNumberOrNull(value);
+  if (number == null) return null;
   return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function finiteNumberOrNull(value) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function optionalIso(value) {
@@ -986,7 +1043,7 @@ function optionalIso(value) {
 }
 
 function positiveInteger(value, fallback) {
-  const number = Number(value);
+  const number = finiteNumberOrNull(value);
   return Number.isInteger(number) && number > 0 ? number : fallback;
 }
 
@@ -1000,7 +1057,8 @@ function unique(values) {
 }
 
 function round(value, digits = 4) {
-  if (!Number.isFinite(Number(value))) return null;
+  const number = finiteNumberOrNull(value);
+  if (number == null) return null;
   const factor = 10 ** digits;
-  return Math.round((Number(value) + Number.EPSILON) * factor) / factor;
+  return Math.round((number + Number.EPSILON) * factor) / factor;
 }

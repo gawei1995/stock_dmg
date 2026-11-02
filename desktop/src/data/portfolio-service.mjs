@@ -8,6 +8,9 @@ import {
 import { withPortfolioFreshness } from "./freshness.mjs";
 import { EcbReferenceFxProvider } from "./reference-fx.mjs";
 import { MarketHistoryStore } from "./market-history-store.mjs";
+import { MarketSeriesStore } from "./market-series-store.mjs";
+import { deriveLongbridgeAccountScopeIdentity } from "./account-scope-identity.mjs";
+import { assessPortfolioValuationGate } from "./portfolio-valuation-gate.mjs";
 
 const QUOTE_BATCH_SIZE = 500;
 const DEFAULT_CANDLE_COUNT = 1000;
@@ -15,6 +18,11 @@ const CANDLE_CACHE_TTL_MS = 2 * 60 * 1000;
 const MAX_CANDLE_CACHE_ENTRIES = 100;
 const DEFAULT_PERSISTENT_REVALIDATE_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_CANDLE_REFRESH_TIMEOUT_MS = 8_000;
+const DEFAULT_MARKET_SERIES_COUNT = 240;
+const MARKET_SERIES_CACHE_TTL_MS = 2 * 60 * 1000;
+const DEFAULT_MARKET_SERIES_REVALIDATE_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_MARKET_SERIES_REFRESH_TIMEOUT_MS = 8_000;
+const SUPPORTED_AGENT_SERIES_PERIODS = new Set(["1h", "week"]);
 const CANDLE_DESCRIPTOR = Object.freeze({
   period: "day",
   adjustment: "forward",
@@ -29,20 +37,27 @@ export class PortfolioService {
     onStatus = () => {},
     referenceFxProvider = null,
     marketHistoryStore = null,
+    marketSeriesStore = null,
     baseCurrency = "USD",
+    clock = () => Date.now(),
   }) {
     this.longbridge = longbridge;
     this.store = store;
     this.onStatus = onStatus;
     this.referenceFxProvider = referenceFxProvider ?? new EcbReferenceFxProvider({ store });
     this.baseCurrency = String(baseCurrency || "USD").toUpperCase();
+    this.clock = typeof clock === "function" ? clock : () => Date.now();
     this.marketHistoryStore = marketHistoryStore
       ?? (store?.get && store?.set
         ? new MarketHistoryStore({ store, endpoint: longbridge.endpoint })
         : disabledMarketHistoryStore());
+    this.marketSeriesStore = marketSeriesStore
+      ?? createDefaultMarketSeriesStore(store, longbridge?.endpoint);
     this.refreshing = null;
     this.candleCache = new Map();
     this.candleLoads = new Map();
+    this.marketSeriesCache = new Map();
+    this.marketSeriesLoads = new Map();
   }
 
   async cachedPortfolio() {
@@ -51,25 +66,30 @@ export class PortfolioService {
       && cached?.valuationSchemaVersion === PORTFOLIO_SNAPSHOT_SCHEMA_VERSION
       ? withPortfolioFreshness(
           { ...cached, status: "cached", holdingsStatus: "cached" },
-          { forceState: "cached", reason: "本机加密缓存；尚未完成本轮长桥同步" },
+          {
+            now: this.#now().getTime(),
+            forceState: "cached",
+            reason: "本机加密缓存；尚未完成本轮长桥同步",
+          },
         )
       : null;
   }
 
-  async refresh() {
+  async refresh({ commitGuard = null } = {}) {
+    assertPortfolioCommitGuard(commitGuard);
     if (this.refreshing) return this.refreshing;
-    this.refreshing = this.#refresh().finally(() => {
+    this.refreshing = this.#refresh({ commitGuard }).finally(() => {
       this.refreshing = null;
     });
     return this.refreshing;
   }
 
-  async #refresh() {
-    this.onStatus({
+  async #refresh({ commitGuard = null } = {}) {
+    this.#publishRefreshStatus({
       state: "syncing",
       phase: "positions",
       message: "正在读取长桥真实持仓（请求会自动超时）",
-    });
+    }, commitGuard);
     const positionsPromise = this.longbridge.call("stock_positions", {});
     // Ask Longbridge for the account headline directly in the cockpit base
     // currency.  Calling without a currency returns the broker's display
@@ -86,11 +106,11 @@ export class PortfolioService {
     void fxPromise.catch(() => {});
     const positions = await positionsPromise;
     const { equitySymbols, optionSymbols } = flattenSymbolsByType(positions);
-    this.onStatus({
+    this.#publishRefreshStatus({
       state: "syncing",
       phase: "market_data",
       message: "正在读取账户、汇率与持仓行情（请求会自动超时）",
-    });
+    }, commitGuard);
     const [balancePayload, fxResult, equityQuotes, optionQuotes] = await Promise.all([
       balancesPromise,
       fxPromise,
@@ -98,6 +118,30 @@ export class PortfolioService {
       fetchQuotes(this.longbridge, "option_quote", optionSymbols),
     ]);
     const balances = selectRequestedCurrencyBalances(balancePayload, this.baseCurrency);
+
+    let accountScopeIdentity;
+    try {
+      accountScopeIdentity = deriveLongbridgeAccountScopeIdentity({
+        positionsPayload: positions,
+        balancePayload,
+        environment: "production",
+      });
+    } catch (error) {
+      accountScopeIdentity = {
+        status: "unverified",
+        scopeId: null,
+        broker: "longbridge",
+        environment: "production",
+        version: "account-scope-identity/v1",
+        reason: "explicit_broker_account_identifier_unavailable",
+        limitation: String(error?.message ?? error).slice(0, 300),
+        provenance: {
+          source: "longbridge_raw_portfolio_payload",
+          rawIdentifiersPersisted: false,
+          mutablePortfolioContentUsed: false,
+        },
+      };
+    }
 
     const normalizedPortfolio = normalizePortfolio({
       positions,
@@ -111,29 +155,67 @@ export class PortfolioService {
       fxStatus: fxResult.status,
       fxMetadata: fxResult.metadata,
     });
+    const assessedAt = this.#now();
+    normalizedPortfolio.syncedAt = assessedAt.toISOString();
+    normalizedPortfolio.accountScopeIdentity = accountScopeIdentity;
+    normalizedPortfolio.valuationGate = assessPortfolioValuationGate({
+      portfolio: normalizedPortfolio,
+      assessedAt,
+    });
+    if (normalizedPortfolio.valuationGate.outcome.status !== "pass"
+        && normalizedPortfolio.status === "live") {
+      normalizedPortfolio.status = "degraded";
+    }
     const portfolio = withPortfolioFreshness(normalizedPortfolio, {
+      now: assessedAt.getTime(),
       forceState: "fresh",
-      reason: "本轮长桥持仓、账户与行情同步已完成",
+      reason: normalizedPortfolio.valuationGate.outcome.readyForSizing
+        ? "本轮长桥持仓、账户、逐标的行情与估值校验已完成"
+        : "本轮长桥同步已完成，但逐标的行情或估值校验未通过",
     });
     portfolio.valuationSchemaVersion = PORTFOLIO_SNAPSHOT_SCHEMA_VERSION;
     portfolio.endpoint = this.longbridge.endpoint;
-    await this.store.set("portfolioSnapshot", portfolio);
-    const degraded = !portfolio.dataQuality.valuationComplete;
+    // The host advances its authorization generation before credentials are
+    // cleared or replaced. Check at the exact persistence boundary so a late
+    // broker response cannot repopulate the cache for the previous account.
+    assertPortfolioCommitAllowed(commitGuard);
+    await this.store.set("portfolioSnapshot", portfolio, { commitGuard });
+    assertPortfolioCommitAllowed(commitGuard);
+    const degraded = !portfolio.dataQuality.valuationComplete
+      || !portfolio.valuationGate.outcome.readyForSizing;
     const fxUnavailable = portfolio.dataQuality.fxStatus === "unavailable";
     const usingReferenceFx = portfolio.dataQuality.fxStatus === "reference"
       || portfolio.dataQuality.fxStatus === "reference_cached";
-    this.onStatus({
+    const valuationGateWarning = portfolio.valuationGate.outcome.readyForSizing
+      ? ""
+      : " · 逐标的行情或估值校验未通过，仓位建议暂停";
+    this.#publishRefreshStatus({
       state: degraded ? "degraded" : "ready",
       message: fxUnavailable
         ? `持仓和账户已实时更新 · 汇率不可用${formatSourceCode(fxResult.errors[0])} · 跨币种组合风险已暂停`
         : usingReferenceFx
-        ? `真实持仓已同步 · 按 ${this.baseCurrency} 估值 · ECB ${fxResult.metadata.asOf ?? "最新"} 参考汇率${portfolio.dataQuality.fxStatus === "reference_cached" ? "（缓存）" : ""}`
+        ? `真实持仓已同步 · 按 ${this.baseCurrency} 估值 · ECB ${fxResult.metadata.asOf ?? "最新"} 参考汇率${portfolio.dataQuality.fxStatus === "reference_cached" ? "（缓存）" : ""}${valuationGateWarning}`
+        : !portfolio.valuationGate.outcome.readyForSizing
+        ? `真实持仓已同步 · 逐标的行情或估值校验未通过 · 仓位建议已暂停`
         : degraded
         ? `真实持仓已同步 · ${portfolio.positions.length} 项 · ${portfolio.totals.unpricedPositionCount} 项待估值`
         : `真实持仓已同步 · ${portfolio.positions.length} 项 · 按 ${this.baseCurrency} 估值`,
       syncedAt: portfolio.syncedAt,
-    });
+    }, commitGuard);
     return portfolio;
+  }
+
+  #publishRefreshStatus(status, commitGuard) {
+    if (portfolioCommitAllowed(commitGuard)) this.onStatus(status);
+  }
+
+  #now() {
+    const value = this.clock();
+    const instant = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+    if (!Number.isFinite(instant.getTime())) {
+      throw new TypeError("PortfolioService clock returned an invalid time.");
+    }
+    return instant;
   }
 
   async candles(symbol, count = DEFAULT_CANDLE_COUNT, options = {}) {
@@ -147,6 +229,7 @@ export class PortfolioService {
     allowPersistentFallback = true,
     persistentRevalidateMs = DEFAULT_PERSISTENT_REVALIDATE_MS,
     liveRefreshTimeoutMs = DEFAULT_CANDLE_REFRESH_TIMEOUT_MS,
+    requireLive = false,
   } = {}) {
     const normalizedSymbol = String(symbol ?? "").trim().toUpperCase();
     if (!normalizedSymbol) throw new Error("Daily candle symbol is required.");
@@ -158,7 +241,11 @@ export class PortfolioService {
     const now = Date.now();
     this.#pruneCandleCache(now);
     const cached = this.candleCache.get(cacheKey);
-    if (cached && now - (cached.cachedAt ?? cached.fetchedAt) < CANDLE_CACHE_TTL_MS) {
+    const cachedHasLiveLineage = cached?.coverage?.source === "live"
+      || cached?.coverage?.originSource === "live";
+    if (cached
+        && now - (cached.cachedAt ?? cached.fetchedAt) < CANDLE_CACHE_TTL_MS
+        && (!requireLive || cachedHasLiveLineage)) {
       return cloneCandleResult({
         candles: cached.candles,
         coverage: buildCandleCoverage({
@@ -191,7 +278,11 @@ export class PortfolioService {
       && persistent.candles.length < normalizedCount;
     const persistentStale = Boolean(persistent?.candles?.length)
       && (!Number.isFinite(persistentAgeMs) || persistentAgeMs >= revalidateAfterMs);
-    if (preferPersistent && persistent?.candles?.length && !persistentIncomplete && !persistentStale) {
+    if (!requireLive
+        && preferPersistent
+        && persistent?.candles?.length
+        && !persistentIncomplete
+        && !persistentStale) {
       const coverage = buildCandleCoverage({
         source: "persistent",
         fetchedAt: persistent.fetchedAt,
@@ -237,6 +328,128 @@ export class PortfolioService {
       });
       this.#rememberCandles(cacheKey, persistent.candles, coverage);
       return cloneCandleResult({ candles: persistent.candles, coverage });
+    }
+  }
+
+  /**
+   * Fetch and persist a non-daily OHLCV series without collapsing bars that
+   * share an exchange trading date.  Completion is decided at this connector
+   * boundary: a later bar proves its predecessor is final, while an unlabelled
+   * terminal bar stays provisional.  The Agent never guesses bar finality.
+   */
+  async marketSeriesWithCoverage(symbol, period = "1h", count = DEFAULT_MARKET_SERIES_COUNT, {
+    signal,
+    preferPersistent = false,
+    allowPersistentFallback = true,
+    persistentRevalidateMs = DEFAULT_MARKET_SERIES_REVALIDATE_MS,
+    liveRefreshTimeoutMs = DEFAULT_MARKET_SERIES_REFRESH_TIMEOUT_MS,
+    requireLive = false,
+    adjustment = "forward",
+    tradeSessions = "intraday",
+  } = {}) {
+    const normalizedSymbol = String(symbol ?? "").trim().toUpperCase();
+    const normalizedPeriod = String(period ?? "").trim().toLowerCase();
+    const normalizedAdjustment = String(adjustment ?? "forward").trim().toLowerCase();
+    const normalizedTradeSessions = String(tradeSessions ?? "intraday").trim().toLowerCase();
+    if (!normalizedSymbol) throw new Error("Market series symbol is required.");
+    if (!SUPPORTED_AGENT_SERIES_PERIODS.has(normalizedPeriod)) {
+      throw new Error(`Unsupported Agent market period: ${normalizedPeriod || "unknown"}.`);
+    }
+    const normalizedCount = Math.min(
+      Math.max(Math.trunc(Number(count) || DEFAULT_MARKET_SERIES_COUNT), 2),
+      1000,
+    );
+    const descriptor = {
+      symbol: normalizedSymbol,
+      period: normalizedPeriod,
+      adjustment: normalizedAdjustment,
+      tradeSessions: normalizedTradeSessions,
+    };
+    const cacheKey = marketSeriesCacheKey(descriptor, normalizedCount);
+    const now = Date.now();
+    this.#pruneMarketSeriesCache(now);
+    const cached = this.marketSeriesCache.get(cacheKey);
+    const cachedHasLiveLineage = cached?.coverage?.source === "live"
+      || cached?.coverage?.originSource === "live";
+    if (cached
+        && now - cached.cachedAt < MARKET_SERIES_CACHE_TTL_MS
+        && (!requireLive || cachedHasLiveLineage)) {
+      return marketSeriesResult({
+        bars: cached.bars,
+        coverage: {
+          ...cached.coverage,
+          source: "memory",
+          originSource: cached.coverage?.originSource ?? cached.coverage?.source ?? null,
+        },
+        period: normalizedPeriod,
+        now,
+      });
+    }
+
+    const persistent = await this.marketSeriesStore.getSeries({
+      ...descriptor,
+      count: normalizedCount,
+    }).catch(() => null);
+    const persistentAgeMs = cacheAgeMs(persistent?.fetchedAt, now);
+    const revalidateAfterMs = nonNegativeNumber(
+      persistentRevalidateMs,
+      DEFAULT_MARKET_SERIES_REVALIDATE_MS,
+    );
+    const persistentIncomplete = Boolean(persistent?.bars?.length)
+      && persistent.bars.length < normalizedCount;
+    const persistentStale = Boolean(persistent?.bars?.length)
+      && (!Number.isFinite(persistentAgeMs) || persistentAgeMs >= revalidateAfterMs);
+    if (!requireLive
+        && preferPersistent
+        && persistent?.bars?.length
+        && !persistentIncomplete
+        && !persistentStale) {
+      const coverage = buildMarketSeriesCoverage({
+        source: "persistent",
+        fetchedAt: persistent.fetchedAt,
+        storedAt: persistent.storedAt,
+        requestedCount: normalizedCount,
+        bars: persistent.bars,
+        descriptor,
+        endpoint: this.longbridge.endpoint,
+        now,
+      });
+      this.#rememberMarketSeries(cacheKey, persistent.bars, coverage);
+      return marketSeriesResult({ bars: persistent.bars, coverage, period: normalizedPeriod, now });
+    }
+
+    const canAttemptLive = this.longbridge?.connected !== false;
+    try {
+      if (!canAttemptLive) throw marketSeriesRefreshUnavailableError("longbridge_disconnected");
+      return await this.#fetchMarketSeriesShared(descriptor, normalizedCount, cacheKey, {
+        signal,
+        timeoutMs: preferPersistent && persistent?.bars?.length
+          ? liveRefreshTimeoutMs
+          : null,
+      });
+    } catch (error) {
+      if (signal?.aborted || !allowPersistentFallback || !persistent?.bars?.length) throw error;
+      const coverage = buildMarketSeriesCoverage({
+        source: "persistent_fallback",
+        originSource: "persistent",
+        fetchedAt: persistent.fetchedAt,
+        storedAt: persistent.storedAt,
+        requestedCount: normalizedCount,
+        bars: persistent.bars,
+        descriptor,
+        endpoint: this.longbridge.endpoint,
+        now,
+        forcePartial: true,
+        partialReasons: [
+          ...(persistentIncomplete ? ["insufficient_history"] : []),
+          ...(persistentStale ? ["stale_cache"] : []),
+          "live_refresh_failed",
+        ],
+        refreshAttempted: canAttemptLive,
+        fallbackReason: candleErrorSummary(error),
+      });
+      this.#rememberMarketSeries(cacheKey, persistent.bars, coverage);
+      return marketSeriesResult({ bars: persistent.bars, coverage, period: normalizedPeriod, now });
     }
   }
 
@@ -345,6 +558,80 @@ export class PortfolioService {
     return cloneCandleResult({ candles: effectiveCandles, coverage });
   }
 
+  async #fetchMarketSeriesShared(descriptor, count, cacheKey, { signal, timeoutMs } = {}) {
+    if (signal) {
+      return this.#fetchMarketSeries(descriptor, count, cacheKey, { signal, timeoutMs });
+    }
+    const loadKey = [
+      this.longbridge.endpoint,
+      descriptor.symbol,
+      descriptor.period,
+      descriptor.adjustment,
+      descriptor.tradeSessions,
+      count,
+    ].join("|");
+    const existing = this.marketSeriesLoads.get(loadKey);
+    if (existing) return cloneMarketSeriesResult(await existing);
+    const load = this.#fetchMarketSeries(descriptor, count, cacheKey, { timeoutMs })
+      .finally(() => this.marketSeriesLoads.delete(loadKey));
+    this.marketSeriesLoads.set(loadKey, load);
+    return cloneMarketSeriesResult(await load);
+  }
+
+  async #fetchMarketSeries(descriptor, count, cacheKey, { signal, timeoutMs } = {}) {
+    const requestedAt = Date.now();
+    const raw = await callWithDeadline(
+      (requestSignal) => this.longbridge.call("candlesticks", {
+        symbol: descriptor.symbol,
+        period: descriptor.period,
+        count,
+        forward_adjust: descriptor.adjustment === "forward",
+        trade_sessions: descriptor.tradeSessions,
+      }, { signal: requestSignal }),
+      { signal, timeoutMs },
+    );
+    const bars = deduplicateMarketSeries(normalizeCandles(
+      validRawCandleRows(raw),
+      { symbol: descriptor.symbol },
+    ), descriptor.period);
+    if (!bars.length) {
+      throw marketSeriesRefreshUnavailableError(`no_valid_${descriptor.period}_candles`);
+    }
+    const requestedAtIso = new Date(requestedAt).toISOString();
+    let persisted = null;
+    let persistenceStatus = "stored";
+    try {
+      persisted = await this.marketSeriesStore.putSeries({
+        ...descriptor,
+        fetchedAt: requestedAtIso,
+        bars,
+      });
+      if (!persisted) persistenceStatus = "not_stored";
+    } catch {
+      persistenceStatus = "failed";
+    }
+    const effectiveBars = (persisted?.bars?.length ? persisted.bars : bars).slice(-count);
+    const coverage = buildMarketSeriesCoverage({
+      source: "live",
+      fetchedAt: persisted?.fetchedAt ?? requestedAtIso,
+      storedAt: persisted?.storedAt ?? null,
+      requestedCount: count,
+      bars: effectiveBars,
+      descriptor,
+      endpoint: this.longbridge.endpoint,
+      now: Date.now(),
+      refreshAttempted: true,
+      persistenceStatus,
+    });
+    this.#rememberMarketSeries(cacheKey, effectiveBars, coverage);
+    return marketSeriesResult({
+      bars: effectiveBars,
+      coverage,
+      period: descriptor.period,
+      now: Date.now(),
+    });
+  }
+
   #rememberCandles(cacheKey, candles, coverage) {
     const fetchedAt = Date.parse(coverage?.fetchedAt ?? "");
     const previous = this.candleCache.get(cacheKey);
@@ -372,6 +659,33 @@ export class PortfolioService {
       }
     }
   }
+
+  #rememberMarketSeries(cacheKey, bars, coverage) {
+    const nextFetchedAt = Date.parse(coverage?.fetchedAt ?? "");
+    const previous = this.marketSeriesCache.get(cacheKey);
+    const previousFetchedAt = Date.parse(previous?.coverage?.fetchedAt ?? "");
+    if (Number.isFinite(previousFetchedAt)
+        && Number.isFinite(nextFetchedAt)
+        && previousFetchedAt > nextFetchedAt) return;
+    this.marketSeriesCache.delete(cacheKey);
+    this.marketSeriesCache.set(cacheKey, {
+      cachedAt: Date.now(),
+      bars: structuredClone(bars),
+      coverage: structuredClone(coverage),
+    });
+    while (this.marketSeriesCache.size > MAX_CANDLE_CACHE_ENTRIES) {
+      const oldestKey = this.marketSeriesCache.keys().next().value;
+      this.marketSeriesCache.delete(oldestKey);
+    }
+  }
+
+  #pruneMarketSeriesCache(now) {
+    for (const [key, entry] of this.marketSeriesCache) {
+      if (!entry || now - entry.cachedAt >= MARKET_SERIES_CACHE_TTL_MS) {
+        this.marketSeriesCache.delete(key);
+      }
+    }
+  }
 }
 
 function disabledMarketHistoryStore() {
@@ -381,10 +695,182 @@ function disabledMarketHistoryStore() {
   };
 }
 
+function disabledMarketSeriesStore() {
+  return {
+    async getSeries() { return null; },
+    async putSeries() { return null; },
+  };
+}
+
+function createDefaultMarketSeriesStore(store, endpoint) {
+  if (!store?.get || !store?.set) return disabledMarketSeriesStore();
+  try {
+    return new MarketSeriesStore({ store, endpoint });
+  } catch {
+    return disabledMarketSeriesStore();
+  }
+}
+
 function cloneCandleResult(result) {
   return {
     candles: structuredClone(result?.candles ?? []),
     coverage: structuredClone(result?.coverage ?? null),
+  };
+}
+
+function cloneMarketSeriesResult(result) {
+  return structuredClone(result ?? {
+    bars: [],
+    completedBars: [],
+    completedBarsOnly: false,
+    finality: null,
+    coverage: null,
+  });
+}
+
+function marketSeriesResult({ bars, coverage, period, now = Date.now() }) {
+  const normalizedBars = Array.isArray(bars) ? bars : [];
+  const finality = selectCompletedMarketSeriesBars(normalizedBars, period, now);
+  return cloneMarketSeriesResult({
+    bars: normalizedBars,
+    completedBars: finality.bars,
+    completedBarsOnly: finality.attested,
+    finality: {
+      method: finality.method,
+      rawBarCount: normalizedBars.length,
+      completedBarCount: finality.bars.length,
+      excludedBarCount: normalizedBars.length - finality.bars.length,
+      terminalBarStatus: finality.terminalBarStatus,
+      evaluatedAt: new Date(now).toISOString(),
+      limitation: "未带供应商完结标记的末根 K 线不会进入正式技术指标；历史前序 K 线由后继 K 线证明已经结束。",
+    },
+    coverage,
+  });
+}
+
+/**
+ * A successor bar is deterministic evidence that its predecessor has ended,
+ * without assuming whether the provider timestamp marks the open or close.
+ * The terminal bar is admitted only with an explicit provider finality flag.
+ */
+export function selectCompletedMarketSeriesBars(bars, period, now = Date.now()) {
+  const normalizedPeriod = String(period ?? "").trim().toLowerCase();
+  if (!SUPPORTED_AGENT_SERIES_PERIODS.has(normalizedPeriod)) {
+    return {
+      bars: [],
+      attested: false,
+      method: "unsupported_period",
+      terminalBarStatus: "unknown",
+      evaluatedAt: new Date(now).toISOString(),
+    };
+  }
+  const ordered = deduplicateMarketSeries(bars, normalizedPeriod);
+  const completed = [];
+  for (let index = 0; index < ordered.length; index += 1) {
+    const bar = ordered[index];
+    const explicit = explicitBarFinality(bar);
+    const hasSuccessor = index < ordered.length - 1;
+    if (explicit === false) continue;
+    if (explicit === true || hasSuccessor) completed.push(bar);
+  }
+  const terminalExplicit = explicitBarFinality(ordered.at(-1));
+  return {
+    bars: completed,
+    attested: completed.length > 0,
+    method: "provider_explicit_finality_or_successor_bar_confirmation",
+    terminalBarStatus: terminalExplicit === true
+      ? "provider_confirmed_closed"
+      : terminalExplicit === false
+        ? "provider_marked_forming"
+        : ordered.length
+          ? "unconfirmed_terminal_excluded"
+          : "missing",
+    evaluatedAt: new Date(now).toISOString(),
+  };
+}
+
+function explicitBarFinality(bar) {
+  if (!bar || typeof bar !== "object") return null;
+  if (bar.isClosed === true) return true;
+  if (bar.isClosed === false) return false;
+  const status = String(bar.barStatus ?? "").trim().toLowerCase();
+  if (["closed", "complete", "completed", "final", "confirmed"].includes(status)) return true;
+  if (["forming", "open", "partial", "updating", "realtime", "live"].includes(status)) return false;
+  return null;
+}
+
+function marketSeriesCacheKey(descriptor, count) {
+  return [
+    descriptor.symbol,
+    descriptor.period,
+    descriptor.adjustment,
+    descriptor.tradeSessions,
+    count,
+  ].join("|");
+}
+
+function deduplicateMarketSeries(bars, period) {
+  const rows = new Map();
+  const intraday = ["1m", "5m", "15m", "30m", "1h"].includes(String(period));
+  for (const bar of Array.isArray(bars) ? bars : []) {
+    const timestamp = validIso(bar?.timestamp);
+    if (!timestamp) continue;
+    const identity = intraday
+      ? `${timestamp}|${String(bar?.tradeSession ?? "Intraday").toLowerCase()}`
+      : String(bar?.tradeDate ?? timestamp.slice(0, 10));
+    rows.set(identity, { ...bar, timestamp });
+  }
+  return [...rows.values()].sort((left, right) => (
+    Date.parse(left.timestamp) - Date.parse(right.timestamp)
+  ));
+}
+
+function buildMarketSeriesCoverage({
+  source,
+  originSource = null,
+  fetchedAt = null,
+  storedAt = null,
+  requestedCount,
+  bars,
+  descriptor,
+  endpoint,
+  now = Date.now(),
+  forcePartial = false,
+  partialReasons = [],
+  refreshAttempted = false,
+  fallbackReason = null,
+  persistenceStatus = null,
+}) {
+  const rows = Array.isArray(bars) ? bars : [];
+  const requested = Math.max(0, Math.trunc(Number(requestedCount) || 0));
+  const reasons = new Set((Array.isArray(partialReasons) ? partialReasons : []).filter(Boolean));
+  if (rows.length < requested) reasons.add("insufficient_history");
+  if (persistenceStatus === "failed") reasons.add("persistence_failed");
+  if (persistenceStatus === "not_stored") reasons.add("persistence_unavailable");
+  if (forcePartial && !reasons.size) reasons.add("degraded_fallback");
+  const normalizedFetchedAt = validIso(fetchedAt);
+  const partial = forcePartial || reasons.size > 0;
+  return {
+    source: String(source ?? "unknown"),
+    originSource: originSource ? String(originSource) : null,
+    coverageStatus: partial ? "partial" : "complete",
+    complete: !partial,
+    partial,
+    partialReasons: [...reasons],
+    fetchedAt: normalizedFetchedAt,
+    storedAt: validIso(storedAt),
+    cacheAgeMs: Number.isFinite(cacheAgeMs(normalizedFetchedAt, now))
+      ? cacheAgeMs(normalizedFetchedAt, now)
+      : null,
+    requestedCount: requested,
+    returnedCount: rows.length,
+    endpoint: String(endpoint ?? "") || null,
+    period: descriptor.period,
+    adjustment: descriptor.adjustment,
+    tradeSessions: descriptor.tradeSessions,
+    refreshAttempted: Boolean(refreshAttempted),
+    fallbackReason: fallbackReason ? structuredClone(fallbackReason) : null,
+    persistenceStatus: persistenceStatus ? String(persistenceStatus) : null,
   };
 }
 
@@ -508,6 +994,12 @@ function abortSignalError(reason) {
 
 function candleRefreshUnavailableError(reason) {
   const error = new Error(`Daily candle live refresh unavailable: ${reason}.`);
+  error.code = String(reason).toUpperCase();
+  return error;
+}
+
+function marketSeriesRefreshUnavailableError(reason) {
+  const error = new Error(`Market series live refresh unavailable: ${reason}.`);
   error.code = String(reason).toUpperCase();
   return error;
 }
@@ -780,7 +1272,13 @@ async function fetchQuotes(longbridge, tool, symbols) {
     batches.map(async (batch) => {
       try {
         const payload = await longbridge.call(tool, { symbols: batch });
-        return { quotes: flattenQuotes(payload), errors: [] };
+        const quotes = flattenQuotes(payload);
+        const returnedSymbols = new Set(quotes.map((quote) => quote?.symbol));
+        return {
+          quotes,
+          errors: batch.filter((symbol) => !returnedSymbols.has(symbol))
+            .map((symbol) => `${symbol}: 长桥 ${tool} 未返回该标的行情；不使用空值或旧价格代替。`),
+        };
       } catch (error) {
         if (isFatalSourceError(error)) throw error;
         const message = error instanceof Error ? error.message : "未知报价错误";
@@ -800,8 +1298,11 @@ async function fetchQuotes(longbridge, tool, symbols) {
 function flattenQuotes(payload) {
   const list = Array.isArray(payload)
     ? payload
-    : payload?.list ?? payload?.quotes ?? payload?.option_quotes ?? [];
-  return Array.isArray(list) ? list : [];
+    : payload?.list ?? payload?.quotes ?? payload?.option_quotes;
+  if (!Array.isArray(list)) {
+    throw new Error("长桥行情响应格式异常，未得到可核验的报价列表。");
+  }
+  return list;
 }
 
 function flattenSymbolsByType(payload) {
@@ -848,4 +1349,23 @@ function formatSourceCode(error) {
 
 function isFatalSourceError(error) {
   return error?.kind === "auth" || error?.kind === "transport";
+}
+
+function assertPortfolioCommitAllowed(commitGuard) {
+  assertPortfolioCommitGuard(commitGuard);
+  if (!portfolioCommitAllowed(commitGuard)) {
+    const error = new Error("长桥授权已在同步期间发生变化；旧持仓结果未写入缓存。");
+    error.code = "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION";
+    throw error;
+  }
+}
+
+function assertPortfolioCommitGuard(commitGuard) {
+  if (commitGuard != null && typeof commitGuard !== "function") {
+    throw new TypeError("Portfolio refresh commitGuard must be a function.");
+  }
+}
+
+function portfolioCommitAllowed(commitGuard) {
+  return commitGuard == null || commitGuard() === true;
 }

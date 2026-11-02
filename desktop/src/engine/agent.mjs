@@ -1,4 +1,13 @@
 import { calculateTechnical, round } from "./technical.mjs";
+import { calculateDailyExcessReturns } from "./daily-sequence.mjs";
+import { buildCoreNumericEvidence } from "./numeric-evidence-adapter.mjs";
+import {
+  aggregateCompletedDailyBarsToWeeks,
+  buildTechnicalV2,
+} from "./technical-v2.mjs";
+import { buildTierBTechnicalEvidence } from "./tier-b-technical-evidence.mjs";
+import { fxEvidenceMetadata } from "./fx-evidence.mjs";
+import { expectedLastCompletedTradingDate } from "./market-evidence.mjs";
 
 const PORTFOLIO_RISK_POLICY = Object.freeze({
   top1WarningPercent: 20,
@@ -18,9 +27,25 @@ const PORTFOLIO_RISK_POLICY = Object.freeze({
 // harness. Codex App Server owns the only Agent/thread/tool lifecycle.
 export async function buildAnalysisEvidence(options = {}) {
   const scope = normalizeAnalysisScope(options.scope);
+  if (scope === "chat") return buildResearchEvidence(options);
   if (scope === "portfolio") return buildPortfolioEvidence(options);
   if (scope === "candidate") return buildCandidateEvidence(options);
   return buildPositionEvidence(options);
+}
+
+export function buildResearchEvidence({ task = "自由研究", signal } = {}) {
+  throwIfCancelled(signal);
+  return {
+    id: crypto.randomUUID(), status: "research_ready", state: "RESEARCH_READY",
+    createdAt: new Date().toISOString(), elapsedMs: 0, task,
+    context: { scope: "chat", symbol: null, ticker: "RESEARCH", timeframe: null,
+      snapshotAt: null, marketDataAsOf: null, intent: "research" },
+    analysisContext: { scope: "chat", portfolioSummary: null, target: null,
+      dataBoundary: "No portfolio, quote or technical evidence is automatically attached to free research. Use cited available sources or ask the user; missing values are unknown, not zero." },
+    technical: null, risk: null, plan: { available: false }, evidence: [],
+    safeguards: defaultSafeguards(), sections: ["conclusion"],
+    capabilities: { orderWrite: false, conditionalPlan: false, freeResearch: true },
+  };
 }
 
 // Backwards-compatible entry point for existing callers. New callers should
@@ -36,51 +61,45 @@ async function buildPositionEvidence({
   task = "分析当前持仓",
   riskBudgetPercent = 0.8,
   loadCandles,
+  loadMarketSeries,
+  technicalLinkage = null,
+  anchoredVwap = null,
+  optionEvidence = null,
+  catalystEvidence = null,
   onStage = () => {},
   signal,
 }) {
   throwIfCancelled(signal);
   const startedAt = Date.now();
   const position = portfolio?.positions?.find((item) => item.symbol === symbol);
-  if (!position) throw new Error("选中的标的不在当前长桥持仓中。");
+  if (!position) throw new Error("选中的标的不在当前账户范围的持仓中。");
   const intent = classifyIntent(task);
   const snapshotFresh = portfolio.freshness?.freshForSizing === true;
+  const positionValuationGate = portfolio.valuationGate?.positions?.find(
+    (item) => item?.symbol === position.symbol,
+  ) ?? null;
   const portfolioEvidenceStatus = portfolio.status === "live" && snapshotFresh
     ? "succeeded"
     : "degraded";
   const selectedQuoteStatus = position.lastPrice != null
     && position.quoteTimestamp
     && snapshotFresh
+    && positionValuationGate?.readyForSizing === true
     ? "succeeded"
     : "degraded";
-  const fxError = portfolio.dataQuality?.sourceErrors?.find(
-    (item) => item.tool === "exchange_rate",
-  );
-  const fxWarning = portfolio.dataQuality?.sourceWarnings?.find(
-    (item) => item.tool === "exchange_rate",
-  );
-  const fxStatus = portfolio.dataQuality?.fxStatus ?? "unavailable";
-  const fxEvidenceStatus = fxStatus === "live" || fxStatus === "reference"
-    ? "succeeded"
-    : fxStatus === "reference_cached"
-      ? "degraded"
-      : "failed";
-  const fxSource = fxStatus === "live" ? "长桥账户汇率" : "ECB 参考汇率";
-  const fxSummary = fxStatus === "live"
-    ? "长桥账户汇率图"
-    : fxStatus === "reference" || fxStatus === "reference_cached"
-      ? `${portfolio.fx?.providerCode ?? "ECB"} ${portfolio.fx?.asOf ?? "最新"} 参考汇率${fxStatus === "reference_cached" ? "（缓存）" : ""}${fxWarning?.code ? ` · 长桥 ${fxWarning.code} 已降级` : ""}`
-      : `跨币种估值暂停${fxError?.code ? ` · ${fxError.code}` : ""}`;
+  const fxEvidence = fxEvidenceMetadata(portfolio);
+  const { status: fxStatus, evidenceStatus: fxEvidenceStatus, source: fxSource, summary: fxSummary } = fxEvidence;
   const accountEvidenceStatus = portfolio.account?.netAssets != null && snapshotFresh
     ? "succeeded"
     : "degraded";
   const snapshotSummary = portfolioSnapshotEvidenceSummary(portfolio);
+  const brokerSource = brokerObservationLabels(portfolio, position);
 
   const evidence = [
-    evidenceItem("长桥账户", "account_balance", portfolio.syncedAt, 1, accountEvidenceStatus, `${snapshotSummary}；跨币种聚合可能受汇率状态限制`),
+    evidenceItem(brokerSource.account, brokerSource.accountTool, portfolio.syncedAt, 1, accountEvidenceStatus, `${snapshotSummary}；${fxStatus === "not_required" ? "USD 单币种账户，无跨币种限制" : "跨币种聚合受汇率证据状态约束"}`),
     evidenceItem(
-      "长桥真实持仓",
-      "stock_positions",
+      brokerSource.holdings,
+      brokerSource.holdingsTool,
       portfolio.syncedAt,
       portfolio.positions.length,
       snapshotFresh ? "succeeded" : "degraded",
@@ -88,25 +107,27 @@ async function buildPositionEvidence({
     ),
     evidenceItem(
       fxSource,
-      fxStatus === "live" ? "exchange_rate" : "ecb_reference_rates",
-      portfolio.fx?.asOf ?? portfolio.syncedAt,
+      fxEvidence.tool,
+      fxEvidence.asOf,
       portfolio.fx?.currencyCount ?? 0,
       fxEvidenceStatus,
       fxSummary,
     ),
     evidenceItem(
-      "长桥行情",
-      position.instrumentType === "option" ? "option_quote" : "quote",
+      brokerSource.quote,
+      brokerSource.quoteTool,
       position.quoteTimestamp,
       position.lastPrice != null ? 1 : 0,
       selectedQuoteStatus,
       position.lastPrice != null
-        ? `现价 ${formatNumber(position.lastPrice)} · ${position.quoteSession ?? "unknown session"} · ${snapshotFresh ? "账户快照新鲜" : "快照仅供回看，不作为可执行仓位依据"}`
+        ? `现价 ${formatNumber(position.lastPrice)} · ${position.quoteSession ?? "unknown session"} · ${selectedQuoteStatus === "succeeded" ? "逐标的报价与估值校验通过" : `仅供回看，不用于仓位计算${positionValuationGate?.reasonCodes?.length ? `（${positionValuationGate.reasonCodes.join("、")}）` : ""}`}`
         : position.valuationLimitation,
     ),
   ];
 
   let candles = [];
+  let candleCoverage = null;
+  let benchmarkLoad = null;
   let technical;
   if (position.instrumentType === "option") {
     notifyStage(onStage, "technical_skipped", "期权合约跳过正股技术指标，正在检查组合风险");
@@ -117,25 +138,59 @@ async function buildPositionEvidence({
     );
   } else try {
     notifyStage(onStage, "candles", `正在读取 ${symbol} 日线（超时会自动降级，不会阻塞 Agent）`);
-    candles = await loadCandles(symbol);
+    const marketBundle = await loadTargetAndBenchmarkCandles(loadCandles, symbol);
+    const candleResult = marketBundle.target;
+    benchmarkLoad = marketBundle.benchmark;
+    candles = candleResult.candles;
+    candleCoverage = candleResult.coverage;
     throwIfCancelled(signal);
-    technical = calculateTechnical(candles, { symbol: position.symbol });
+    technical = attachBenchmarkRelativeStrength(calculateTechnical(candles, {
+      symbol: position.symbol,
+      coverage: candleCoverage,
+    }), {
+      symbol: position.symbol,
+      targetCandles: candles,
+      benchmarkLoad,
+    });
     evidence.push(
       evidenceItem(
         "长桥日线",
         "candlesticks",
         technical.asOf ?? null,
         technical.calculationBarCount,
-        technical.capabilities?.officialBar ? "succeeded" : "degraded",
-        `1D · OHLCV · 前复权 · 常规交易时段 · 最新输入 ${technical.lastBar?.status ?? "UNKNOWN"}${technical.provisional?.available ? "（未计入正式指标）" : ""}`,
+        technical.marketData
+          ? technical.marketData.freshForDecision ? "succeeded" : "degraded"
+          : technical.capabilities?.officialBar ? "succeeded" : "degraded",
+        candleEvidenceSummary(technical),
       ),
     );
+    evidence.push(benchmarkEvidenceItem(technical));
   } catch (error) {
     throwIfCancelled(signal);
     technical = calculateTechnical([]);
     evidence.push(
       evidenceItem("长桥日线", "candlesticks", null, 0, "failed", cleanError(error)),
     );
+  }
+
+  if (position.instrumentType !== "option") {
+    technical = await attachTechnicalV2({
+      technical,
+      dailyCandles: candles,
+      symbol,
+      task,
+      loadCandles,
+      loadMarketSeries,
+      benchmarkLoad,
+      dailyCoverage: candleCoverage,
+      technicalLinkage,
+      anchoredVwap,
+      optionEvidence,
+      catalystEvidence,
+      onStage,
+      signal,
+    });
+    appendMultiTimeframeEvidence(evidence, technical);
   }
 
   notifyStage(onStage, "risk_plan", "正在整理市场证据、组合风险与条件计划");
@@ -201,6 +256,8 @@ async function buildPositionEvidence({
       intent,
       snapshotAt: portfolio.syncedAt,
       valuationSchemaVersion: portfolio.valuationSchemaVersion ?? null,
+      valuationGateInputHash: portfolio.valuationGate?.inputHash ?? null,
+      valuationGateHash: portfolio.valuationGate?.hash ?? null,
       marketDataAsOf: technical.asOf ?? position.quoteTimestamp,
       marketDataTradingDate: technical.asOfTradingDate ?? null,
     },
@@ -220,7 +277,7 @@ async function buildPositionEvidence({
     safeguards: {
       orderWrite: false,
       modelNarration: false,
-      execution: "所有交易由用户在长桥端手动确认",
+      execution: "所有交易由用户在对应券商端手动确认",
     },
     sections: sectionsForIntent(intent),
     capabilities: {
@@ -228,6 +285,10 @@ async function buildPositionEvidence({
       portfolioRisk: risk.supported,
       portfolioRiskComplete: risk.portfolioValuationComplete,
       conditionalPlan: plan.available,
+      weeklyStructure: technical.technicalV2?.capabilityMatrix?.weeklyStructure?.status ?? "unavailable",
+      execution60m: technical.technicalV2?.capabilityMatrix?.execution60m?.status ?? "unavailable",
+      costProfile14d28d: technical.technicalV2?.capabilityMatrix?.costProfile14d28d?.status ?? "unavailable",
+      anchoredVwap: technical.technicalV2?.capabilityMatrix?.anchoredVwap?.status ?? "unavailable",
       backgroundWatcher: false,
       orderWrite: false,
     },
@@ -240,6 +301,11 @@ async function buildCandidateEvidence({
   task = "分析候选标的并准备买入计划",
   riskBudgetPercent = 0.8,
   loadCandles,
+  loadMarketSeries,
+  technicalLinkage = null,
+  anchoredVwap = null,
+  optionEvidence = null,
+  catalystEvidence = null,
   onStage = () => {},
   signal,
 }) {
@@ -258,6 +324,8 @@ async function buildCandidateEvidence({
   });
 
   let candles = [];
+  let candleCoverage = null;
+  let benchmarkLoad = null;
   let technical;
   if (candidateInstrumentType === "option") {
     notifyStage(onStage, "technical_skipped", "候选期权不使用合约价格生成正股 EMA/Fib 或线性买入计划");
@@ -275,25 +343,59 @@ async function buildCandidateEvidence({
     );
   } else try {
     notifyStage(onStage, "candles", `正在读取 ${targetSymbol} 日线（候选分析不要求已持仓）`);
-    candles = await loadCandles(targetSymbol);
+    const marketBundle = await loadTargetAndBenchmarkCandles(loadCandles, targetSymbol);
+    const candleResult = marketBundle.target;
+    benchmarkLoad = marketBundle.benchmark;
+    candles = candleResult.candles;
+    candleCoverage = candleResult.coverage;
     throwIfCancelled(signal);
-    technical = calculateTechnical(candles, { symbol: targetSymbol });
+    technical = attachBenchmarkRelativeStrength(calculateTechnical(candles, {
+      symbol: targetSymbol,
+      coverage: candleCoverage,
+    }), {
+      symbol: targetSymbol,
+      targetCandles: candles,
+      benchmarkLoad,
+    });
     evidence.push(
       evidenceItem(
         "长桥日线",
         "candlesticks",
         technical.asOf ?? null,
         technical.calculationBarCount,
-        technical.capabilities?.officialBar ? "succeeded" : "degraded",
-        `1D · OHLCV · 前复权 · 常规交易时段 · 最新输入 ${technical.lastBar?.status ?? "UNKNOWN"}${technical.provisional?.available ? "（未计入正式指标）" : ""}`,
+        technical.marketData
+          ? technical.marketData.freshForDecision ? "succeeded" : "degraded"
+          : technical.capabilities?.officialBar ? "succeeded" : "degraded",
+        candleEvidenceSummary(technical),
       ),
     );
+    evidence.push(benchmarkEvidenceItem(technical));
   } catch (error) {
     throwIfCancelled(signal);
     technical = calculateTechnical([]);
     evidence.push(
       evidenceItem("长桥日线", "candlesticks", null, 0, "failed", cleanError(error)),
     );
+  }
+
+  if (candidateInstrumentType !== "option") {
+    technical = await attachTechnicalV2({
+      technical,
+      dailyCandles: candles,
+      symbol: targetSymbol,
+      task,
+      loadCandles,
+      loadMarketSeries,
+      benchmarkLoad,
+      dailyCoverage: candleCoverage,
+      technicalLinkage,
+      anchoredVwap,
+      optionEvidence,
+      catalystEvidence,
+      onStage,
+      signal,
+    });
+    appendMultiTimeframeEvidence(evidence, technical);
   }
 
   notifyStage(onStage, "risk_plan", "正在整理候选市场证据与组合安全边界，并交给 Codex 独立评估");
@@ -355,6 +457,8 @@ async function buildCandidateEvidence({
       intent,
       snapshotAt: portfolio.syncedAt,
       valuationSchemaVersion: portfolio.valuationSchemaVersion ?? null,
+      valuationGateInputHash: portfolio.valuationGate?.inputHash ?? null,
+      valuationGateHash: portfolio.valuationGate?.hash ?? null,
       marketDataAsOf: technical.asOf ?? null,
       marketDataTradingDate: technical.asOfTradingDate ?? null,
     },
@@ -383,6 +487,10 @@ async function buildCandidateEvidence({
       leverageAssessment: true,
       candidateEntryPlan: plan.available,
       conditionalPlan: plan.available,
+      weeklyStructure: technical.technicalV2?.capabilityMatrix?.weeklyStructure?.status ?? "unavailable",
+      execution60m: technical.technicalV2?.capabilityMatrix?.execution60m?.status ?? "unavailable",
+      costProfile14d28d: technical.technicalV2?.capabilityMatrix?.costProfile14d28d?.status ?? "unavailable",
+      anchoredVwap: technical.technicalV2?.capabilityMatrix?.anchoredVwap?.status ?? "unavailable",
       backgroundWatcher: false,
       orderWrite: false,
     },
@@ -393,6 +501,7 @@ async function buildPortfolioEvidence({
   portfolio,
   task = "分析全部持仓与组合健康",
   riskBudgetPercent = 0.8,
+  technicalRadar = null,
   onStage = () => {},
   signal,
 }) {
@@ -404,11 +513,14 @@ async function buildPortfolioEvidence({
   const risk = calculatePortfolioRisk(portfolio, riskBudgetPercent);
   throwIfCancelled(signal);
 
-  // Portfolio scope deliberately does not fetch a candle for every holding.
-  // The portfolio snapshot already contains the latest marks needed for a
-  // concentration review; per-symbol EMA/Fib remains an explicit second step.
+  // Portfolio scope never performs a serial per-symbol fetch. It consumes the
+  // latest immutable Tier-A batch when available; deeper Tier-B work remains
+  // an explicit selected-symbol step.
   const technical = calculateTechnical([]);
-  technical.reason = "组合分析不会逐个请求 K 线；请切换到已持仓或候选标的 scope 查看 EMA/Fib。";
+  const radarContext = compactTechnicalRadarForAgent(technicalRadar, portfolio);
+  technical.reason = radarContext.available
+    ? `组合分析使用截止 ${radarContext.tradingDate} 的确定性技术雷达${radarContext.status === "complete" ? "" : "部分参考"}；当前股票持仓匹配 ${radarContext.coverage.matchedSymbolCount}/${radarContext.coverage.requestedSymbolCount} 项，未在本轮逐个联网读取 K 线。`
+    : "组合分析没有可用的技术雷达批次；本轮不会逐个请求 K 线拖慢对话。";
   const evidence = buildPortfolioSourceEvidence(portfolio, {
     holdingsSummary: `${portfolio.positions.length} 项真实持仓 · ${portfolio.totals?.pricedPositionCount ?? "—"} 项已定价`,
   });
@@ -422,12 +534,16 @@ async function buildPortfolioEvidence({
       `健康状态 ${risk.health} · 总暴露 ${formatPercent(risk.grossExposurePercent)} · Top1 ${formatPercent(risk.top1Weight)}`,
     ),
     evidenceItem(
-      "单标的技术指标",
-      "local:ema-fib",
-      null,
-      0,
-      "skipped",
-      "组合 scope 不逐个拉取 K 线，避免持仓越多分析越慢",
+      "批量技术雷达",
+      "local:tier-a-technical-radar",
+      radarContext.recordedAt,
+      radarContext.cards.length,
+      radarContext.available
+        ? radarContext.status === "complete" ? "succeeded" : "degraded"
+        : "skipped",
+      radarContext.available
+        ? `截止 ${radarContext.tradingDate} · 当前股票持仓匹配 ${radarContext.coverage.matchedSymbolCount}/${radarContext.coverage.requestedSymbolCount} 项${radarContext.status === "complete" ? "" : " · 部分/跨账户/旧批次参考，不代表当前组合完整扫描"} · 观察排序不是买卖建议`
+        : radarContext.limitation ?? "尚无已持久化批次；可在左侧技术雷达手动扫描，或等待每日收盘自动扫描",
     ),
   );
   const plan = buildPortfolioPlan(risk);
@@ -454,6 +570,8 @@ async function buildPortfolioEvidence({
       intent,
       snapshotAt: portfolio.syncedAt,
       valuationSchemaVersion: portfolio.valuationSchemaVersion ?? null,
+      valuationGateInputHash: portfolio.valuationGate?.inputHash ?? null,
+      valuationGateHash: portfolio.valuationGate?.hash ?? null,
       marketDataAsOf: portfolio.quoteAsOf ?? portfolio.quoteLatestAsOf ?? null,
       marketDataTradingDate: null,
     },
@@ -463,6 +581,7 @@ async function buildPortfolioEvidence({
       target: null,
       technical,
       risk,
+      technicalRadar: radarContext,
     }),
     conclusion,
     technical,
@@ -485,8 +604,8 @@ async function buildPortfolioEvidence({
 
 export function normalizeAnalysisScope(scope) {
   const value = String(scope ?? "position").trim().toLowerCase();
-  if (["position", "candidate", "portfolio"].includes(value)) return value;
-  throw new Error("分析范围无效；仅支持 position、candidate 或 portfolio。");
+  if (["chat", "position", "candidate", "portfolio"].includes(value)) return value;
+  throw new Error("分析范围无效；仅支持 chat、position、candidate 或 portfolio。");
 }
 
 export function calculateCandidateRisk(
@@ -499,7 +618,11 @@ export function calculateCandidateRisk(
   const portfolioRisk = calculatePortfolioRisk(portfolio, riskBudgetPercent);
   const netAssets = finiteOrNull(portfolio.account?.netAssets);
   const lastPrice = finiteOrNull(technical.lastPrice ?? target.lastPrice);
-  const normalizedBudget = round(Number(riskBudgetPercent), 2);
+  const requestedBudget = finiteOrNull(riskBudgetPercent);
+  const normalizedBudget = requestedBudget == null ? null : round(requestedBudget, 2);
+  const riskBudgetValid = normalizedBudget != null
+    && normalizedBudget >= 0.05
+    && normalizedBudget <= 5;
   const cashRatio = finiteOrNull(portfolio.totals?.cashRatio);
   const cashRatioValid = cashRatio != null;
   const buyPower = finiteOrNull(portfolio.account?.buyPower);
@@ -508,6 +631,9 @@ export function calculateCandidateRisk(
     ? (buyPower / netAssets) * 100
     : null;
   const technicalPlanReady = candidateMarketEvidenceReady(technical);
+  const marketDataFreshForSizing = technical.marketData
+    ? technical.marketData.freshForSizing === true
+    : true;
   const snapshotFresh = portfolio.freshness?.freshForSizing === true;
   const snapshotAtMs = Date.parse(String(portfolio.syncedAt ?? ""));
   const sizingValidUntil = snapshotFresh && Number.isFinite(snapshotAtMs)
@@ -545,16 +671,22 @@ export function calculateCandidateRisk(
   const inputSupported =
     target.instrumentType !== "option"
     && technicalPlanReady
+    && marketDataFreshForSizing
     && lastPrice > 0
     && netAssets > 0
     && portfolioValuationComplete
     && cashRatioValid
     && buyPowerValid
+    && riskBudgetValid
     && portfolioRisk.derivativeExposureComplete
     && snapshotFresh;
   const hardPortfolioBlockers = [
     ...candidatePortfolioBlockers(portfolioRisk),
+    ...(!marketDataFreshForSizing
+      ? ["日线不是最新实时来源或已超过仓位计算时效；可继续研究，但禁止输出可执行仓位"]
+      : []),
     ...(!snapshotFresh ? ["持仓快照已过期或来自缓存；可继续分析，但禁止输出可执行仓位"] : []),
+    ...(!riskBudgetValid ? ["风险预算缺失或超出 0.05%–5% 的允许范围；禁止输出可执行仓位"] : []),
   ];
   const safetyCeilings = [
     concentrationHeadroom.singlePositionPercent == null
@@ -589,7 +721,7 @@ export function calculateCandidateRisk(
     && hardMaxAdditionalWeight > 0;
   const entryAllowed = false;
   const supported = inputSupported;
-  const riskBudgetValue = netAssets > 0
+  const riskBudgetValue = netAssets > 0 && riskBudgetValid
     ? netAssets * (normalizedBudget / 100)
     : null;
   const hardMaxNotional = supported && hardMaxTotalWeight != null
@@ -617,6 +749,7 @@ export function calculateCandidateRisk(
       netAssets,
       lastPrice,
       technicalPlanReady,
+      marketDataFreshForSizing,
       cashRatio,
       buyPower,
       snapshotFresh,
@@ -632,6 +765,7 @@ export function calculateCandidateRisk(
     supported,
     portfolioValuationComplete,
     technicalPlanReady,
+    marketDataFreshForSizing,
     snapshotFresh,
     snapshotAt: portfolio.syncedAt ?? null,
     sizingValidUntil,
@@ -701,6 +835,7 @@ function candidateInputLimitation({
   netAssets,
   lastPrice,
   technicalPlanReady,
+  marketDataFreshForSizing = true,
   cashRatio,
   buyPower,
   snapshotFresh,
@@ -723,6 +858,9 @@ function candidateInputLimitation({
   }
   if (!technicalPlanReady) {
     return "候选市场证据未达到计划标准（需要足够的已收盘日线、最新收盘与可靠时间戳）；不能给出仓位上限。";
+  }
+  if (!marketDataFreshForSizing) {
+    return "候选日线仅可用于研究，来源回退、交易日缺口或缓存时效不满足仓位计算要求。";
   }
   if (!(lastPrice > 0)) return "候选 K 线缺少可靠最新收盘价。";
   return null;
@@ -851,7 +989,11 @@ function candidateMarketEvidenceReady(technical) {
   const candleCount = finiteOrNull(technical?.calculationBarCount);
   const lastPrice = finiteOrNull(technical?.lastPrice);
   const asOfMs = Date.parse(String(technical?.asOf ?? ""));
-  return technical?.capabilities?.officialBar === true
+  const coverageReady = technical?.marketData
+    ? technical.marketData.freshForDecision === true
+    : true;
+  return coverageReady
+    && technical?.capabilities?.officialBar === true
     && technical?.lastBar?.status === "CLOSED"
     && technical?.timeframe === "1D"
     && candleCount >= 20
@@ -911,11 +1053,13 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
   const netAssets = finiteOrNull(portfolio.account?.netAssets);
   const buyPower = finiteOrNull(portfolio.account?.buyPower);
   const valuationComplete = portfolio.dataQuality?.valuationComplete !== false;
-  const grossExposurePercent = netAssets > 0
+  const brokerNumericsIncomplete = Boolean(portfolio.brokerScope)
+    && (netAssets == null || portfolio.totals?.unpricedPositionCount > 0);
+  const grossExposurePercent = brokerNumericsIncomplete ? null : netAssets > 0
     && Number.isFinite(portfolio.totals?.positionsGrossMarketValueBase)
     ? (portfolio.totals.positionsGrossMarketValueBase / netAssets) * 100
     : sumFinite(positions.map((item) => item.weight));
-  const netExposurePercent = netAssets > 0
+  const netExposurePercent = brokerNumericsIncomplete ? null : netAssets > 0
     && Number.isFinite(portfolio.totals?.positionsNetMarketValueBase)
     ? (portfolio.totals.positionsNetMarketValueBase / netAssets) * 100
     : sumFinite(positions.map((item) => item.netWeight));
@@ -944,7 +1088,7 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
   );
   const top1Weight = finiteOrNull(portfolio.totals?.top1Weight)
     ?? finiteOrNull(sortedPositions[0]?.weight);
-  const top5Weight = finiteOrNull(portfolio.totals?.top5Weight)
+  const top5Weight = brokerNumericsIncomplete ? null : finiteOrNull(portfolio.totals?.top5Weight)
     ?? sumFinite(sortedPositions.slice(0, 5).map((item) => item.weight));
   const cashRatio = finiteOrNull(portfolio.totals?.cashRatio);
   const maintenanceMarginRatio = netAssets > 0
@@ -1034,6 +1178,7 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
           ? "review"
           : "balanced";
 
+  const normalizedRiskBudgetPercent = finiteOrNull(riskBudgetPercent);
   return {
     scope: "portfolio",
     supported,
@@ -1050,7 +1195,9 @@ export function calculatePortfolioRisk(portfolio, riskBudgetPercent = 0.8) {
     buyPowerWeightPercent: buyPower != null && buyPower >= 0 && netAssets > 0
       ? round((buyPower / netAssets) * 100, 2)
       : null,
-    riskBudgetPercent: round(Number(riskBudgetPercent), 2),
+    riskBudgetPercent: normalizedRiskBudgetPercent == null
+      ? null
+      : round(normalizedRiskBudgetPercent, 2),
     positionCount: positions.length,
     equityCount: positions.filter((item) => item.instrumentType !== "option").length,
     optionCount: positions.filter((item) => item.instrumentType === "option").length,
@@ -1088,6 +1235,7 @@ export function buildScopedAnalysisContext({
   technical,
   risk,
   candles = [],
+  technicalRadar = null,
 }) {
   const normalizedScope = normalizeAnalysisScope(scope);
   const summary = {
@@ -1107,6 +1255,7 @@ export function buildScopedAnalysisContext({
     top1WeightPercent: finiteOrNull(portfolio.totals?.top1Weight),
     top5WeightPercent: finiteOrNull(portfolio.totals?.top5Weight),
     valuationComplete: portfolio.dataQuality?.valuationComplete !== false,
+    valuationGate: compactPortfolioValuationGate(portfolio.valuationGate),
     fxStatus: portfolio.dataQuality?.fxStatus ?? "unknown",
     largestGroups: sortedExposure(
       portfolio.groupExposure,
@@ -1138,11 +1287,26 @@ export function buildScopedAnalysisContext({
           ema: technical.ema ?? {},
           emaSlope5d: technical.emaSlope5d ?? {},
           fib: technical.fib ?? null,
+          dailySequence: technical.dailySequence ?? null,
+          benchmarkRelativeStrength: technical.benchmarkRelativeStrength ?? null,
+          technicalV2: technical.technicalV2 ?? null,
+          tierB: technical.tierB ?? null,
+          marketData: technical.marketData ?? null,
+          capabilityMatrix: technical.capabilityMatrix ?? null,
           priceBars: compactPriceBars(candles),
         },
     risk,
+    numericEvidence: safeCoreNumericEvidence({
+      portfolio,
+      target,
+      technical,
+      risk,
+    }),
   };
   if (normalizedScope === "portfolio") {
+    context.technicalRadar = technicalRadar?.available != null
+      ? technicalRadar
+      : compactTechnicalRadarForAgent(technicalRadar, portfolio);
     context.positions = (portfolio.positions ?? []).map(contextPosition);
     context.groupExposure = risk.groupExposure ?? summary.largestGroups;
     context.groupNetExposure = risk.groupNetExposure ?? [];
@@ -1150,6 +1314,160 @@ export function buildScopedAnalysisContext({
     context.cashByCurrency = risk.cashByCurrency ?? [];
   }
   return context;
+}
+
+function compactTechnicalRadarForAgent(value, portfolio) {
+  const source = value?.latestBatch ?? value?.batch ?? value;
+  if (!source || typeof source !== "object" || !Array.isArray(source.items)) {
+    return {
+      available: false,
+      status: "unavailable",
+      tradingDate: null,
+      recordedAt: null,
+      inputHash: null,
+      coverage: null,
+      rankings: null,
+      cards: [],
+      limitation: "没有持久化的 Tier-A 技术雷达批次。",
+    };
+  }
+  const positions = Array.isArray(portfolio?.positions) ? portfolio.positions : [];
+  const excludedHoldings = positions.filter((item) => item.instrumentType === "option"
+    || finiteOrNull(item.quantity) == null || finiteOrNull(item.quantity) === 0)
+    .map((item) => ({ symbol: item.symbol ?? null, reason: item.instrumentType === "option"
+      ? "option_not_covered_by_equity_radar" : "quantity_unavailable_or_zero" }));
+  const requestedSymbols = [...new Set(positions.filter((item) => item.instrumentType !== "option"
+    && finiteOrNull(item.quantity) != null && finiteOrNull(item.quantity) !== 0)
+    .map((item) => String(item.symbol ?? "").trim().toUpperCase()).filter(Boolean))].sort();
+  const requestedSet = new Set(requestedSymbols);
+  const items = source.items.filter((item) => requestedSet.has(item.symbol));
+  const matchedSymbols = [...new Set(items.map((item) => item.symbol))].sort();
+  const missingSymbols = requestedSymbols.filter((symbol) => !matchedSymbols.includes(symbol));
+  const sourceHoldingSymbols = Array.isArray(source.summary?.universe?.holdingSymbols)
+    ? [...source.summary.universe.holdingSymbols].sort()
+    : [...new Set(source.items.filter((item) => item.memberships?.includes("holding")).map((item) => item.symbol))].sort();
+  const accounts = Array.isArray(portfolio?.brokerAccounts) ? portfolio.brokerAccounts : [];
+  const targetScopeId = portfolio?.accountScopeIdentity?.scopeId
+    ?? (accounts.length === 1 ? accounts[0]?.scopeId : null);
+  const sameAccountScope = Boolean(targetScopeId && source.accountScopeId === targetScopeId
+    && portfolio?.brokerScope !== "ibkr" && !accounts.some((account) => account.broker !== "longbridge"));
+  const expectedTradingDate = expectedLastCompletedTradingDate({ market: "US" });
+  const currentTradingDate = Boolean(expectedTradingDate && source.tradingDate === expectedTradingDate);
+  const holdingsChanged = JSON.stringify(sourceHoldingSymbols) !== JSON.stringify(requestedSymbols);
+  const reasons = [
+    ...(!source.batchId || !source.accountScopeId ? ["radar_batch_identity_missing"] : []),
+    ...(!sameAccountScope ? ["radar_account_scope_not_matched"] : []),
+    ...(holdingsChanged ? ["radar_holdings_universe_changed"] : []),
+    ...(!currentTradingDate ? ["radar_not_latest_completed_session"] : []),
+    ...(missingSymbols.length ? ["current_holdings_missing_radar_cards"] : []),
+    ...(excludedHoldings.length ? ["positions_outside_equity_radar_scope"] : []),
+  ];
+  const complete = reasons.length === 0 && items.length > 0
+    && source.summary?.status === "complete" && items.every((item) => item.status === "complete");
+  return {
+    available: items.length > 0,
+    status: complete ? "complete" : items.length ? "partial" : "unavailable",
+    batchId: source.batchId ?? null,
+    accountScopeId: source.accountScopeId ?? null,
+    recordHash: source.recordHash ?? null,
+    sourceStatus: source.summary?.status ?? "unknown",
+    sourceCoverage: source.summary?.coverage ?? null,
+    portfolioBinding: {
+      brokerScope: portfolio?.brokerScope ?? "longbridge",
+      accountScopeId: targetScopeId ?? null,
+      snapshotAt: portfolio?.syncedAt ?? null,
+      sameAccountScope,
+      holdingsChanged,
+      usage: sameAccountScope ? "selected_portfolio_projection" : "matching_symbols_market_reference_only",
+    },
+    freshness: { expectedTradingDate, currentTradingDate, basis: "latest_completed_us_session" },
+    tradingDate: source.tradingDate ?? null,
+    computedAt: source.computedAt ?? null,
+    recordedAt: source.recordedAt ?? null,
+    inputHash: source.inputHash ?? null,
+    scannerVersion: source.scannerVersion ?? null,
+    coverage: { requestedSymbols, requestedSymbolCount: requestedSymbols.length,
+      matchedSymbols, matchedSymbolCount: matchedSymbols.length, missingSymbols,
+      excludedHoldings, sourceHoldingSymbols, omittedSourceCardCount: source.items.length - items.length,
+      reasons },
+    // Full-batch rankings and comparisons belong to the original universe;
+    // they must not silently become rankings of a different portfolio.
+    rankings: complete && source.items.length === items.length ? source.summary?.rankings ?? null : null,
+    comparison: complete && source.items.length === items.length ? source.summary?.comparison ?? null : null,
+    capabilityMatrix: source.summary?.capabilityMatrix ?? null,
+    cards: items.map((item) => ({
+      symbol: item.symbol ?? null,
+      memberships: ["holding"],
+      sourceMemberships: Array.isArray(item.memberships) ? item.memberships : [],
+      status: item.status ?? "unknown",
+      cutoff: item.cutoff ?? source.tradingDate ?? null,
+      inputHash: item.inputHash ?? null,
+      lastClose: item.lastClose ?? null,
+      ema: item.ema ?? null,
+      structure: item.structure ?? null,
+      metrics: item.metrics ?? null,
+      weekly: item.weekly ?? null,
+      costProfile14d28d: item.costProfile14d28d ?? null,
+      benchmark: item.benchmark ?? null,
+      sector: item.sector ?? null,
+      observableState: item.observableState ?? null,
+      comparison: item.comparison ?? null,
+      degradedReasons: Array.isArray(item.degradedReasons) ? item.degradedReasons : [],
+    })),
+    limitations: [...(Array.isArray(source.limitations) ? source.limitations : []), ...reasons],
+    limitation: items.length ? null : "现有技术雷达没有匹配当前组合的股票持仓；不以其他账户或旧持仓的覆盖率代替。",
+    advisory: true,
+    decisionAuthority: "LLM",
+  };
+}
+
+function compactPortfolioValuationGate(gate) {
+  if (!gate || typeof gate !== "object") {
+    return {
+      status: "missing",
+      readyForSizing: false,
+      reasonCodes: ["valuation_gate_missing"],
+      positions: [],
+    };
+  }
+  return {
+    schemaVersion: gate.schemaVersion ?? null,
+    methodVersion: gate.methodVersion ?? null,
+    assessedAt: gate.assessedAt ?? null,
+    inputHash: gate.inputHash ?? null,
+    hash: gate.hash ?? null,
+    status: gate.outcome?.status ?? "unknown",
+    readyForSizing: gate.outcome?.readyForSizing === true,
+    reasonCodes: Array.isArray(gate.outcome?.reasonCodes)
+      ? gate.outcome.reasonCodes.slice(0, 50)
+      : [],
+    positions: Array.isArray(gate.positions)
+      ? gate.positions.slice(0, 500).map((item) => ({
+        symbol: item.symbol ?? null,
+        status: item.status ?? "unknown",
+        readyForSizing: item.readyForSizing === true,
+        quoteAt: item.quote?.timestamp ?? null,
+        quoteState: item.quote?.state ?? "unknown",
+        reasonCodes: Array.isArray(item.reasonCodes) ? item.reasonCodes.slice(0, 20) : [],
+      }))
+      : [],
+  };
+}
+
+function safeCoreNumericEvidence(input) {
+  try {
+    return buildCoreNumericEvidence(input);
+  } catch (error) {
+    return {
+      packageVersion: "core-numeric-evidence/v1",
+      schemaVersion: "numeric-evidence/v1",
+      status: "unavailable",
+      facts: [],
+      factCount: 0,
+      knownCount: 0,
+      error: String(error?.message ?? error).slice(0, 500),
+    };
+  }
 }
 
 function throwIfCancelled(signal) {
@@ -1178,6 +1496,15 @@ export function calculatePositionRisk(portfolio, position, technical, riskBudget
     && Number.isFinite(position.lastPrice)
     && Number.isFinite(weight);
   const portfolioValuationComplete = portfolio.dataQuality?.valuationComplete !== false;
+  const snapshotFresh = portfolio.freshness?.freshForSizing === true;
+  const positionValuationGate = portfolio.valuationGate?.positions?.find(
+    (item) => item?.symbol === position.symbol,
+  ) ?? null;
+  const selectedQuoteReadyForSizing = positionValuationGate?.readyForSizing === true;
+  const sizingSupported = supported
+    && portfolioValuationComplete
+    && snapshotFresh
+    && selectedQuoteReadyForSizing;
   const downsideReference = supported
     ? selectDownsideReference(position.lastPrice, technical)
     : null;
@@ -1188,10 +1515,19 @@ export function calculatePositionRisk(portfolio, position, technical, riskBudget
   const impactAtReference = moveToReference == null || weight == null
     ? null
     : (weight * moveToReference) / 100;
-  const maxPositionMove = weight ? (Number(riskBudgetPercent) / weight) * 100 : null;
+  const normalizedRiskBudgetPercent = finiteOrNull(riskBudgetPercent);
+  const maxPositionMove = weight && normalizedRiskBudgetPercent != null
+    ? (normalizedRiskBudgetPercent / weight) * 100
+    : null;
 
   return {
     supported,
+    sizingSupported,
+    snapshotFreshForSizing: snapshotFresh,
+    selectedQuoteReadyForSizing,
+    valuationGateReasonCodes: Array.isArray(positionValuationGate?.reasonCodes)
+      ? [...positionValuationGate.reasonCodes]
+      : ["position_valuation_gate_missing"],
     portfolioValuationComplete,
     instrumentType: position.instrumentType ?? "equity",
     limitation: supported
@@ -1205,7 +1541,9 @@ export function calculatePositionRisk(portfolio, position, technical, riskBudget
     group: position.group,
     groupWeight: groupWeight == null ? null : round(groupWeight, 2),
     pnlPercent: position.pnlPercent == null ? null : round(position.pnlPercent, 2),
-    riskBudgetPercent: round(Number(riskBudgetPercent), 2),
+    riskBudgetPercent: normalizedRiskBudgetPercent == null
+      ? null
+      : round(normalizedRiskBudgetPercent, 2),
     referenceLevel: reference,
     referenceLabel: downsideReference?.label ?? "无可靠下行参考",
     moveToReferencePercent: moveToReference == null ? null : round(moveToReference, 2),
@@ -1235,6 +1573,15 @@ export function buildConditionalPlan(position, technical, risk) {
       state: "valuation_incomplete",
       available: false,
       reason: "组合估值不完整；EMA/Fib 技术观察仍可用，但不能生成带风险预算的交易计划。",
+      watcherEnabled: false,
+      scenarios: [],
+    };
+  }
+  if (risk.sizingSupported === false) {
+    return {
+      state: "valuation_gate_blocked",
+      available: false,
+      reason: "账户同步时间、该标的报价时间或组合估值勾稽未同时通过；保留技术观察，但不生成带仓位含义的计划。",
       watcherEnabled: false,
       scenarios: [],
     };
@@ -1648,36 +1995,21 @@ function sectionsForIntent(intent) {
 function buildPortfolioSourceEvidence(portfolio, { holdingsSummary }) {
   const snapshotFresh = portfolio.freshness?.freshForSizing === true;
   const snapshotSummary = portfolioSnapshotEvidenceSummary(portfolio);
-  const fxError = portfolio.dataQuality?.sourceErrors?.find(
-    (item) => item.tool === "exchange_rate",
-  );
-  const fxWarning = portfolio.dataQuality?.sourceWarnings?.find(
-    (item) => item.tool === "exchange_rate",
-  );
-  const fxStatus = portfolio.dataQuality?.fxStatus ?? "unavailable";
-  const fxEvidenceStatus = fxStatus === "live" || fxStatus === "reference"
-    ? "succeeded"
-    : fxStatus === "reference_cached"
-      ? "degraded"
-      : "failed";
-  const fxSource = fxStatus === "live" ? "长桥账户汇率" : "ECB 参考汇率";
-  const fxSummary = fxStatus === "live"
-    ? "长桥账户汇率图"
-    : fxStatus === "reference" || fxStatus === "reference_cached"
-      ? `${portfolio.fx?.providerCode ?? "ECB"} ${portfolio.fx?.asOf ?? "最新"} 参考汇率${fxStatus === "reference_cached" ? "（缓存）" : ""}${fxWarning?.code ? ` · 长桥 ${fxWarning.code} 已降级` : ""}`
-      : `跨币种估值暂停${fxError?.code ? ` · ${fxError.code}` : ""}`;
+  const fxEvidence = fxEvidenceMetadata(portfolio);
+  const { status: fxStatus, evidenceStatus: fxEvidenceStatus, source: fxSource, summary: fxSummary } = fxEvidence;
+  const brokerSource = brokerObservationLabels(portfolio);
   return [
     evidenceItem(
-      "长桥账户",
-      "account_balance",
+      brokerSource.account,
+      brokerSource.accountTool,
       portfolio.syncedAt,
       1,
       portfolio.account?.netAssets != null && snapshotFresh ? "succeeded" : "degraded",
-      `${snapshotSummary}；跨币种聚合可能受汇率状态限制`,
+      `${snapshotSummary}；${fxStatus === "not_required" ? "USD 单币种账户，无跨币种限制" : "跨币种聚合受汇率证据状态约束"}`,
     ),
     evidenceItem(
-      "长桥真实持仓",
-      "stock_positions",
+      brokerSource.holdings,
+      brokerSource.holdingsTool,
       portfolio.syncedAt,
       portfolio.positions.length,
       snapshotFresh && (portfolio.holdingsStatus === "live" || portfolio.status === "live")
@@ -1687,13 +2019,31 @@ function buildPortfolioSourceEvidence(portfolio, { holdingsSummary }) {
     ),
     evidenceItem(
       fxSource,
-      fxStatus === "live" ? "exchange_rate" : "ecb_reference_rates",
-      portfolio.fx?.asOf ?? portfolio.syncedAt,
+      fxEvidence.tool,
+      fxEvidence.asOf,
       portfolio.fx?.currencyCount ?? 0,
       fxEvidenceStatus,
       fxSummary,
     ),
   ];
+}
+
+function brokerObservationLabels(portfolio, position = null) {
+  const scope = ["ibkr", "all"].includes(portfolio?.brokerScope) ? portfolio.brokerScope : "longbridge";
+  const quoteScope = position?.broker === "multiple" ? "all"
+    : ["ibkr", "longbridge"].includes(position?.broker) ? position.broker : scope;
+  // These local observation identifiers describe already-read snapshots.
+  // They do not claim an IBKR API or an aggregate broker endpoint was called
+  // by this evidence builder. Longbridge's existing provenance stays intact.
+  return {
+    account: scope === "longbridge" ? "长桥账户" : scope === "ibkr" ? "IBKR 账户观察" : "多券商账户汇总",
+    accountTool: scope === "longbridge" ? "account_balance" : scope === "ibkr" ? "local:ibkr-account-snapshot" : "local:broker-account-aggregate",
+    holdings: scope === "longbridge" ? "长桥真实持仓" : scope === "ibkr" ? "IBKR 真实持仓" : "多券商真实持仓",
+    holdingsTool: scope === "longbridge" ? "stock_positions" : scope === "ibkr" ? "local:ibkr-position-snapshot" : "local:broker-position-aggregate",
+    quote: quoteScope === "longbridge" ? "长桥行情" : quoteScope === "ibkr" ? "IBKR 账户估值观察" : "多券商估值汇总观察",
+    quoteTool: quoteScope === "longbridge" ? position?.instrumentType === "option" ? "option_quote" : "quote"
+      : quoteScope === "ibkr" ? "local:ibkr-portfolio-mark" : "local:broker-valuation-aggregate",
+  };
 }
 
 function portfolioSnapshotEvidenceSummary(portfolio) {
@@ -1740,11 +2090,494 @@ function appendTechnicalEvidence(evidence, technical) {
   );
 }
 
+async function attachTechnicalV2({
+  technical,
+  dailyCandles,
+  symbol,
+  task,
+  loadCandles,
+  loadMarketSeries,
+  benchmarkLoad,
+  dailyCoverage,
+  technicalLinkage,
+  anchoredVwap,
+  optionEvidence,
+  catalystEvidence,
+  onStage,
+  signal,
+}) {
+  throwIfCancelled(signal);
+  let intraday60m = null;
+  let hourlyLoad = null;
+  let hourlyError = null;
+  if (typeof loadMarketSeries === "function") {
+    notifyStage(onStage, "intraday_60m", `正在读取 ${symbol} 60 分钟完结 K 线（失败只降级执行层）`);
+    try {
+      hourlyLoad = await loadMarketSeries(symbol, { period: "1h", count: 240 });
+      throwIfCancelled(signal);
+      const coverage = hourlyLoad?.coverage ?? null;
+      const liveLineage = coverage?.source === "live"
+        || (coverage?.source === "memory" && coverage?.originSource === "live");
+      const decisionGrade = liveLineage
+        && coverage?.partial !== true
+        && hourlyLoad?.completedBarsOnly === true
+        && Array.isArray(hourlyLoad?.completedBars)
+        && hourlyLoad.completedBars.length > 0;
+      if (decisionGrade) {
+        intraday60m = {
+          bars: hourlyLoad.completedBars,
+          interval: "60m",
+          completedBarsOnly: true,
+          source: coverage.source,
+          fetchedAt: coverage.fetchedAt,
+          coverage: {
+            ...coverage,
+            finality: hourlyLoad.finality ?? null,
+          },
+        };
+      } else {
+        hourlyError = {
+          code: "hourly_not_decision_grade",
+          message: "60 分钟数据不是本轮实时完整来源，或没有可证明已完结的 K 线；执行层保持不可用。",
+        };
+      }
+    } catch (error) {
+      throwIfCancelled(signal);
+      hourlyError = {
+        code: String(error?.code ?? error?.kind ?? "hourly_load_failed").slice(0, 80),
+        message: cleanError(error),
+      };
+    }
+  }
+
+  const dailyCompletedBars = completedCandlesThrough(
+    dailyCandles,
+    technical?.asOfTradingDate,
+  );
+  const technicalV2 = buildTechnicalV2({
+    dailyTechnical: technical,
+    dailyCompletedBars,
+    intraday60m,
+    horizon: inferTechnicalHorizon(task),
+  });
+  const benchmark = technical?.benchmarkRelativeStrength;
+  if (benchmark) {
+    const availableWindows = Object.values(benchmark.excessReturns?.windows ?? {})
+      .filter((metric) => metric?.status === "available").length;
+    const benchmarkStatus = benchmark.status === "complete"
+      ? "complete"
+      : ["partial", "research_only"].includes(benchmark.status)
+        ? "warming"
+        : "unavailable";
+    const benchmarkCapability = {
+      status: benchmarkStatus,
+      minimumBars: 2,
+      barCount: availableWindows,
+      source: "same_date_target_vs_qqq_completed_daily",
+      asOf: benchmark.asOfTradingDate ?? null,
+      method: benchmark.excessReturns?.methodVersion ?? "daily-sequence-v1",
+      reasonCodes: [
+        ...(benchmark.reason ? [benchmark.reason] : []),
+        ...(benchmarkStatus === "complete" ? [] : [`benchmark_${benchmark.status ?? "unavailable"}`]),
+      ],
+    };
+    technicalV2.capabilityMatrix.benchmarkRelativeStrength = benchmarkCapability;
+    technicalV2.limitations = [
+      ...(technicalV2.limitations ?? []).filter((item) => item?.layer !== "benchmarkRelativeStrength"),
+      ...(benchmarkStatus === "complete"
+        ? []
+        : [{
+            layer: "benchmarkRelativeStrength",
+            status: benchmarkStatus,
+            reasonCodes: benchmarkCapability.reasonCodes,
+          }]),
+    ];
+  }
+  technicalV2.loads = {
+    hourly60m: {
+      attempted: typeof loadMarketSeries === "function",
+      coverage: hourlyLoad?.coverage ?? null,
+      finality: hourlyLoad?.finality ?? null,
+      error: hourlyError,
+    },
+    weekly: {
+      attempted: false,
+      source: "derived_from_completed_daily",
+      limitation: "周线由已完成日线聚合，并固定排除无法确认完结的末周。",
+    },
+  };
+
+  const tierB = await buildSelectedSymbolTierBEvidence({
+    symbol,
+    task,
+    technical,
+    dailyCompletedBars,
+    dailyCoverage,
+    benchmarkLoad,
+    intraday60m,
+    loadCandles,
+    technicalLinkage,
+    anchoredVwap,
+    optionEvidence,
+    catalystEvidence,
+    onStage,
+    signal,
+  });
+  return {
+    ...technical,
+    technicalV2,
+    tierB,
+    capabilityMatrix: {
+      ...technical?.capabilityMatrix,
+      technicalV2: technicalV2.status,
+      tierB: tierB?.status ?? "unavailable",
+      weeklyStructure: technicalV2.capabilityMatrix.weeklyStructure.status,
+      execution60m: technicalV2.capabilityMatrix.execution60m.status,
+      costProfile14d28d: technicalV2.capabilityMatrix.costProfile14d28d.status,
+      anchoredVwap: technicalV2.capabilityMatrix.anchoredVwap.status,
+    },
+  };
+}
+
+async function buildSelectedSymbolTierBEvidence({
+  symbol,
+  task,
+  technical,
+  dailyCompletedBars,
+  dailyCoverage,
+  benchmarkLoad,
+  intraday60m,
+  loadCandles,
+  technicalLinkage,
+  anchoredVwap,
+  optionEvidence,
+  catalystEvidence,
+  onStage,
+  signal,
+}) {
+  const cutoffTradingDate = String(technical?.asOfTradingDate ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffTradingDate) || !dailyCompletedBars.length) {
+    return null;
+  }
+  throwIfCancelled(signal);
+  const confirmedLinkage = normalizedConfirmedTechnicalLinkage(technicalLinkage, symbol);
+  let related = { sector: null, peers: [], errors: [] };
+  if (confirmedLinkage && typeof loadCandles === "function") {
+    notifyStage(
+      onStage,
+      "market_linkage",
+      `正在按你确认的联动表读取行业与同行（严格对齐 ${cutoffTradingDate}，缺日不前填）`,
+    );
+    related = await loadTierBRelatedDaily({
+      linkage: confirmedLinkage,
+      loadCandles,
+      cutoffTradingDate,
+      signal,
+    });
+  }
+  throwIfCancelled(signal);
+
+  const weeklyAggregation = aggregateCompletedDailyBarsToWeeks(dailyCompletedBars);
+  const targetDaily = tierBDailyDescriptor(dailyCompletedBars, dailyCoverage);
+  const benchmarkDailyBars = completedCandlesThrough(
+    benchmarkLoad?.candles,
+    cutoffTradingDate,
+  );
+  const benchmarkDaily = tierBDailyDescriptor(
+    benchmarkDailyBars,
+    benchmarkLoad?.coverage,
+  );
+  const weekly = weeklyAggregation.bars.length
+    ? {
+        bars: weeklyAggregation.bars,
+        interval: "1W",
+        completedBarsOnly: true,
+        source: "derived_from_completed_daily",
+        fetchedAt: dailyCoverage?.fetchedAt ?? null,
+        coverage: {
+          source: "derived_from_completed_daily",
+          originSource: dailyCoverage?.originSource ?? dailyCoverage?.source ?? null,
+          partial: dailyCoverage?.partial === true,
+          partialReasons: Array.isArray(dailyCoverage?.partialReasons)
+            ? dailyCoverage.partialReasons
+            : [],
+          derivation: weeklyAggregation.derivation,
+        },
+      }
+    : null;
+
+  try {
+    const evidence = buildTierBTechnicalEvidence({
+      symbol,
+      currency: inferSymbolCurrency(symbol),
+      cutoffTradingDate,
+      knowledgeCutoffAt: `${cutoffTradingDate}T23:59:59.999Z`,
+      horizon: inferTechnicalHorizon(task),
+      daily: targetDaily,
+      weekly,
+      intraday60m,
+      benchmark: {
+        symbol: "QQQ.US",
+        daily: benchmarkDaily,
+      },
+      sector: related.sector,
+      peers: related.peers.length === 1 ? [] : related.peers,
+      anchoredVwap,
+      options: optionEvidence,
+      catalysts: catalystEvidence,
+    });
+    return {
+      ...evidence,
+      linkage: confirmedLinkage
+        ? {
+            status: "confirmed",
+            inputHash: confirmedLinkage.inputHash ?? null,
+            symbol: confirmedLinkage.symbol,
+            sectorSymbol: confirmedLinkage.sectorSymbol,
+            peerSymbols: confirmedLinkage.peerSymbols,
+            source: confirmedLinkage.source,
+            confirmedAt: confirmedLinkage.confirmedAt,
+          }
+        : {
+            status: "unavailable",
+            reasonCodes: ["user_confirmed_sector_peer_mapping_not_provided"],
+          },
+      relatedLoadErrors: [
+        ...related.errors,
+        ...(related.peers.length === 1
+          ? [{
+              kind: "peer",
+              code: "peer_group_requires_two_to_five_symbols",
+              message: "同行比较至少需要 2 个已确认标的；单个同行未用于横向结论。",
+            }]
+          : []),
+      ],
+    };
+  } catch (error) {
+    return {
+      schemaVersion: "tier-b-technical-evidence/v1",
+      status: "unavailable",
+      symbol: String(symbol ?? "").toUpperCase(),
+      cutoff: { tradingDate: cutoffTradingDate },
+      reasonCodes: [String(error?.code ?? "tier_b_evidence_build_failed")],
+      error: cleanError(error),
+      relatedLoadErrors: related.errors,
+      advisory: true,
+      decisionAuthority: "LLM",
+    };
+  }
+}
+
+async function loadTierBRelatedDaily({
+  linkage,
+  loadCandles,
+  cutoffTradingDate,
+  signal,
+}) {
+  const descriptors = [
+    ...(linkage.sectorSymbol
+      ? [{ kind: "sector", symbol: linkage.sectorSymbol }]
+      : []),
+    ...linkage.peerSymbols.map((peer) => ({ kind: "peer", symbol: peer })),
+  ];
+  const settled = await Promise.allSettled(descriptors.map(async (descriptor) => {
+    throwIfCancelled(signal);
+    const loaded = normalizeCandleLoadResult(await loadCandles(descriptor.symbol));
+    return {
+      ...descriptor,
+      daily: tierBDailyDescriptor(
+        completedCandlesThrough(loaded.candles, cutoffTradingDate),
+        loaded.coverage,
+      ),
+    };
+  }));
+  throwIfCancelled(signal);
+  const values = [];
+  const errors = [];
+  for (let index = 0; index < settled.length; index += 1) {
+    const item = settled[index];
+    const descriptor = descriptors[index];
+    if (item.status === "fulfilled") values.push(item.value);
+    else errors.push({
+      symbol: descriptor.symbol,
+      kind: descriptor.kind,
+      code: String(item.reason?.code ?? item.reason?.kind ?? "related_daily_load_failed").slice(0, 80),
+      message: cleanError(item.reason),
+    });
+  }
+  const sectorValue = values.find((item) => item.kind === "sector") ?? null;
+  const peerBySymbol = new Map(values
+    .filter((item) => item.kind === "peer")
+    .map((item) => [item.symbol, item]));
+  return {
+    sector: linkage.sectorSymbol
+      ? {
+          symbol: linkage.sectorSymbol,
+          daily: sectorValue?.daily ?? null,
+        }
+      : null,
+    // Keep the confirmed peer set intact. A failed fetch remains an explicit
+    // unavailable descriptor instead of silently changing the comparison set.
+    peers: linkage.peerSymbols.map((peer) => ({
+      symbol: peer,
+      daily: peerBySymbol.get(peer)?.daily ?? null,
+    })),
+    errors,
+  };
+}
+
+function tierBDailyDescriptor(bars, coverage) {
+  const values = Array.isArray(bars) ? bars : [];
+  return {
+    bars: values,
+    interval: "1D",
+    completedBarsOnly: true,
+    source: String(coverage?.source ?? "host_normalized_completed_daily"),
+    fetchedAt: coverage?.fetchedAt ?? null,
+    coverage: coverage && typeof coverage === "object"
+      ? structuredClone(coverage)
+      : {
+          source: "host_normalized_completed_daily",
+          partial: true,
+          partialReasons: ["coverage_metadata_unavailable"],
+        },
+  };
+}
+
+function normalizedConfirmedTechnicalLinkage(value, symbol) {
+  if (!value || value.state !== "confirmed") return null;
+  const target = String(symbol ?? "").trim().toUpperCase();
+  if (String(value.symbol ?? "").trim().toUpperCase() !== target) return null;
+  const sectorSymbol = String(value.sectorSymbol ?? "").trim().toUpperCase() || null;
+  const peerSymbols = [...new Set((Array.isArray(value.peerSymbols) ? value.peerSymbols : [])
+    .map((item) => String(item ?? "").trim().toUpperCase())
+    .filter((item) => item && item !== target && item !== sectorSymbol))]
+    .slice(0, 5);
+  if (!sectorSymbol && !peerSymbols.length) return null;
+  return {
+    ...structuredClone(value),
+    symbol: target,
+    sectorSymbol,
+    peerSymbols,
+  };
+}
+
+function appendMultiTimeframeEvidence(evidence, technical) {
+  const technicalV2 = technical?.technicalV2;
+  if (!technicalV2) return;
+  const tierB = technical?.tierB;
+  const weekly = technicalV2.capabilityMatrix?.weeklyStructure;
+  const hourly = technicalV2.capabilityMatrix?.execution60m;
+  const cost = technicalV2.capabilityMatrix?.costProfile14d28d;
+  const hourlyError = technicalV2.loads?.hourly60m?.error;
+  evidence.push(
+    evidenceItem(
+      "周线结构",
+      "local:weekly-structure",
+      weekly?.asOf ?? null,
+      weekly?.barCount ?? 0,
+      weekly?.status === "complete"
+        ? "succeeded"
+        : weekly?.status === "warming"
+          ? "degraded"
+          : "skipped",
+      weekly?.status === "complete"
+        ? "已完成日 K 聚合为周线；末周固定排除，避免把进行中周线当作事实"
+        : `周线层 ${weekly?.status ?? "unavailable"} · ${(weekly?.reasonCodes ?? []).join(", ") || "无可用输入"}`,
+    ),
+    evidenceItem(
+      "60 分钟执行结构",
+      "candlesticks:1h",
+      hourly?.asOf ?? null,
+      hourly?.barCount ?? 0,
+      hourly?.status === "complete"
+        ? "succeeded"
+        : hourly?.status === "warming"
+          ? "degraded"
+          : "failed",
+      hourly?.status === "complete"
+        ? `只使用已证明完结的 60m K 线 · ${technicalV2.loads?.hourly60m?.finality?.method ?? "host_attested"}`
+        : hourlyError?.message
+          ?? `60 分钟层不可用 · ${(hourly?.reasonCodes ?? []).join(", ") || "无可用输入"}`,
+    ),
+    evidenceItem(
+      "14/28 日价格-成交量集中代理",
+      "local:daily-cost-concentration-proxy",
+      cost?.asOf ?? null,
+      cost?.barCount ?? 0,
+      cost?.status === "complete"
+        ? "degraded"
+        : cost?.status === "warming"
+          ? "degraded"
+          : "skipped",
+      cost?.status === "complete"
+        ? "80 档均匀区间分配 · 70% 价值区 · LOW CONFIDENCE · 非逐笔筹码或持有人成本"
+        : `成本集中代理 ${cost?.status ?? "unavailable"} · ${(cost?.reasonCodes ?? []).join(", ") || "无可用输入"}`,
+    ),
+  );
+  if (!tierB) return;
+  const layer = (name) => tierB.layers?.[name] ?? null;
+  const linkage = tierB.linkage ?? null;
+  const relatedLayerStatus = [layer("sector")?.status, layer("peers")?.status]
+    .filter(Boolean);
+  evidence.push(
+    evidenceItem(
+      "Tier-B 同截止技术证据",
+      "local:tier-b-technical-evidence",
+      tierB.cutoff?.knowledgeCutoffAt ?? tierB.cutoff?.tradingDate ?? null,
+      Object.values(tierB.layers ?? {}).filter((item) => item?.status !== "unavailable").length,
+      tierB.status === "complete" ? "succeeded" : tierB.status === "partial" ? "degraded" : "skipped",
+      `日/周/60m/QQQ 使用同一截止 ${tierB.cutoff?.tradingDate ?? "N/A"}；严格不前填，观察、计算与推断分层`,
+    ),
+    evidenceItem(
+      "行业与同行联动",
+      "local:confirmed-market-linkage",
+      linkage?.confirmedAt ?? null,
+      Number(Boolean(linkage?.sectorSymbol)) + (linkage?.peerSymbols?.length ?? 0),
+      relatedLayerStatus.includes("complete") || relatedLayerStatus.includes("available")
+        ? "succeeded"
+        : linkage?.status === "confirmed" ? "degraded" : "skipped",
+      linkage?.status === "confirmed"
+        ? `仅使用用户确认映射 · 行业 ${linkage.sectorSymbol ?? "N/A"} · 同行 ${(linkage.peerSymbols ?? []).join(" / ") || "N/A"}${tierB.relatedLoadErrors?.length ? ` · ${tierB.relatedLoadErrors.length} 个数据缺口` : ""}`
+        : "尚未确认行业ETF与 2–5 个同行；本轮不让模型猜测后自动发起行情请求",
+    ),
+    evidenceItem(
+      "显式锚定 VWAP",
+      "local:anchored-vwap",
+      tierB.observed?.evidence?.anchoredVwap?.asOf ?? null,
+      layer("anchoredVwap")?.status === "available" ? 1 : 0,
+      layer("anchoredVwap")?.status === "available" ? "succeeded" : "skipped",
+      layer("anchoredVwap")?.status === "available"
+        ? "仅使用显式事件或用户锚点计算"
+        : "没有已发布锚点则保持 N/A；不会自动挑选最有利锚点",
+    ),
+    evidenceItem(
+      "期权与事件证据",
+      "local:options-catalyst-capability",
+      tierB.observed?.evidence?.options?.asOf
+        ?? tierB.observed?.evidence?.catalyst?.asOf
+        ?? null,
+      Number(layer("options")?.status === "available") + Number(layer("catalyst")?.status === "available"),
+      layer("options")?.status === "available" || layer("catalyst")?.status === "available"
+        ? "degraded"
+        : "skipped",
+      "没有带来源、knownAt 与截止时间的期权链/事件事实时保持 N/A；不由 OI 推断 dealer gamma",
+    ),
+  );
+}
+
+function inferTechnicalHorizon(task) {
+  const text = String(task ?? "").toLowerCase();
+  if (/财报|earnings|事件|event/.test(text)) return "event";
+  if (/日内|盘中|小时|60\s*(分钟|m)|intraday/.test(text)) return "intraday";
+  return "swing";
+}
+
 function defaultSafeguards() {
   return {
     orderWrite: false,
     modelNarration: false,
-    execution: "所有交易由用户在长桥端手动确认",
+    execution: "所有交易由用户在对应券商端手动确认",
   };
 }
 
@@ -1817,8 +2650,170 @@ function compactPriceBars(candles, limit = 260) {
     );
 }
 
+function normalizeCandleLoadResult(value) {
+  if (Array.isArray(value)) return { candles: value, coverage: null };
+  return {
+    candles: Array.isArray(value?.candles) ? value.candles : [],
+    coverage: value?.coverage && typeof value.coverage === "object"
+      ? value.coverage
+      : null,
+  };
+}
+
+async function loadTargetAndBenchmarkCandles(loadCandles, symbol) {
+  const targetSymbol = String(symbol ?? "").toUpperCase();
+  const benchmarkSymbol = "QQQ.US";
+  const targetPromise = Promise.resolve().then(() => loadCandles(targetSymbol));
+  const benchmarkPromise = targetSymbol === benchmarkSymbol
+    ? targetPromise
+    : Promise.resolve().then(() => loadCandles(benchmarkSymbol));
+  const [targetResult, benchmarkResult] = await Promise.allSettled([
+    targetPromise,
+    benchmarkPromise,
+  ]);
+  if (targetResult.status === "rejected") throw targetResult.reason;
+  return {
+    target: normalizeCandleLoadResult(targetResult.value),
+    benchmark: benchmarkResult.status === "fulfilled"
+      ? {
+          symbol: benchmarkSymbol,
+          ...normalizeCandleLoadResult(benchmarkResult.value),
+          error: null,
+        }
+      : {
+          symbol: benchmarkSymbol,
+          candles: [],
+          coverage: null,
+          error: cleanError(benchmarkResult.reason),
+        },
+  };
+}
+
+function attachBenchmarkRelativeStrength(technical, {
+  symbol,
+  targetCandles,
+  benchmarkLoad,
+}) {
+  if (!technical || !benchmarkLoad) return technical;
+  if (benchmarkLoad.error) {
+    return {
+      ...technical,
+      benchmarkRelativeStrength: {
+        benchmark: benchmarkLoad.symbol,
+        status: "unavailable",
+        reason: benchmarkLoad.error,
+        excessReturns: null,
+      },
+      capabilityMatrix: {
+        ...technical.capabilityMatrix,
+        benchmarkRelativeStrength: "unavailable",
+      },
+    };
+  }
+  const benchmarkTechnical = String(symbol ?? "").toUpperCase() === benchmarkLoad.symbol
+    ? technical
+    : calculateTechnical(benchmarkLoad.candles, {
+        symbol: benchmarkLoad.symbol,
+        coverage: benchmarkLoad.coverage,
+      });
+  const targetCompleted = completedCandlesThrough(targetCandles, technical.asOfTradingDate);
+  const benchmarkCompleted = completedCandlesThrough(
+    benchmarkLoad.candles,
+    benchmarkTechnical.asOfTradingDate,
+  );
+  let excessReturns;
+  try {
+    excessReturns = calculateDailyExcessReturns(targetCompleted, benchmarkCompleted);
+  } catch (error) {
+    excessReturns = {
+      schemaVersion: 1,
+      methodVersion: "daily-sequence-v1",
+      calculation: "same_date_simple_excess_return",
+      status: "unavailable",
+      inputHash: null,
+      asOf: technical.asOfTradingDate ?? null,
+      windows: {},
+      error: cleanError(error),
+    };
+  }
+  const benchmarkDecisionReady = benchmarkTechnical.marketData
+    ? benchmarkTechnical.marketData.freshForDecision === true
+    : benchmarkTechnical.lastBar?.status === "CLOSED";
+  const status = benchmarkDecisionReady
+    ? excessReturns.status
+    : excessReturns.status === "unavailable" ? "unavailable" : "research_only";
+  return {
+    ...technical,
+    benchmarkRelativeStrength: {
+      benchmark: benchmarkLoad.symbol,
+      status,
+      asOfTradingDate: benchmarkTechnical.asOfTradingDate ?? null,
+      marketData: benchmarkTechnical.marketData ?? null,
+      excessReturns,
+      reason: benchmarkDecisionReady
+        ? null
+        : "QQQ 基准不是最新可决策证据；超额收益仅供研究。",
+    },
+    capabilityMatrix: {
+      ...technical.capabilityMatrix,
+      benchmarkRelativeStrength: status,
+    },
+  };
+}
+
+function completedCandlesThrough(candles, tradingDate) {
+  const cutoff = String(tradingDate ?? "");
+  return (Array.isArray(candles) ? candles : []).filter((bar) => {
+    const date = String(bar?.tradeDate ?? bar?.trade_date ?? "");
+    if (cutoff && /^\d{4}-\d{2}-\d{2}$/.test(date)) return date <= cutoff;
+    const timestamp = Date.parse(String(bar?.timestamp ?? ""));
+    const cutoffTime = Date.parse(`${cutoff}T23:59:59.999Z`);
+    return !cutoff || (Number.isFinite(timestamp) && timestamp <= cutoffTime);
+  });
+}
+
+function benchmarkEvidenceItem(technical) {
+  const benchmark = technical?.benchmarkRelativeStrength;
+  const records = Object.values(benchmark?.excessReturns?.windows ?? {})
+    .filter((metric) => metric?.status === "available").length;
+  return evidenceItem(
+    "QQQ 市场基准",
+    "candlesticks:QQQ.US",
+    benchmark?.asOfTradingDate ?? null,
+    records,
+    benchmark?.status === "complete"
+      ? "succeeded"
+      : benchmark?.status === "partial" || benchmark?.status === "research_only"
+        ? "degraded"
+        : "failed",
+    benchmark?.status === "unavailable"
+      ? benchmark?.reason ?? "QQQ 基准不可用"
+      : `同交易日 1/3/5/10/20 日相对 QQQ 超额收益 · ${benchmark?.status ?? "unknown"}`,
+  );
+}
+
+function candleEvidenceSummary(technical) {
+  const marketData = technical?.marketData;
+  const freshness = !marketData
+    ? "来源新鲜度未提供"
+    : marketData.freshForSizing
+      ? "实时来源，可用于当前仓位校验"
+      : marketData.freshForDecision
+        ? "交易日完整，仅用于分析"
+        : marketData.freshForResearch
+          ? "缓存或缺少最新交易日，仅供研究"
+          : "行情证据不可用";
+  return `1D · OHLCV · 前复权 · 常规交易时段 · 最新输入 ${technical?.lastBar?.status ?? "UNKNOWN"}${technical?.provisional?.available ? "（未计入正式指标）" : ""} · ${freshness}`;
+}
+
 function contextPosition(position) {
   return {
+    broker: position.broker ?? "longbridge",
+    brokerLegs: position.brokerLegs ?? null,
+    contractMultiplier: finiteOrNull(position.contractMultiplier),
+    option: position.option ?? null,
+    marketData: position.marketData ?? null,
+    valuationSource: position.valuationSource ?? null,
     symbol: position.symbol ?? null,
     ticker: position.ticker ?? null,
     name: position.name ?? null,
@@ -1829,6 +2824,8 @@ function contextPosition(position) {
     quantity: finiteOrNull(position.quantity),
     availableQuantity: finiteOrNull(position.availableQuantity),
     costPrice: finiteOrNull(position.costPrice),
+    costBasisStatus: position.costBasisStatus ?? null,
+    costBasisLimitation: position.costBasisLimitation ?? null,
     lastPrice: finiteOrNull(position.lastPrice),
     marketValueBase: finiteOrNull(position.marketValueBase),
     grossMarketValueBase: finiteOrNull(position.grossMarketValueBase),
@@ -1889,9 +2886,11 @@ function sumFinite(values) {
 }
 
 function finiteOrNull(value) {
-  return Number.isFinite(Number(value)) && value !== "" && value != null
-    ? Number(value)
-    : null;
+  if (value == null || typeof value === "boolean") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  if (!["number", "string"].includes(typeof value)) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function finiteRound(value, digits = 3) {

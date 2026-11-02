@@ -1342,6 +1342,39 @@ test("order-first broker evidence is revisioned, replaceable, and makes an old r
   assert.equal((await store.validatePhaseRunSource(cycle.id, refreshedRun.id)).status, "current");
 });
 
+test("broker evidence cannot cross an opaque account scope", async () => {
+  const { store } = harness("2026-08-18T00:00:00Z");
+  const cycle = await store.createLinkedCycle({
+    cycle: {
+      type: "trade_window",
+      symbol: "AAPL.US",
+      startAt: "2026-08-01T14:30:00Z",
+      endAt: "2026-08-02T20:00:00Z",
+    },
+    links: {
+      accountScopeId: "scope-account-a",
+      requestedRecordIds: ["order:buy-a"],
+      recordIds: ["order:buy-a"],
+      orderIds: ["buy-a"],
+      records: [{ id: "order:buy-a", kind: "order", occurredAt: "2026-08-01T14:30:00Z", symbol: "AAPL.US" }],
+    },
+  });
+  assert.equal(cycle.brokerLinks.accountScopeId, "scope-account-a");
+  await assert.rejects(store.replaceCycleBrokerRecords({
+    cycleId: cycle.id,
+    accountScopeId: "scope-account-b",
+    requestedRecordIds: ["order:buy-b"],
+    recordIds: ["order:buy-b"],
+    orderIds: ["buy-b"],
+    records: [{ id: "order:buy-b", kind: "order", occurredAt: "2026-08-01T15:30:00Z", symbol: "AAPL.US" }],
+    activityStartAt: "2026-08-01T15:30:00Z",
+    activityEndAt: "2026-08-02T20:00:00Z",
+  }), /跨账户合并/);
+  const saved = (await store.snapshot()).cycles.find((item) => item.id === cycle.id);
+  assert.equal(saved.brokerLinks.accountScopeId, "scope-account-a");
+  assert.deepEqual(saved.brokerLinks.orderIds, ["buy-a"]);
+});
+
 test("the user's explicit broker selection is versioned separately from the resolved evidence closure", async () => {
   let now = "2026-08-18T00:00:00Z";
   const repository = new MemoryStore();

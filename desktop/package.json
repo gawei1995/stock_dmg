@@ -1,6 +1,6 @@
 {
   "name": "trading-cockpit-desktop",
-  "version": "0.18.1",
+  "version": "0.24.13",
   "private": true,
   "description": "Local-first TradingView + Longbridge + trading agent cockpit",
   "author": "Gawei",
@@ -9,11 +9,13 @@
   "scripts": {
     "dev": "electron .",
     "test": "node --test tests/*.test.mjs",
-    "pack": "npm test && electron-builder --dir",
-    "dist:mac": "npm test && electron-builder --mac dmg zip"
+    "verify:release": "node scripts/verify-release.mjs",
+    "pack": "node scripts/verify-release.mjs --target dir",
+    "dist:mac": "node scripts/verify-release.mjs --target mac"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0"
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@stoqey/ib": "1.6.10"
   },
   "devDependencies": {
     "electron": "43.1.1",
@@ -33,6 +35,16 @@
       "renderer/**/*",
       "src/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../trading-agent-workspace/.agents/skills",
+        "to": "trading-agent-skills",
+        "filter": [
+          "review-decision-cycles/**/*",
+          "review-earnings-decisions/**/*"
+        ]
+      }
     ],
     "mac": {
       "category": "public.app-category.finance",

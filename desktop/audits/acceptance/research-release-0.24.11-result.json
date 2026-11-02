@@ -1,0 +1,36 @@
+{
+  "version": "0.24.11",
+  "dateLocal": "2026-10-20",
+  "status": "passed_scoped_synthetic_ui_acceptance",
+  "gate": "../../release/verification-0.24.11-2026-10-19T18-08-58-625Z.json",
+  "driver": "research-release-0.24.11.cjs",
+  "profile": "isolated_temporary_synthetic_only",
+  "renderer": "packaged_app_asar",
+  "computerUsePassCount": 1,
+  "checks": [
+    "CODEX_LIMITED_and_explicit_external_tool_boundary_visible",
+    "free_research_scope_and_no_portfolio_requirement_visible",
+    "manual_recheck_retains_restricted_mode_without_hot_enabling_tools",
+    "Chinese_research_draft_editable_via_paste",
+    "synthetic_window_closed_after_acceptance"
+  ],
+  "realBrokerOrModelRequestsInThisVisualPass": false,
+  "installedAppReplaced": false,
+  "userProfileRead": false,
+  "separateNativeEvidence": {
+    "restrictedAndFullCoexistOnOneRpc": true,
+    "restrictedExternalTools": 0,
+    "restrictedCallableApps": 0,
+    "syntheticProductionServiceReplyCompleted": true,
+    "prepareMs": 808,
+    "totalReplyMs": 120247,
+    "replyToolEvents": 0,
+    "historyStatus": "verified"
+  },
+  "limits": [
+    "Visual fixture has no session-creation bridge; full-mode recovery covered by automated renderer/service regressions, not manually claimed",
+    "Not an installed-user-profile migration test",
+    "Upstream reply latency remains unresolved",
+    "Not live broker, personal TradingView or OAuth verification"
+  ]
+}

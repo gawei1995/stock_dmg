@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateRuleMetrics, ReviewStore } from "../src/data/review-store.mjs";
+import { calculateRuleMetrics, reconcileSampleEvidenceIdentities, ReviewStore } from "../src/data/review-store.mjs";
+import { canonicalReviewEvidenceIdentity } from "../src/review/review-learning-source.mjs";
 
 class MemoryStore {
   constructor() { this.values = new Map(); }
@@ -12,6 +13,148 @@ function clock(...values) {
   let index = 0;
   return () => new Date(values[Math.min(index++, values.length - 1)]);
 }
+
+function verifiedProtocolSample(reviewCycleId, outcomeR, index = 1) {
+  return {
+    reviewCycleId,
+    canonicalEvidenceIdentity: canonicalReviewEvidenceIdentity({ id: reviewCycleId, brokerLinks: { accountScopeId: "test-account-scope" } }),
+    outcomeR,
+    benchmarkReturnPercent: 0,
+    verification: {
+      engine: "deterministic_review_fixture_v1",
+      sourceRunId: `run-${index}`,
+      sourceEvidenceRevision: index,
+      resultHash: index.toString(16).padStart(64, "0"),
+      sourceCompletedAt: "2026-08-18T05:59:00.000Z",
+    },
+  };
+}
+
+async function protocolFixtureForIdentityAudit() {
+  let id = 0;
+  const repository = new MemoryStore();
+  const store = new ReviewStore({ store: repository, now: () => new Date("2026-09-01T00:00:00Z"), idFactory: () => `identity-${++id}` });
+  const rule = await store.createRule({ title: "独立样本身份验证" });
+  const protocol = await store.registerTest({ ruleId: rule.id, primaryMetric: "net_r", minimumCases: 20,
+    successCriteria: "净 R > 0", successOperator: "gt", successThreshold: 0 });
+  await store.transitionRule(rule.id, { status: "testing" });
+  return { repository, store, rule, protocol };
+}
+
+function migratedIdentityCycle(id, { sourceCaseId = "original-case", accountScopeId = "test-account-scope", revision = 1 } = {}) {
+  return { id, evidenceRevision: revision, brokerLinks: { accountScopeId, evidenceRevision: revision },
+    legacySource: { sourceCaseId, accountScopeId, sourceHash: `source-${id}`, migratedAt: "2026-08-01T00:00:00Z" } };
+}
+
+function legacyFormalSample(reviewCycleId, index, { caseId = null, recordedAt } = {}) {
+  const verified = verifiedProtocolSample(reviewCycleId, 1);
+  delete verified.canonicalEvidenceIdentity;
+  return { ...verified, id: `old-sample-${index}`, reviewCycleId, caseId, formalEligible: true,
+    outcomeVerified: true, observationTiming: "forward", censored: false,
+    recordedAt: recordedAt ?? new Date(Date.UTC(2026, 7, 20, 0, index)).toISOString(),
+    outcomeSource: verified.verification.engine };
+}
+
+test("host sample registration requires a self-consistent identity and rejects migration aliases", async () => {
+  const { store, protocol } = await protocolFixtureForIdentityAudit();
+  const first = migratedIdentityCycle("migration-one");
+  const alias = migratedIdentityCycle("migration-two");
+  const cycles = [first, alias];
+  const sample = verifiedProtocolSample(first.id, 1);
+  await assert.rejects(store.recordVerifiedProtocolSample({ ...sample, testId: protocol.id, canonicalEvidenceIdentity: null }), /原始证据身份/);
+  await assert.rejects(store.recordVerifiedProtocolSample({ ...sample, testId: protocol.id,
+    canonicalEvidenceIdentity: { ...sample.canonicalEvidenceIdentity, key: "forged" } }), /原始证据身份/);
+  await store.recordVerifiedProtocolSample({ ...sample, testId: protocol.id, cycles,
+    canonicalEvidenceIdentity: canonicalReviewEvidenceIdentity(first) });
+  await assert.rejects(store.recordVerifiedProtocolSample({ ...verifiedProtocolSample(alias.id, 1), testId: protocol.id, cycles,
+    canonicalEvidenceIdentity: canonicalReviewEvidenceIdentity(alias) }), /同一原始案例/);
+  const saved = (await store.snapshot({ cycles })).tests.find((test) => test.id === protocol.id);
+  assert.equal(saved.samples.length, 1);
+  assert.equal(saved.samples[0].canonicalEvidenceIdentity.sourceCaseId, "original-case");
+  assert.equal(saved.samples[0].formalEligible, true);
+});
+
+test("old case plus nineteen migration aliases stay one sample across display, evaluation, and promotion", async () => {
+  const { repository, store, protocol, rule } = await protocolFixtureForIdentityAudit();
+  const persisted = await repository.get("reviewWorkspaceV1");
+  persisted.cases.push({ id: "original-case", createdAt: "2026-08-01T00:00:00Z",
+    brokerLinks: { accountScopeId: "test-account-scope", orderIds: ["order-1"], executionIds: [], revision: 1 },
+    exAnteVersions: [{ eligibleForFormalStats: true }] });
+  const aliases = Array.from({ length: 19 }, (_, index) => migratedIdentityCycle(`migration-${index}`));
+  const test = persisted.tests.find((item) => item.id === protocol.id);
+  test.samples = [legacyFormalSample(null, 0, { caseId: "original-case" }),
+    ...aliases.map((cycle, index) => legacyFormalSample(cycle.id, index + 1))];
+  await repository.set("reviewWorkspaceV1", persisted);
+  const beforeRead = await repository.get("reviewWorkspaceV1");
+  const snapshot = await store.snapshot({ cycles: aliases });
+  assert.deepEqual(await repository.get("reviewWorkspaceV1"), beforeRead, "snapshot projection is read-only");
+  const projectedTest = snapshot.tests.find((item) => item.id === protocol.id);
+  assert.equal(projectedTest.samples.length, 20, "raw observations remain in the ledger");
+  assert.equal(new Set(projectedTest.samples.map((sample) => sample.canonicalEvidenceIdentity.key)).size, 1);
+  assert.equal(projectedTest.formalUniqueSampleCount, 1);
+  assert.equal(projectedTest.formalIdentityMethod, "canonical-review-evidence/v1");
+  const metrics = calculateRuleMetrics(snapshot, rule.id);
+  assert.equal(metrics.verifiedSampleCount, 1);
+  assert.equal(metrics.sampleCount, 1);
+  assert.equal(metrics.progressPercent, 5);
+  assert.equal(projectedTest.status, "collecting");
+  await assert.rejects(store.evaluateProtocol({ testId: protocol.id, cycles: aliases }), /至少需要 20/);
+  await assert.rejects(store.transitionRule(rule.id, { status: "provisional", cycles: aliases }), /20.*独立事件样本/);
+  assert.deepEqual(await repository.get("reviewWorkspaceV1"), beforeRead, "failed mutations do not commit projections");
+});
+
+test("unresolvable old sample identities remain visible but never acquire formal eligibility", async () => {
+  const { repository, store, protocol, rule } = await protocolFixtureForIdentityAudit();
+  const persisted = await repository.get("reviewWorkspaceV1");
+  const test = persisted.tests.find((item) => item.id === protocol.id);
+  test.samples = [legacyFormalSample("missing-cycle", 1), legacyFormalSample("changed-cycle", 2)];
+  await repository.set("reviewWorkspaceV1", persisted);
+  const cycles = [migratedIdentityCycle("changed-cycle", { revision: 2 })];
+  const snapshot = await store.snapshot({ cycles });
+  const projected = snapshot.tests[0];
+  assert.equal(projected.samples[0].evidenceIdentityReason, "sample_source_cycle_missing");
+  assert.equal(projected.samples[1].evidenceIdentityReason, "sample_evidence_revision_not_current");
+  assert.ok(projected.samples.every((sample) => sample.formalEligible === false && sample.outcomeR === 1));
+  assert.equal(calculateRuleMetrics(snapshot, rule.id).verifiedSampleCount, 0);
+  assert.equal(projected.protocolEvaluation, null);
+});
+
+test("canonical conflicts invalidate old protocol evaluations and cannot reuse the former sample-set hash", async () => {
+  const { store, protocol, rule } = await protocolFixtureForIdentityAudit();
+  for (let index = 1; index <= 20; index += 1) await store.recordVerifiedProtocolSample({
+    testId: protocol.id, ...verifiedProtocolSample(`cycle-${index}`, 1, index),
+  });
+  const evaluation = await store.evaluateProtocol({ testId: protocol.id });
+  assert.equal(evaluation.protocolEvaluation.engine, "deterministic_review_protocol_v3_canonical");
+  const cycles = Array.from({ length: 20 }, (_, index) => ({ id: `cycle-${index + 1}`, evidenceRevision: index + 1,
+    brokerLinks: { accountScopeId: "test-account-scope" } }));
+  cycles[0].legacySource = migratedIdentityCycle(cycles[0].id).legacySource;
+  const projected = await store.snapshot({ cycles });
+  assert.equal(projected.tests[0].samples[0].evidenceIdentityStatus, "conflict");
+  assert.equal(projected.tests[0].protocolEvaluation, null);
+  assert.equal(calculateRuleMetrics(projected, rule.id).verifiedSampleCount, 19);
+  await assert.rejects(store.evaluateProtocol({ testId: protocol.id, cycles }), /至少需要 20/);
+});
+
+test("ambiguous same-source observations are excluded deterministically and hypothesis aliases never count", () => {
+  const cycles = [migratedIdentityCycle("one"), migratedIdentityCycle("two")];
+  const raw = { schemaVersion: 1, cases: [], rules: [{ id: "rule" }], tests: [{ id: "test", ruleId: "rule", testKind: "protocol",
+    minimumCases: 20, primaryMetric: "net_r", successOperator: "gt", successThreshold: 0,
+    samples: [legacyFormalSample("one", 1, { recordedAt: "2026-08-20T00:00:00Z" }),
+      legacyFormalSample("two", 2, { recordedAt: "2026-08-20T00:00:00Z" })],
+  }] };
+  const projected = reconcileSampleEvidenceIdentities(raw, { cycles });
+  assert.equal(calculateRuleMetrics(projected, "rule").verifiedSampleCount, 0);
+  assert.equal(calculateRuleMetrics(projected, "rule").sampleCount, 0);
+  raw.tests[0].sourceReviewCycleId = "one";
+  const sourceBound = reconcileSampleEvidenceIdentities(raw, { cycles });
+  assert.ok(sourceBound.tests[0].samples.every((sample) => sample.evidenceIdentityReason === "same_evidence_as_hypothesis_source"));
+  assert.ok(sourceBound.tests[0].samples.every((sample) => sample.formalEligible === false));
+  delete raw.tests[0].sourceReviewCycleId;
+  raw.tests[0].sourceCaseId = "original-case";
+  const legacySourceBound = reconcileSampleEvidenceIdentities(raw, { cycles });
+  assert.ok(legacySourceBound.tests[0].samples.every((sample) => sample.evidenceIdentityReason === "same_evidence_as_hypothesis_source"));
+});
 
 test("pre-earnings snapshots are immutable, hashed, and versioned", async () => {
   let id = 0;
@@ -86,6 +229,7 @@ test("an order-first case derives broker dates and event metadata before the use
     idFactory: () => `id-${++id}`,
   });
   const reviewCase = await store.createCaseFromBrokerRecords({
+    accountScopeId: "scope-primary",
     symbol: "NVDA.US",
     activityStartAt: "2026-07-30T14:00:00.000Z",
     activityEndAt: "2026-07-30T14:01:00.000Z",
@@ -114,8 +258,10 @@ test("an order-first case derives broker dates and event metadata before the use
   assert.equal(reviewCase.brokerActivity.startAt, "2026-07-30T14:00:00.000Z");
   assert.deepEqual(reviewCase.brokerLinks.orderIds, ["o-1"]);
   assert.equal(reviewCase.brokerLinks.revision, 1);
+  assert.equal(reviewCase.brokerLinks.accountScopeId, "scope-primary");
   assert.deepEqual(reviewCase.brokerLinkVersions, [{
     revision: 1,
+    accountScopeId: "scope-primary",
     changedAt: "2026-08-01T00:00:00.000Z",
     reason: "创建案例时关联",
     orderIds: ["o-1"],
@@ -134,6 +280,7 @@ test("broker associations are replaceable, append-only versioned, and idempotent
     idFactory: () => `id-${++id}`,
   });
   const reviewCase = await store.createCaseFromBrokerRecords({
+    accountScopeId: "scope-primary",
     symbol: "AAOI.US",
     activityStartAt: "2026-07-30T14:00:00.000Z",
     activityEndAt: "2026-07-30T14:01:00.000Z",
@@ -158,6 +305,7 @@ test("broker associations are replaceable, append-only versioned, and idempotent
 
   now = "2026-08-02T00:00:00.000Z";
   const replaced = await store.replaceBrokerRecords(reviewCase.id, {
+    accountScopeId: "scope-primary",
     orderIds: ["o-2"],
     executionIds: ["t-2", "t-3"],
     reason: "补充盘后卖出并移除误关联订单",
@@ -180,6 +328,7 @@ test("broker associations are replaceable, append-only versioned, and idempotent
 
   now = "2026-08-03T00:00:00.000Z";
   const idempotent = await store.updateBrokerRecords(reviewCase.id, {
+    accountScopeId: "scope-primary",
     orderIds: ["o-2", "o-2"],
     executionIds: ["t-3", "t-2"],
     reason: "重复提交不应建立版本",
@@ -191,7 +340,7 @@ test("broker associations are replaceable, append-only versioned, and idempotent
   assert.equal((await store.snapshot()).updatedAt, workspaceUpdatedAt);
 
   await assert.rejects(
-    store.replaceBrokerRecords(reviewCase.id, { orderIds: [], executionIds: [] }),
+    store.replaceBrokerRecords(reviewCase.id, { accountScopeId: "scope-primary", orderIds: [], executionIds: [] }),
     /至少需要关联一笔/,
   );
   assert.equal((await store.snapshot()).cases[0].brokerLinkVersions.length, 2);
@@ -234,6 +383,7 @@ test("legacy broker links migrate into revision one and remain replaceable", asy
   assert.equal(migrated.exAnteVersions[0].hash, "legacy-ex-ante");
 
   await store.linkBrokerRecords("legacy-case", {
+    accountScopeId: "scope-primary",
     orderIds: ["replacement-order"],
     reason: "修正历史关联",
   });
@@ -256,12 +406,14 @@ test("an AI learning proposal creates one linked test and candidate rule only af
     hypothesis: "等待量价确认再加仓可降低 MAE，而不明显牺牲 T+20 收益",
     evidenceSummary: "来自一次事后复盘，只能作为待验证假设。",
     testDesign: {
-      metric: "mae_r",
+      metric: "expectancy_r",
       window: "T+20",
       minCases: 12,
       inclusion: "同类突破回踩交易",
       exclusion: "停牌或数据不完整",
       successCriteria: "中位 MAE 改善至少 0.2R",
+      successOperator: "gt",
+      successThreshold: 0,
     },
     candidateRule: {
       title: "确认后再加仓",
@@ -288,7 +440,7 @@ test("an AI learning proposal creates one linked test and candidate rule only af
   assert.equal(accepted.rule.status, "testing");
   assert.equal(accepted.test.status, "collecting");
   assert.equal(accepted.test.observationStartedAt, "2026-08-18T06:00:00.000Z");
-  assert.equal(accepted.test.decisionSampleTarget, 12);
+  assert.equal(accepted.test.decisionSampleTarget, 20);
   assert.equal(accepted.test.testKind, "protocol");
   assert.deepEqual(accepted.test.samples, []);
   assert.equal(accepted.test.ruleId, accepted.rule.id);
@@ -323,7 +475,26 @@ test("an AI learning proposal creates one linked test and candidate rule only af
     store.completeTest(accepted.test.id, { reviewCycleId: "cycle-1", outcomeR: 1.25 }),
     /来源周期不能同时作为样本外验证/,
   );
-  await store.completeTest(accepted.test.id, { reviewCycleId: "cycle-2", outcomeR: 1.25, notes: "第一条观察" });
+  await store.completeTest(accepted.test.id, {
+    reviewCycleId: "cycle-2",
+    outcomeR: 1.25,
+    notes: "第一条观察",
+    technicalValidationRef: {
+      status: "complete",
+      sampleStatus: "available",
+      sampleId: "technical-validation-sample:cycle-2",
+      resultHash: "a".repeat(64),
+      ruleKey: "technical-state:cycle-2",
+      radarTradingDate: "2026-08-15",
+      radarRecordedAt: "2026-08-15T21:01:00.000Z",
+      entryCutoffAt: "2026-08-16T14:30:00.000Z",
+      exitAt: "2026-08-17T19:30:00.000Z",
+      protocolTiming: "forward",
+      validationMode: "walk_forward_candidate",
+      eligibleForFormalStatistics: true,
+      formalEligibilityReason: "候选仍需确定性协议核验",
+    },
+  });
   await assert.rejects(
     store.completeTest(accepted.test.id, { reviewCycleId: "cycle-2", outcomeR: 2 }),
     /不能覆盖或重复登记/,
@@ -337,6 +508,10 @@ test("an AI learning proposal creates one linked test and candidate rule only af
   assert.deepEqual(collecting.samples.map((item) => item.reviewCycleId), ["cycle-2", "cycle-3"]);
   assert.equal(collecting.samples.every((item) => item.outcomeVerified === false), true);
   assert.equal(collecting.samples.every((item) => item.formalEligible === false), true);
+  assert.equal(collecting.samples[0].technicalValidationRef.sampleStatus, "available");
+  assert.equal(collecting.samples[0].technicalValidationRef.validationMode, "walk_forward_candidate");
+  assert.equal(collecting.samples[0].technicalValidationRef.eligibleForFormalStatistics, false);
+  assert.equal(collecting.samples[1].technicalValidationRef, null);
   assert.equal(collecting.outcomeR, null);
   const observations = calculateRuleMetrics(await store.snapshot(), accepted.rule.id);
   assert.equal(observations.sampleCount, 2);
@@ -344,7 +519,7 @@ test("an AI learning proposal creates one linked test and candidate rule only af
   assert.equal(observations.observationCount, 2);
 });
 
-test("learning proposals preserve composite metric and window specs instead of silently coercing them", async () => {
+test("learning proposals reject unsupported composite metrics instead of silently coercing them", async () => {
   let id = 0;
   const store = new ReviewStore({
     store: new MemoryStore(),
@@ -361,6 +536,8 @@ test("learning proposals preserve composite metric and window specs instead of s
       inclusion: "完整事件路径",
       exclusion: "数据缺失",
       successCriteria: "中位超额收益提高且 MAE 下降",
+      successOperator: "gt",
+      successThreshold: 0,
     },
     candidateRule: {
       title: "组合指标规则",
@@ -371,24 +548,13 @@ test("learning proposals preserve composite metric and window specs instead of s
     confidence: "medium",
     caveats: [],
   };
-  const accepted = await store.acceptLearningProposal({
+  await assert.rejects(store.acceptLearningProposal({
     confirmed: true,
     reviewCycleId: "cycle-spec",
     runId: "run-spec",
     sourceProposal,
-    proposal: {
-      ...sourceProposal,
-      candidateRule: { ...sourceProposal.candidateRule, action: "等待量价确认" },
-    },
-  });
-
-  assert.equal(accepted.test.metricSpec, "T+5 超额收益与 MAE");
-  assert.equal(accepted.test.windowSpec, "财报后 T+1 至 T+5");
-  assert.equal(accepted.test.primaryMetric, null);
-  assert.equal(accepted.test.primaryHorizon, null);
-  assert.equal(accepted.validationPackage.proposal.testDesign.metric, "T+5 超额收益与 MAE");
-  assert.equal(accepted.validationPackage.userEdited, true);
-  assert.notEqual(accepted.validationPackage.sourceProposalHash, accepted.validationPackage.proposalHash);
+    proposal: sourceProposal,
+  }), /测试口径/);
 });
 
 test("stopping a validation archives it without deleting its lineage or samples", async () => {
@@ -412,6 +578,8 @@ test("stopping a validation archives it without deleting its lineage or samples"
         inclusion: "同类交易",
         exclusion: "数据不完整",
         successCriteria: "净期望为正",
+        successOperator: "gt",
+        successThreshold: 0,
       },
       candidateRule: {
         title: "确认后加仓",
@@ -496,6 +664,44 @@ test("a previously completed multi-case protocol migrates its result into a coll
   assert.equal(migrated.samples[0].outcomeR, 2);
 });
 
+test("persisted renderer-like flags cannot forge a formal forward sample", async () => {
+  const repository = new MemoryStore();
+  await repository.set("reviewWorkspaceV1", {
+    schemaVersion: 1,
+    updatedAt: "2026-08-18T06:00:00.000Z",
+    cases: [],
+    rules: [{ id: "rule-1", status: "testing" }],
+    ruleReviews: [],
+    validationPackages: [],
+    tests: [{
+      id: "protocol-1",
+      testKind: "protocol",
+      ruleId: "rule-1",
+      minimumCases: 1,
+      decisionSampleTarget: 1,
+      primaryMetric: "net_r",
+      status: "decision_due",
+      registeredAt: "2026-08-18T05:00:00.000Z",
+      samples: [{
+        id: "forged",
+        reviewCycleId: "cycle-forged",
+        formalEligible: true,
+        outcomeVerified: true,
+        observationTiming: "forward",
+        outcomeSource: "renderer_claim",
+        outcomeR: 9,
+        recordedAt: "2026-08-18T06:00:00.000Z",
+      }],
+    }],
+  });
+  const store = new ReviewStore({ store: repository });
+  const snapshot = await store.snapshot();
+  assert.equal(snapshot.tests[0].samples[0].formalEligible, false);
+  assert.equal(snapshot.tests[0].samples[0].outcomeVerified, false);
+  assert.equal(snapshot.tests[0].status, "collecting");
+  assert.equal(calculateRuleMetrics(snapshot, "rule-1").progressPercent, 0);
+});
+
 test("session-only earnings dates conservatively reject same-local-day snapshots as ex-ante", async () => {
   let now = "2026-08-20T14:00:00.000Z";
   let id = 0;
@@ -505,6 +711,7 @@ test("session-only earnings dates conservatively reject same-local-day snapshots
     idFactory: () => `id-${++id}`,
   });
   const reviewCase = await store.createCaseFromBrokerRecords({
+    accountScopeId: "scope-primary",
     symbol: "NVDA.US",
     activityStartAt: "2026-08-10T14:00:00.000Z",
     activityEndAt: "2026-08-10T14:00:00.000Z",
@@ -605,6 +812,7 @@ test("order-first event facts remain immutable while the four human fields can b
     idFactory: () => `id-${++id}`,
   });
   const reviewCase = await store.createCaseFromBrokerRecords({
+    accountScopeId: "scope-primary",
     symbol: "NVDA.US",
     activityStartAt: "2026-07-30T14:00:00.000Z",
     activityEndAt: "2026-07-30T14:01:00.000Z",
@@ -706,21 +914,6 @@ test("formal promotion is bound to the protocol sample set, declared metric, min
     now: () => new Date("2026-08-18T06:00:00.000Z"),
     idFactory: () => `formal-${++id}`,
   });
-  const cases = [];
-  for (let index = 0; index < 20; index += 1) {
-    const reviewCase = await store.createCase({
-      symbol: `T${index}.US`,
-      eventAt: "2026-09-20T20:00:00.000Z",
-      exAnte: {
-        myView: "判断",
-        marketView: "预期",
-        plannedAction: "动作",
-        invalidation: "失效",
-      },
-    });
-    await store.freezeCase(reviewCase.id);
-    cases.push(reviewCase.id);
-  }
   const rule = await store.createRule({ title: "正式门槛规则" });
   const protocol = await store.registerTest({
     ruleId: rule.id,
@@ -728,24 +921,17 @@ test("formal promotion is bound to the protocol sample set, declared metric, min
     primaryHorizon: "t5",
     minimumCases: 20,
     successCriteria: "已核验净期望 R 大于 0",
+    successOperator: "gt",
+    successThreshold: 0,
   });
   await store.transitionRule(rule.id, { status: "testing" });
 
-  const raw = await repository.get("reviewWorkspaceV1");
-  const rawProtocol = raw.tests.find((item) => item.id === protocol.id);
-  rawProtocol.status = "completed";
-  rawProtocol.samples = cases.map((caseId, index) => ({
-    id: `verified-${index}`,
-    caseId,
-    recordedAt: `2026-08-18T06:00:${String(index).padStart(2, "0")}.000Z`,
-    outcomeR: 1,
-    benchmarkReturnPercent: 0,
-    outcomeSource: "deterministic_fixture",
-    outcomeVerified: true,
-    notes: null,
-    censored: false,
-  }));
-  await repository.set("reviewWorkspaceV1", raw);
+  for (let index = 1; index <= 20; index += 1) {
+    await store.recordVerifiedProtocolSample({
+      testId: protocol.id,
+      ...verifiedProtocolSample(`cycle-${index}`, 1, index),
+    });
+  }
 
   await assert.rejects(
     store.transitionRule(rule.id, { status: "provisional" }),
@@ -766,13 +952,90 @@ test("formal promotion is bound to the protocol sample set, declared metric, min
     store.transitionRule(rule.id, { status: "provisional" }),
     /尚未由确定性引擎.*核验通过/,
   );
-  await assert.rejects(
-    store.completeTest(protocol.id, { reviewCycleId: "cycle-observation", outcomeR: 0.5, notes: "新到观察" }),
-    /先由你决定/,
-  );
+  const committed = await store.evaluateProtocol({ testId: protocol.id, passed: false });
+  assert.equal(committed.status, "decision_due");
+  assert.equal(committed.protocolEvaluation.evaluatedSampleCount, 20);
+  assert.equal(committed.protocolEvaluation.observedValue, 20);
+  assert.equal(committed.protocolEvaluation.passed, true, "caller-supplied verdict is ignored");
+  assert.match(committed.protocolEvaluation.resultHash, /^[a-f0-9]{64}$/);
+  const promoted = await store.transitionRule(rule.id, { status: "provisional" });
+  assert.equal(promoted.status, "provisional");
   const invalidated = (await store.snapshot()).tests.find((item) => item.id === protocol.id);
   assert.equal(invalidated.status, "decision_due");
   assert.equal(invalidated.samples.length, 20);
+});
+
+test("host evaluation computes the four supported metrics and win rate uses percent units", async () => {
+  const fixtures = [
+    { metric: "net_r", expected: 5, operator: "gte", threshold: 5 },
+    { metric: "expectancy_r", expected: 0.25, operator: "gt", threshold: 0 },
+    { metric: "win_rate", expected: 50, operator: "gte", threshold: 50 },
+    { metric: "payoff_ratio", expected: 2, operator: "gte", threshold: 2 },
+  ];
+  for (const fixture of fixtures) {
+    let id = 0;
+    const store = new ReviewStore({
+      store: new MemoryStore(),
+      now: () => new Date("2026-08-18T06:00:00.000Z"),
+      idFactory: () => `${fixture.metric}-${++id}`,
+    });
+    const protocol = await store.registerTest({
+      primaryMetric: fixture.metric,
+      minimumCases: 2,
+      successCriteria: "机器可读门槛",
+      successOperator: fixture.operator,
+      successThreshold: fixture.threshold,
+    });
+    for (let index = 1; index <= 20; index += 1) {
+      await store.recordVerifiedProtocolSample({
+        testId: protocol.id,
+        ...verifiedProtocolSample(`cycle-${index}`, index % 2 ? 1 : -0.5, index),
+      });
+    }
+    const evaluated = await store.evaluateProtocol({ testId: protocol.id, passed: false });
+    assert.equal(evaluated.protocolEvaluation.observedValue, fixture.expected);
+    assert.equal(evaluated.protocolEvaluation.passed, true);
+    assert.equal(evaluated.protocolEvaluation.minimumRequired, 20);
+    assert.match(evaluated.protocolEvaluation.protocolSpecHash, /^[a-f0-9]{64}$/);
+    assert.match(evaluated.protocolEvaluation.sampleSetHash, /^[a-f0-9]{64}$/);
+    assert.match(evaluated.protocolEvaluation.resultHash, /^[a-f0-9]{64}$/);
+  }
+});
+
+test("legacy protocols without a machine threshold stay locked but can be superseded by a valid v2", async () => {
+  let id = 0;
+  const store = new ReviewStore({
+    store: new MemoryStore(),
+    now: () => new Date("2026-08-18T06:00:00.000Z"),
+    idFactory: () => `legacy-v2-${++id}`,
+  });
+  const rule = await store.createRule({
+    title: "旧规则",
+    condition: "旧条件",
+    action: "旧动作",
+    falsification: "旧失效",
+  });
+  const protocol = await store.registerTest({
+    ruleId: rule.id,
+    primaryMetric: "mae_r",
+    successCriteria: "旧自然语言标准",
+  });
+  await store.transitionRule(rule.id, { status: "testing" });
+  await assert.rejects(store.evaluateProtocol({ testId: protocol.id }), /创建 v2/);
+  const created = await store.createValidationVersion({
+    ruleId: rule.id,
+    testId: protocol.id,
+    primaryMetric: "win_rate",
+    successOperator: "gte",
+    successThreshold: 55,
+    successCriteria: "胜率至少 55%",
+    minimumCases: 30,
+  });
+  assert.equal(created.test.primaryMetric, "win_rate");
+  assert.equal(created.test.successOperator, "gte");
+  assert.equal(created.test.successThreshold, 55);
+  assert.equal(created.test.decisionSampleTarget, 30);
+  assert.equal((await store.snapshot()).tests.find((item) => item.id === protocol.id).status, "retired");
 });
 
 test("validation observation reaches a human decision gate and continue advances an append-only target", async () => {
@@ -792,6 +1055,7 @@ test("validation observation reaches a human decision gate and continue advances
       testDesign: {
         metric: "net_r", window: "T+5", minCases: 2,
         inclusion: "同类确认交易", exclusion: "数据缺失", successCriteria: "净期望为正",
+        successOperator: "gt", successThreshold: 0,
       },
       candidateRule: {
         title: "确认后加仓", action: "确认后加仓", invalidation: "赔率不改善", scope: "成长股",
@@ -799,9 +1063,17 @@ test("validation observation reaches a human decision gate and continue advances
       confidence: "medium", caveats: [],
     },
   });
-  await store.completeTest(accepted.test.id, { reviewCycleId: "cycle-a", outcomeR: 1 });
-  await store.completeTest(accepted.test.id, { reviewCycleId: "cycle-b", outcomeR: -0.5 });
+  await store.completeTest(accepted.test.id, { reviewCycleId: "calibration-a", outcomeR: 1, observationTiming: "historical" });
   let snapshot = await store.snapshot();
+  assert.equal(snapshot.tests[0].status, "collecting");
+  assert.equal(calculateRuleMetrics(snapshot, accepted.rule.id).progressPercent, 0);
+  for (let index = 1; index <= 20; index += 1) {
+    await store.recordVerifiedProtocolSample({
+      testId: accepted.test.id,
+      ...verifiedProtocolSample(`cycle-${index}`, index === 20 ? -0.5 : 1, index),
+    });
+  }
+  snapshot = await store.snapshot();
   assert.equal(snapshot.tests[0].status, "decision_due");
   assert.equal(calculateRuleMetrics(snapshot, accepted.rule.id).decisionDue, true);
   assert.equal(calculateRuleMetrics(snapshot, accepted.rule.id).progressPercent, 100);
@@ -815,8 +1087,8 @@ test("validation observation reaches a human decision gate and continue advances
   assert.equal(review.applicationStatus, "applied");
   assert.equal(snapshot.tests[0].status, "collecting");
   assert.equal(snapshot.tests[0].decisionRound, 2);
-  assert.equal(snapshot.tests[0].decisionSampleTarget, 7);
-  assert.equal(snapshot.tests[0].samples.length, 2, "继续观察不得改写既有样本");
+  assert.equal(snapshot.tests[0].decisionSampleTarget, 30);
+  assert.equal(snapshot.tests[0].samples.length, 21, "继续观察不得改写既有样本");
 });
 
 test("retiring a validation freezes its protocol while v2 rules retain lineage", async () => {
@@ -855,12 +1127,18 @@ test("a decision-due validation creates v2 atomically without rewriting v1 sampl
       testDesign: {
         metric: "net_r", window: "T+5", minCases: 1,
         inclusion: "同类", exclusion: "缺数据", successCriteria: "期望为正",
+        successOperator: "gt", successThreshold: 0,
       },
       candidateRule: { title: "v1", action: "旧动作", invalidation: "旧失效", scope: "成长股" },
       caveats: [],
     },
   });
-  await store.completeTest(accepted.test.id, { reviewCycleId: "sample-cycle", outcomeR: -1 });
+  for (let index = 1; index <= 20; index += 1) {
+    await store.recordVerifiedProtocolSample({
+      testId: accepted.test.id,
+      ...verifiedProtocolSample(`sample-cycle-${index}`, index === 20 ? -1 : 1, index),
+    });
+  }
   const created = await store.createValidationVersion({
     ruleId: accepted.rule.id,
     testId: accepted.test.id,
@@ -868,6 +1146,11 @@ test("a decision-due validation creates v2 atomically without rewriting v1 sampl
     condition: "新条件",
     action: "新动作",
     falsification: "新失效",
+    primaryMetric: "expectancy_r",
+    successOperator: "gt",
+    successThreshold: 0,
+    successCriteria: "平均期望 R 大于 0",
+    minimumCases: 20,
   });
   const snapshot = await store.snapshot();
   const oldTest = snapshot.tests.find((item) => item.id === accepted.test.id);
@@ -876,7 +1159,7 @@ test("a decision-due validation creates v2 atomically without rewriting v1 sampl
   assert.equal(created.test.status, "collecting");
   assert.deepEqual(created.test.samples, []);
   assert.equal(oldTest.status, "retired");
-  assert.equal(oldTest.samples.length, 1);
+  assert.equal(oldTest.samples.length, 20);
   assert.equal(snapshot.rules.find((item) => item.id === accepted.rule.id).status, "retired");
   assert.equal(snapshot.ruleReviews[0].applicationStatus, "applied");
 });

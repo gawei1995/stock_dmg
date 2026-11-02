@@ -4,6 +4,7 @@ import {
   annotateLearningSources,
   assertLearningSourceCurrent,
   learningSourceStatus,
+  canonicalReviewEvidenceIdentity,
 } from "../src/review/review-learning-source.mjs";
 
 function fixture({ evidenceRevision = 1, noteVersion = 1, extraRuns = [] } = {}) {
@@ -80,4 +81,39 @@ test("a newer completed run supersedes a package even when evidence revisions ar
 
 test("manually created protocols without a cycle source remain untracked rather than falsely stale", () => {
   assert.equal(learningSourceStatus({ id: "manual" }, fixture()).sourceStatus, "untracked");
+});
+
+test("one legacy case and multiple migrations share an account-scoped evidence identity", () => {
+  const original = canonicalReviewEvidenceIdentity({ id: "case-1", brokerLinks: { accountScopeId: "scope-a" } }, { kind: "case" });
+  const migrated = (id, sourceHash, accountScopeId = "scope-a") => canonicalReviewEvidenceIdentity({ id,
+    legacySource: { sourceCaseId: "case-1", sourceHash, accountScopeId },
+    brokerLinks: { accountScopeId, revision: sourceHash === "old" ? 1 : 2 },
+  });
+  assert.equal(original.key, migrated("cycle-a", "old").key);
+  assert.equal(original.key, migrated("cycle-b", "new").key, "a changed source hash is not a new statistical unit");
+  assert.notEqual(original.key, migrated("cycle-c", "old", "scope-b").key);
+  const conflict = canonicalReviewEvidenceIdentity({ id: "cycle-bad", legacySource: { sourceCaseId: "case-1", accountScopeId: "scope-a" }, brokerLinks: { accountScopeId: "scope-b" } });
+  assert.equal(conflict.key, null);
+  assert.equal(conflict.reason, "legacy_source_account_scope_conflict");
+  assert.equal(canonicalReviewEvidenceIdentity({ id: "cycle-unknown", legacySource: { sourceCaseId: "case-1" } }).reason,
+    "legacy_source_account_scope_missing");
+});
+
+test("migration references and pre-migration results never become a current cycle learning source", () => {
+  const workspace = fixture();
+  const cycle = workspace.cycles[0];
+  cycle.legacySource = { sourceCaseId: "case-1", accountScopeId: "scope-a", migratedAt: "2026-08-20T00:00:00Z",
+    resultReferences: [{ kind: "review", hash: "old-result" }] };
+  const missingRun = learningSourceStatus({ sourceReviewCycleId: cycle.id }, workspace);
+  assert.equal(missingRun.sourceStatus, "stale");
+  assert.deepEqual(missingRun.sourceStatusReasons, ["legacy_source_requires_new_cycle_phase_run"]);
+  cycle.phaseRuns.retrospective[0].completedAt = "2026-08-19T00:00:00Z";
+  assert.ok(learningSourceStatus(source, workspace).sourceStatusReasons.includes("legacy_result_is_not_a_new_cycle_phase_run"));
+  cycle.phaseRuns.retrospective[0].completedAt = "2026-08-21T00:00:00Z";
+  const current = learningSourceStatus(source, workspace);
+  assert.equal(current.sourceStatus, "current");
+  assert.equal(current.canonicalEvidenceIdentity.sourceCaseId, "case-1");
+  assert.equal(current.sourceEvidencePosture, "historical_legacy_source_not_new_ex_ante");
+  cycle.phaseRuns.retrospective = [];
+  assert.equal(learningSourceStatus(source, workspace).sourceStatus, "stale");
 });

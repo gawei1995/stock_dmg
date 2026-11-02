@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ReviewCycleStore } from "../src/data/review-cycle-store.mjs";
+import { buildReviewReconciliation, summarizeReviewReconciliation } from "../src/review/review-reconciliation.mjs";
+import { buildCodexEvidence, buildWorkspaceAdditionalContext } from "../src/engine/codex-workspace.mjs";
 import {
   buildReviewCycleAnalysisRun,
   filterCandlesBeforeReviewCutoff,
@@ -74,9 +76,110 @@ class MemoryReviewStore {
   async set(key, value) { this.values.set(key, structuredClone(value)); }
 }
 
+test("reconciliation metadata travels in outcome evidence, is detached, and never enters blind context", () => {
+  const cycle = cycleFixture({ brokerLinks: { ...cycleFixture().brokerLinks, accountScopeId: "scope-a" },
+    phaseRuns: { blind: [{ id: "blind-1", status: "completed", threadId: "thread-1" }] } });
+  const reconciliation = summarizeReviewReconciliation(buildReviewReconciliation({ cycle }));
+  const build = (phase, override = reconciliation) => buildReviewCycleAnalysisRun({
+    workspace: { cycles: [cycle] }, archive: archiveFixture(), cycleId: cycle.id, phase, reconciliation: override,
+    now: () => new Date("2026-09-01T00:00:00Z"),
+  });
+  const outcome = build("outcome");
+  assert.deepEqual(outcome.analysisContext.reconciliation, reconciliation);
+  assert.notEqual(outcome.analysisContext.reconciliation, reconciliation);
+  const evidence = buildCodexEvidence({ portfolio: null, run: outcome, task: "核验收益对账" });
+  const serialized = JSON.stringify(buildWorkspaceAdditionalContext(evidence, "test"));
+  assert.ok(serialized.includes(reconciliation.evidenceHash));
+  assert.ok(serialized.includes("net_asset_change_is_not_investment_return"));
+  const blind = build("blind");
+  assert.equal(blind.analysisContext.reconciliation, null);
+  const blindWire = JSON.stringify(buildWorkspaceAdditionalContext(buildCodexEvidence({ portfolio: null, run: blind, task: "盲态" }), "test"));
+  assert.ok(!blindWire.includes(reconciliation.evidenceHash));
+  for (const change of [
+    { schemaVersion: "unknown" }, { cycleId: "another-cycle" }, { cycleEvidenceRevision: 999 },
+    { accountScopeId: "scope-b" }, { window: { ...reconciliation.window, endAt: "2026-09-30T20:00:00.000Z" } },
+  ]) assert.throws(() => build("outcome", { ...reconciliation, ...change }), /对账状态与本次/);
+  const retrospectiveCycle = migratedCycleFixture();
+  const retrospective = buildReviewCycleAnalysisRun({ workspace: { cycles: [retrospectiveCycle] },
+    archive: { ...archiveFixture(), accountScopeId: "scope-a" }, cycleId: retrospectiveCycle.id, phase: "retrospective",
+    reconciliation: summarizeReviewReconciliation(buildReviewReconciliation({ cycle: retrospectiveCycle })),
+    now: () => new Date("2026-09-01T00:00:00Z") });
+  assert.equal(retrospective.analysisContext.reconciliation.cycleId, retrospectiveCycle.id);
+});
+
+function migratedCycleFixture() {
+  const original = cycleFixture();
+  return cycleFixture({
+    reviewMode: "lightweight", status: "draft", catalystAt: null, eventAt: null,
+    eventMetadata: { eventDate: "2026-08-15", timePrecision: "date", session: "amc", fiscalQuarter: "FY2027 Q2",
+      timezone: "America/New_York", source: "confirmed_event_calendar", eventCandidateId: "event-1", symbol: "NVDA.US" },
+    exAnteVersions: [], outcome: null,
+    brokerLinks: { ...original.brokerLinks, accountScopeId: "scope-a", recordIds: ["order:before", "order:after"] },
+    legacySource: { sourceCaseId: "legacy-case-1", sourceHash: "source-hash", accountScopeId: "scope-a",
+      migratedAt: "2026-08-21T00:00:00Z",
+      originalJudgment: { myView: "旧判断原文", marketView: "旧市场预期", riskBudgetR: 1, unexpectedOutcome: "DO_NOT_IMPORT_OUTCOME" },
+      associationVersions: [{ revision: 1, hash: "old-link-hash" }],
+      sealedVersionReferences: [{ version: 1, hash: "old-seal-hash", sealedAt: "2026-08-10T00:00:00Z" }],
+      resultReferences: [{ kind: "review", sourceCaseId: "legacy-case-1", hash: "old-result-hash", text: "DO_NOT_IMPORT_RESULT" }],
+    },
+    phaseRuns: { blind: [], outcome: [], retrospective: [] },
+    retrospectiveVersions: [{ version: 1, integrityStatus: "valid", savedAt: "2026-08-21T01:00:00Z",
+      snapshot: { recalledJudgment: "我的回顾", lesson: "我的感悟", forwardHypothesis: "未来需要验证的假设" } }],
+  });
+}
+
+test("migrated case context preserves date precision and historical origin without inheriting old completion", () => {
+  const cycle = migratedCycleFixture();
+  const run = buildReviewCycleAnalysisRun({ workspace: { cycles: [cycle] }, archive: { ...archiveFixture(), accountScopeId: "scope-a" },
+    cycleId: cycle.id, phase: "retrospective", now: () => new Date("2026-08-22T00:00:00Z") });
+  const context = run.analysisContext.cycle;
+  assert.equal(context.eventMetadata.eventDate, "2026-08-15");
+  assert.equal(context.eventMetadata.timePrecision, "date");
+  assert.equal(context.eventMetadata.eventAt, null);
+  assert.equal(context.catalyst.eventAt, null);
+  assert.equal(context.eventMetadata.fiscalQuarter, "FY2027 Q2");
+  assert.equal(context.legacySource.originalJudgment.myView, "旧判断原文");
+  assert.equal(context.legacySource.eligibleAsExAnteEvidence, false);
+  assert.equal(context.legacySource.resultsAreCurrentPhaseRuns, false);
+  assert.equal(context.sealedExAnte, null);
+  assert.equal(context.blindAssessment, null);
+  assert.equal(context.evidenceGrade, "retrospective");
+  assert.equal(context.canonicalEvidenceIdentity.sourceCaseId, "legacy-case-1");
+  const evidence = buildCodexEvidence({ portfolio: null, run, task: "复盘迁移案例" });
+  const payload = JSON.stringify(buildWorkspaceAdditionalContext(evidence, "迁移来源核验"));
+  for (const text of ["historical_legacy_source_not_new_ex_ante", "旧判断原文", "old-result-hash", "FY2027 Q2", "canonicalEvidenceIdentity"])
+    assert.ok(payload.includes(text), text);
+  assert.ok(!payload.includes("DO_NOT_IMPORT_RESULT"));
+  assert.ok(!payload.includes("DO_NOT_IMPORT_OUTCOME"));
+});
+
+test("date-only migration cannot run blind review or skip user retrospective notes", () => {
+  const cycle = migratedCycleFixture();
+  const build = (phase) => buildReviewCycleAnalysisRun({ workspace: { cycles: [cycle] }, archive: archiveFixture(),
+    cycleId: cycle.id, phase, now: () => new Date("2026-08-22T00:00:00Z") });
+  assert.throws(() => build("blind"), /只能进行轻量事后复盘/);
+  cycle.retrospectiveVersions = [];
+  assert.throws(() => build("retrospective"), /先保存判断、感悟与未来预判/);
+});
+
+test("blind projection never receives migrated original text, result references, or migration timestamp", () => {
+  const cycle = cycleFixture({ legacySource: migratedCycleFixture().legacySource,
+    brokerLinks: { ...cycleFixture().brokerLinks, accountScopeId: "scope-a" } });
+  const run = buildReviewCycleAnalysisRun({ workspace: { cycles: [cycle] }, archive: archiveFixture(),
+    cycleId: cycle.id, phase: "blind", now: () => new Date("2026-08-22T00:00:00Z") });
+  assert.equal(run.analysisContext.cycle.legacySource.contentsWithheldForBlind, true);
+  assert.equal(run.analysisContext.cycle.legacySource.eligibleAsExAnteEvidence, false);
+  const all = JSON.stringify(run);
+  for (const hidden of ["旧判断原文", "old-result-hash", "source-hash", "2026-08-21T00:00:00Z"])
+    assert.ok(!all.includes(hidden), hidden);
+});
+
 test("blind review physically excludes every post-cutoff broker fact, checkpoint, and outcome", () => {
   const run = buildReviewCycleAnalysisRun({
-    workspace: { cycles: [cycleFixture()] },
+    workspace: {
+      updatedAt: "2026-08-22T00:00:00.000Z",
+      cycles: [cycleFixture()],
+    },
     archive: archiveFixture(),
     cycleId: "cycle-1",
     phase: "blind",
@@ -89,11 +192,35 @@ test("blind review physically excludes every post-cutoff broker fact, checkpoint
   assert.deepEqual(run.analysisContext.cycle.executions.map((item) => item.price), [100]);
   assert.deepEqual(run.analysisContext.cycle.checkpoints.map((item) => item.id), ["cp-before"]);
   assert.equal(run.analysisContext.cycle.outcome, null);
-  assert.equal(run.analysisContext.timeFirewall.hiddenOrderCount, 1);
-  assert.equal(run.analysisContext.timeFirewall.hiddenExecutionCount, 1);
-  assert.equal(run.analysisContext.timeFirewall.hiddenCheckpointCount, 1);
+  assert.equal(run.analysisContext.timeFirewall.hiddenOrderCount, undefined);
+  assert.equal(run.analysisContext.timeFirewall.hiddenExecutionCount, undefined);
+  assert.equal(run.analysisContext.timeFirewall.hiddenCheckpointCount, undefined);
+  assert.equal(run.analysisContext.timeFirewall.externalToolsHostBlocked, true);
+  assert.equal(run.createdAt, null);
+  assert.equal(run.context.knowledgeCutoffAt, "2026-08-10T00:00:00.000Z");
+  assert.equal(run.context.snapshotAt, "2026-08-10T00:00:00.000Z");
+  assert.equal(run.evidence[0].asOf, "2026-08-10T00:00:00.000Z");
+  assert.equal(run.evidence[1].asOf, "2026-08-10T00:00:00.000Z");
   assert.doesNotMatch(JSON.stringify(run), /指引超过预期|"pnl":500|"price":120|cp-after/);
+  assert.doesNotMatch(JSON.stringify(run), /2026-08-21T00:00:00\.000Z|2026-08-22T00:00:00\.000Z/);
   assert.match(run.task, /\$review-decision-cycles/);
+});
+
+test("review analysis rejects broker facts from another opaque account scope", () => {
+  const cycle = cycleFixture({
+    brokerLinks: {
+      ...cycleFixture().brokerLinks,
+      accountScopeId: "scope-account-a",
+      recordIds: ["order:before", "execution:fill-before"],
+    },
+  });
+  assert.throws(() => buildReviewCycleAnalysisRun({
+    workspace: { cycles: [cycle] },
+    archive: { ...archiveFixture(), accountScopeId: "scope-account-b" },
+    cycleId: cycle.id,
+    phase: "blind",
+    now: () => new Date("2026-08-10T01:00:00.000Z"),
+  }), /不同匿名账户作用域/);
 });
 
 test("blind review excludes a checkpoint backfilled after the cutoff even when occurredAt is earlier", () => {
@@ -165,7 +292,7 @@ test("blind review excludes facts stamped exactly at the knowledge cutoff", () =
   assert.doesNotMatch(JSON.stringify(run), /边界信息/);
 });
 
-test("review evidence hides an excluded Longbridge execution while preserving auditable exclusion counts", () => {
+test("blind evidence hides an excluded Longbridge execution and its future-sensitive audit counts", () => {
   const archive = archiveFixture();
   archive.executions = [{
     tradeId: "unverified-fill",
@@ -198,8 +325,8 @@ test("review evidence hides an excluded Longbridge execution while preserving au
     phase: "blind",
   });
   assert.equal(run.analysisContext.cycle.executions.length, 0);
-  assert.equal(run.analysisContext.cycle.brokerAssociation.excludedAuditExecutionCount, 1);
-  assert.equal(run.analysisContext.cycle.brokerAssociation.excludedAuditExecutionReasons.side_unverified, 1);
+  assert.equal(run.analysisContext.cycle.brokerAssociation.excludedAuditExecutionCount, undefined);
+  assert.equal(run.analysisContext.cycle.brokerAssociation.excludedAuditExecutionReasons, undefined);
   assert.equal(run.analysisContext.cycle.brokerAssociation.requestedRecordCount, 0);
 });
 
@@ -238,6 +365,36 @@ test("outcome review is gated by a completed blind assessment and then reveals t
   assert.equal(run.analysisContext.cycle.outcome.pnl, 500);
   assert.equal(run.analysisContext.cycle.orders.length, 2);
   assert.equal(run.analysisContext.timeFirewall.outcomeAvailable, true);
+});
+
+test("outcome review preserves a long frozen blind assessment with explicit integrity metadata", () => {
+  const frozenText = `# 盲态判断\n\n${"只按事前证据判断；".repeat(2_000)}`;
+  const cycle = cycleFixture({
+    status: "outcome_ready",
+    phaseRuns: { blind: [{
+      id: "blind-long",
+      threadId: "thread-blind-long",
+      status: "completed",
+      completedAt: "2026-08-10T01:00:00.000Z",
+      inputSnapshotHash: "evidence-long",
+      resultHash: "result-long",
+      result: { conclusion: { body: frozenText } },
+    }], outcome: [] },
+  });
+  const run = buildReviewCycleAnalysisRun({
+    workspace: { cycles: [cycle] },
+    archive: archiveFixture(),
+    cycleId: cycle.id,
+    phase: "outcome",
+    now: () => new Date("2026-08-21T00:00:00.000Z"),
+  });
+  const assessment = run.analysisContext.cycle.blindAssessment;
+  assert.equal(assessment.summary, frozenText);
+  assert.equal(assessment.sourceCharacterCount, frozenText.length);
+  assert.equal(assessment.deliveredCharacterCount, frozenText.length);
+  assert.equal(assessment.truncated, false);
+  assert.match(assessment.summaryHash, /^sha256:/);
+  assert.equal(assessment.resultHash, "result-long");
 });
 
 test("deterministic outcome metrics are delivered only in outcome phase with provenance intact", () => {
@@ -293,14 +450,16 @@ test("a current portfolio observed after the cycle is never mislabeled as the en
     phase: "outcome",
     portfolio: {
       syncedAt: "2026-08-21T12:00:00.000Z",
-      account: { baseCurrency: "USD" },
-      totals: { netAssets: 125_000 },
+      account: { baseCurrency: "USD", netAssets: 125_000 },
+      totals: { positionsGrossMarketValueBase: 100_000 },
       positions: [{ symbol: "NVDA.US", quantity: 20, weight: 18 }],
     },
     now: () => new Date("2026-08-21T12:00:00.000Z"),
   });
   assert.equal(run.analysisContext.cycle.endingPortfolio, null);
   assert.equal(run.analysisContext.cycle.currentPortfolioContext.snapshotAt, "2026-08-21T12:00:00.000Z");
+  assert.equal(run.analysisContext.cycle.currentPortfolioContext.netAssets, 125_000);
+  assert.equal(run.analysisContext.cycle.currentPortfolioContext.grossExposurePercent, 80);
   assert.equal(run.analysisContext.cycle.portfolioCoverage.currentPortfolioRelation, "after_cycle_end");
   assert.match(run.analysisContext.cycle.portfolioCoverage.note, /不得替代周期末仓位/);
 });
@@ -330,6 +489,108 @@ test("only an in-cycle historical portfolio snapshot may be labeled as ending ev
   });
   assert.equal(run.analysisContext.cycle.endingPortfolio.snapshotAt, "2026-08-20T20:00:00.000Z");
   assert.equal(run.analysisContext.cycle.portfolioCoverage.endingPortfolioAvailable, true);
+});
+
+function outcomePortfolioRun(snapshot) {
+  const cycle = cycleFixture({ status: "outcome_ready", endingPortfolio: snapshot,
+    phaseRuns: { blind: [{ id: "blind-1", threadId: "thread-blind", status: "completed", result: { conclusion: { body: "冻结判断" } } }] } });
+  return buildReviewCycleAnalysisRun({ workspace: { cycles: [cycle] }, archive: archiveFixture(),
+    cycleId: cycle.id, phase: "outcome", now: () => new Date("2026-08-21T12:00:00Z") });
+}
+
+test("raw ledger snapshot keeps compact valuation, FX, quality and opaque scope through actual Agent context delivery", () => {
+  const snapshot = {
+    capturedAt: "2026-08-20T20:00:00Z", snapshotId: "snapshot-source-sentinel", kind: "eod",
+    summary: { reportingCurrency: "USD", totalAssets: 1000, cash: -25, grossExposure: 1025 },
+    holdings: [{ symbol: "0700.HK", quantity: 10, weight: 0.05, marketValue: 780, valueInReportingCurrency: 100, currency: "HKD", apiKey: "do-not-deliver-secret" }],
+    valuation: { session: "regular_close", methodVersion: "regular-close-v2", observedAt: "2026-08-20T20:10:00Z",
+      quoteAsOf: "2026-08-20T20:00:00Z", quoteLatestAsOf: "2026-08-20T20:00:00Z", afterHoursMarksExcluded: true,
+      totalAssetsBasis: "capture_cash_plus_regular_close_positions", brokerObservedNetAssets: 1020, token: "do-not-deliver-secret" },
+    dataQuality: { status: "complete", completeForPeriodReturn: true, issues: [{ code: "inventory_capture_after_close", field: "holdings", message: "数量并非收盘库存" }] },
+    fx: { status: "complete", source: "fx-source-sentinel", retrievedAt: "2026-08-20T20:10:00Z",
+      rates: [{ base: "USD", quote: "HKD", rate: 7.8, asOf: "2026-08-20T20:00:00Z", source: "fx-rate-source", accessToken: "do-not-deliver-secret" }] },
+    accountScope: { scopeId: `broker-scope-v1-${"a".repeat(64)}`, broker: "Longbridge", environment: "production", status: "verified",
+      accounts: [{ accountRef: "raw-account-do-not-deliver" }], accountIdentifiers: [{ value: "raw-account-do-not-deliver" }] },
+    provenance: { provider: "Longbridge", transport: "MCP readonly", fetchedAt: "2026-08-20T20:10:00Z", recordedAt: "2026-08-20T20:10:02Z",
+      integrityStatus: "verified_on_read", accountScopeVerified: true, accessToken: "do-not-deliver-secret" },
+    integrity: { contentHash: "c".repeat(64), entryHash: "e".repeat(64) },
+  };
+  const run = outcomePortfolioRun(snapshot);
+  const delivered = run.analysisContext.cycle.endingPortfolio;
+  assert.equal(delivered.snapshotAt, "2026-08-20T20:00:00.000Z");
+  assert.equal(delivered.netAssets, 1000);
+  assert.equal(delivered.cash, -25);
+  assert.equal(delivered.cashRatioPercent, -2.5);
+  assert.equal(delivered.positions[0].weightPercent, 5);
+  assert.equal(delivered.units.weightPercent, "percent_of_net_assets", "a level weight of 5 means 5% of net assets, not a difference in percentage points");
+  assert.equal(delivered.positions[0].marketValue, 780);
+  assert.equal(delivered.positions[0].currency, "HKD");
+  assert.equal(delivered.positions[0].marketValueInReportingCurrency, 100);
+  assert.equal(delivered.units.marketValueInReportingCurrency, "USD");
+  assert.equal(delivered.valuation.pricesOnlyNotReconciledInventory, true);
+  assert.equal(delivered.dataQuality.status, "partial");
+  assert.equal(delivered.dataQuality.sourceStatus, "complete");
+  assert.equal(delivered.dataQuality.completeForPeriodReturn, false);
+  assert.equal(delivered.provenance.entryHash, "e".repeat(64));
+  assert.equal(delivered.accountScope.accountCount, 1);
+  assert.equal(delivered.fx.rates[0].rate, 7.8);
+  const wire = JSON.stringify(buildWorkspaceAdditionalContext(buildCodexEvidence({ portfolio: null, run, task: "复盘组合" }), "审计"));
+  assert.match(wire, /snapshot-source-sentinel/);
+  assert.match(wire, /regular-close-v2/);
+  assert.match(wire, /fx-source-sentinel/);
+  assert.match(wire, new RegExp("e".repeat(64)));
+  assert.doesNotMatch(wire, /do-not-deliver-secret|raw-account-do-not-deliver/);
+});
+
+test("snapshot projection reports every capped collection rather than claiming complete delivery", () => {
+  const run = outcomePortfolioRun({ snapshotAt: "2026-08-20T20:00:00Z", baseCurrency: "USD", netAssets: 1000,
+    positions: Array.from({ length: 205 }, (_, index) => ({ symbol: `T${index}.US`, quantity: index, weight: null, currency: "USD" })),
+    fx: { status: "partial", rates: Array.from({ length: 23 }, (_, index) => ({ base: "USD", quote: "HKD", rate: 7 + index / 100 })) },
+    dataQuality: { status: "partial", issues: Array.from({ length: 24 }, (_, index) => ({ code: `issue-${index}`, message: "x".repeat(1000) })) } });
+  const snapshot = run.analysisContext.cycle.endingPortfolio;
+  assert.equal(snapshot.positions.length, 200);
+  assert.deepEqual(snapshot.positionCoverage, { sourceCount: 205, deliveredCount: 200, omittedCount: 5, status: "partial" });
+  assert.deepEqual(snapshot.fx.rateCoverage, { sourceCount: 23, deliveredCount: 20, omittedCount: 3, status: "partial" });
+  assert.deepEqual(snapshot.dataQuality.issueCoverage, { sourceCount: 24, deliveredCount: 20, omittedCount: 4, status: "partial" });
+  assert.equal(snapshot.dataQuality.issues[0].message.length, 300);
+  assert.equal(snapshot.positions[0].quantity, 0);
+  assert.equal(snapshot.positions[0].weightPercent, null);
+  assert.ok(JSON.stringify(snapshot).length < 50_000);
+});
+
+test("unknown snapshot metadata remains null and existing percentage weights are not multiplied again", () => {
+  const snapshot = outcomePortfolioRun({ snapshotAt: "2026-08-20T20:00:00Z", baseCurrency: "USD", netAssets: 0, cash: 0,
+    positions: [{ symbol: "AAPL.US", quantity: null, marketValue: "", weight: 5 }] }).analysisContext.cycle.endingPortfolio;
+  assert.equal(snapshot.netAssets, 0);
+  assert.equal(snapshot.cash, 0);
+  assert.equal(snapshot.cashRatioPercent, null);
+  assert.equal(snapshot.top1WeightPercent, null);
+  assert.equal(snapshot.positions[0].quantity, null);
+  assert.equal(snapshot.positions[0].marketValue, null);
+  assert.equal(snapshot.positions[0].weightPercent, 5);
+  assert.equal(snapshot.valuation, null);
+  assert.equal(snapshot.fx, null);
+  assert.equal(snapshot.dataQuality, null);
+  assert.equal(snapshot.accountScope, null);
+  assert.equal(snapshot.provenance, null);
+  const absent = outcomePortfolioRun({ snapshotAt: "2026-08-20T20:00:00Z" }).analysisContext.cycle.endingPortfolio;
+  assert.deepEqual(absent.positionCoverage, { sourceCount: null, deliveredCount: 0, omittedCount: null, status: "missing" });
+});
+
+test("new outcome snapshot metadata cannot leak later retrieval time or quality narrative into blind replay", () => {
+  const cycle = cycleFixture({ startingPortfolio: {
+    snapshotAt: "2026-07-31T20:00:00Z", baseCurrency: "USD", netAssets: 1000, positions: [],
+    provenance: { recordedAt: "2026-08-25T01:00:00Z", source: "future-source-sentinel" },
+    dataQuality: { status: "partial", issues: [{ code: "future", message: "future-quality-sentinel" }] },
+    fx: { source: "future-fx-sentinel", rates: [] },
+  } });
+  const run = buildReviewCycleAnalysisRun({ workspace: { cycles: [cycle] }, archive: archiveFixture(),
+    cycleId: cycle.id, phase: "blind", now: () => new Date("2026-08-21T12:00:00Z") });
+  assert.equal(run.analysisContext.cycle.startingPortfolio.netAssets, 1000);
+  assert.equal(run.analysisContext.cycle.startingPortfolio.provenanceQualification, "metadata_not_verified_at_knowledge_cutoff");
+  assert.equal(run.analysisContext.cycle.startingPortfolio.units.weightPercent, "percent_of_net_assets");
+  assert.equal(Object.hasOwn(run.analysisContext.cycle.startingPortfolio, "provenance"), false);
+  assert.doesNotMatch(JSON.stringify(run), /future-source-sentinel|future-quality-sentinel|future-fx-sentinel|2026-08-25/);
 });
 
 test("outcome broker facts remain bounded by the declared cycle end", () => {
@@ -384,7 +645,7 @@ test("a pre-cycle parent order kept by broker closure is labeled as context, not
   });
   const parent = run.analysisContext.cycle.orders.find((item) => item.submittedAt === "2026-07-31T23:00:00.000Z");
   assert.equal(parent.relationshipContext, "pre_cycle_context");
-  assert.equal(run.analysisContext.timeFirewall.preCycleOrderCount, 1);
+  assert.equal(run.analysisContext.timeFirewall.preCycleOrderCount, undefined);
   assert.equal(run.analysisContext.cycle.executions[0].relationshipContext, "in_cycle");
 });
 
@@ -847,6 +1108,16 @@ test("order-first retrospective review has an evidence end but never invents a k
       executionPnl: { linkedRoundTripGrossPnl: 200 },
       coverage: { loadedSymbols: [{ symbol: "NVDA.US" }] },
     },
+    technicalValidation: {
+      status: "complete",
+      reasonCodes: [],
+      entrySnapshot: {
+        batch: { batchId: "radar-before-entry", recordedAt: "2026-08-08T21:01:00.000Z" },
+      },
+      sampleCandidate: { status: "available", eligibleForFormalStatistics: false },
+      validationMode: { classification: "historical_calibration" },
+      provenance: { deterministic: true },
+    },
     now: () => new Date("2026-08-21T00:00:00.000Z"),
   });
   assert.equal(run.context.reviewPhase, "retrospective");
@@ -876,6 +1147,11 @@ test("order-first retrospective review has an evidence end but never invents a k
   assert.equal(run.analysisContext.cycle.userRetrospectiveNote.recalledJudgment.eligibleAsExAnteEvidence, false);
   assert.equal(run.analysisContext.cycle.userRetrospectiveNote.forwardHypothesis.effectiveFrom, "2026-08-20T12:00:00.000Z");
   assert.equal(run.analysisContext.deterministicOutcomeMetrics.executionPnl.linkedRoundTripGrossPnl, 200);
+  assert.equal(run.analysisContext.technicalValidation.entrySnapshot.batch.batchId, "radar-before-entry");
+  assert.equal(run.analysisContext.technicalValidation.provenance.currentPortfolioLookupAllowed, false);
+  assert.equal(run.safeguards.technicalValidationAutomaticPromotion, false);
+  assert.equal(run.capabilities.technicalValidation, true);
+  assert.ok(run.evidence.some((item) => item.tool === "review:technical-validation-sample"));
   assert.equal(run.analysisContext.cycle.orders.length, 2);
   assert.doesNotMatch(JSON.stringify(run), /post-cycle/);
 });

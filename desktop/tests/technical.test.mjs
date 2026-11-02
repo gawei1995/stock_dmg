@@ -136,6 +136,33 @@ test("US daily bar uses exchange time and a finalization buffer when analysis ti
   }).status, "CLOSED");
 });
 
+test("US early-close daily classification uses 13:00 ET and preserves the five-minute finalization boundary", () => {
+  const bar = { tradeDate: "2026-11-27", timestamp: "2026-11-27T05:00:00Z", close: 100 };
+  const forming = classifyLastDailyBar(bar, { symbol: "AAPL.US", analysisTime: "2026-11-27T18:04:59Z" });
+  const closed = classifyLastDailyBar(bar, { symbol: "AAPL.US", analysisTime: "2026-11-27T18:05:00Z" });
+  assert.equal(forming.status, "FORMING");
+  assert.equal(forming.sessionClose, "13:00 ET");
+  assert.equal(closed.status, "CLOSED");
+  assert.equal(closed.sessionClose, "13:00 ET");
+  assert.equal(closed.basis, "exchange_session_finalized");
+});
+
+test("normal US sessions still use 16:00 ET after an early-close classification", () => {
+  classifyLastDailyBar({ tradeDate: "2026-11-27", close: 100 }, { symbol: "AAPL.US", analysisTime: "2026-11-27T18:05:00Z" });
+  for (const [tradeDate, formingAt, closedAt] of [
+    ["2026-03-06", "2026-03-06T21:04:59Z", "2026-03-06T21:05:00Z"],
+    ["2026-03-09", "2026-03-09T20:04:59Z", "2026-03-09T20:05:00Z"],
+  ]) {
+    const bar = { tradeDate, close: 100 };
+    const forming = classifyLastDailyBar(bar, { symbol: "AAPL.US", analysisTime: formingAt });
+    const closed = classifyLastDailyBar(bar, { symbol: "AAPL.US", analysisTime: closedAt });
+    assert.equal(forming.status, "FORMING");
+    assert.equal(closed.status, "CLOSED");
+    assert.equal(forming.sessionClose, "16:00 ET");
+    assert.equal(closed.sessionClose, "16:00 ET");
+  }
+});
+
 test("official 700.HK daily timestamp is CLOSED after its trading-day close", () => {
   const [bar] = normalizeCandles({
     symbol: "700.HK",

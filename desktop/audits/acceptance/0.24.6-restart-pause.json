@@ -1,0 +1,26 @@
+{
+  "reason": "Break on start",
+  "url": "file:///Users/gawei1995/Documents/stock_agent/desktop/release/mac-arm64/%E4%BA%A4%E6%98%93%E9%A9%BE%E9%A9%B6%E8%88%B1.app/Contents/Resources/app.asar/src/security/encrypted-store.mjs",
+  "sourceSha256": "04c54eec8e33a95c0275c5eb09bd952fc3712d7471ff0f04bcdf2963e69ab57f",
+  "sourcePrefix": "import { copyFile, lstat, mkdir, open, readFile, rm } from \"node:fs/promises\";\nimport { renameSync } from \"node:fs\";\nimport { createHash, randomUUID } from \"node:crypto\";\nimport path from \"node:path\";\n\nconst FILE_IO = Object.freeze({ copyFile, lstat, mkdir, open, readFile, rm, renameSync });\n\nexport class EncryptedStoreError extends Error {\n  constructor(code, message) {\n    super(message);\n    this.name = \"EncryptedStoreError\";\n    this.code = code;\n  }\n}\n\n/**\n * Minimal encrypted JSON store ba",
+  "frames": [
+    {
+      "functionName": "",
+      "url": "",
+      "location": {
+        "scriptId": "160",
+        "lineNumber": 0,
+        "columnNumber": 0
+      }
+    },
+    {
+      "functionName": "#asyncInstantiate",
+      "url": "",
+      "location": {
+        "scriptId": "74",
+        "lineNumber": 324,
+        "columnNumber": 8
+      }
+    }
+  ]
+}

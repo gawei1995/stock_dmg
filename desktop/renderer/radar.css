@@ -1,0 +1,96 @@
+/* Radar owns the existing left column; it never overlays or narrows TV. */
+.portfolio-view-tabs { flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.portfolio-view-tabs button { min-height: 34px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #91a5ae; font-size: 13px; cursor: pointer; }
+.portfolio-view-tabs button[aria-pressed="true"] { color: #bde8ed; border-color: #294c55; background: #142a31; }
+#radar-tab-count { margin-left: 4px; color: #85b5be; font: 12px var(--mono); }
+.portfolio-pane:not(.radar-focused) #technical-radar { min-height: 40px; max-height: 40px; flex: 0 0 40px; }
+.portfolio-pane:not(.radar-focused) #technical-radar .technical-radar-toggle { height: 40px; flex-basis: 40px; }
+.portfolio-pane.radar-focused > .broker-tabs,
+.portfolio-pane.radar-focused > .broker-overview,
+.portfolio-pane.radar-focused > .ibkr-setup,
+.portfolio-pane.radar-focused > .account-card,
+.portfolio-pane.radar-focused > .position-toolbar,
+.portfolio-pane.radar-focused > .position-list,
+.portfolio-pane.radar-focused > .portfolio-foot,
+.portfolio-pane.radar-focused #snapshot-state { display: none; }
+.portfolio-pane.radar-focused #technical-radar { display: flex; flex: 1 1 0; min-height: 0; max-height: none; border-top: 0; }
+.portfolio-pane.radar-focused .technical-radar-toggle { display: none; }
+#technical-radar [hidden] { display: none; }
+#technical-radar .technical-radar-body { display: block; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
+#technical-radar .technical-radar-body[hidden] { display: none; }
+.radar-toolbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 14px 12px 12px; border-bottom: 1px solid var(--line); background: #0d171c; }
+.radar-toolbar > div { flex: 1 1 140px; min-width: 0; }
+.radar-toolbar strong { display: block; color: #c0d3db; font-size: 14px; font-weight: 600; }
+.radar-toolbar span { display: block; margin-top: 5px; color: #829da8; font-size: 12px; line-height: 1.5; }
+.radar-toolbar button, .radar-card-actions button, .technical-radar-empty button { min-height: 32px; padding: 6px 10px; border: 1px solid #315d65; border-radius: 5px; background: #16343b; color: #a8e0e6; font-size: 12px; cursor: pointer; }
+#technical-radar button:disabled { opacity: .5; cursor: default; }
+.portfolio-view-tabs button:focus-visible, #technical-radar button:focus-visible, #technical-radar input:focus-visible, #technical-radar summary:focus-visible { outline: 2px solid #63b5c3; outline-offset: -2px; }
+#technical-radar .technical-radar-summary { grid-template-columns: 1.4fr .7fr 1fr; }
+#technical-radar .technical-radar-summary div { padding: 10px 7px; }
+#technical-radar .technical-radar-summary span { font-size: 11px; color: #7e939d; white-space: normal; }
+#technical-radar .technical-radar-summary strong { margin-top: 5px; font-size: 12px; color: #b6cbd3; overflow: visible; white-space: normal; }
+#technical-radar .technical-radar-actions { justify-content: space-between; flex-wrap: wrap; padding: 8px 10px; gap: 7px; }
+#technical-radar .technical-radar-actions span { font-size: 11px; color: #7e939d; }
+#technical-radar .technical-radar-actions button { min-height: 28px; height: auto; background: transparent; border-color: #31444e; color: #a0bbc5; font-size: 12px; }
+.radar-notice { margin: 8px 10px; padding: 9px; border: 1px solid #615133; border-radius: 5px; background: #211d15; color: #cdb780; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.radar-filters { padding: 10px; display: grid; gap: 9px; }
+.radar-filters > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.radar-filters button { min-height: 29px; flex: 1 1 auto; padding: 4px 7px; border: 1px solid #253840; border-radius: 5px; background: #111b20; color: #92a8b1; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.radar-filters button[aria-pressed="true"] { border-color: #45646f; background: #22343d; color: #c5dce5; }
+.radar-filters input { width: 100%; min-width: 0; height: 32px; padding: 6px 10px; border: 1px solid #253840; border-radius: 5px; background: #0b1217; color: #bdd2da; font-size: 12px; }
+#technical-radar .technical-radar-list { padding: 0 10px 10px; }
+#technical-radar .technical-radar-card { display: block; margin-bottom: 8px; border-left-width: 2px; border-radius: 6px; background: #111c22; }
+#technical-radar .technical-radar-card.expanded { border-color: #365766; border-left-color: #69b1bc; background: #142129; }
+#technical-radar .technical-radar-card-main { width: 100%; padding: 11px 10px; }
+#technical-radar .technical-radar-card-head { gap: 5px; }
+#technical-radar .technical-radar-card-head strong { font-size: 13px; color: #c0d7df; }
+#technical-radar .technical-radar-card-head small { font-size: 11px; color: #7e97a3; }
+#technical-radar .technical-radar-card-head i { font-size: 11px; padding: 3px 5px; white-space: nowrap; }
+.radar-card-thesis { display: block; padding-top: 8px; color: #b1c6d0; font-size: 13px; line-height: 1.5; }
+.radar-card-thesis small { display: block; margin-top: 2px; color: #7f9aa7; font-size: 12px; }
+#technical-radar .technical-radar-observations { margin-top: 8px; align-items: center; }
+#technical-radar .radar-observation { border: 0; padding: 2px 0; margin-right: 8px; font-size: 11px; }
+.radar-expand-label { margin-left: auto; color: #8da8b4; font-size: 11px; }
+.radar-card-detail { padding: 0 10px 12px; border-top: 1px solid #2a3c46; font-size: 12px; line-height: 1.6; }
+.radar-card-detail section { padding-top: 12px; }
+.radar-card-detail h3 { margin: 0 0 7px; font-size: 12px; color: #bdd0d8; font-weight: 600; }
+#technical-radar .technical-radar-metrics { grid-template-columns: 1fr; margin: 10px 0; gap: 8px; }
+#technical-radar .technical-radar-metrics > span, #technical-radar .technical-radar-metrics strong { font-size: 12px; color: #99b3be; }
+.radar-change-row { margin: 0; padding: 6px 0; display: grid; gap: 1px; border-bottom: 1px solid #24353e; color: #95aeb9; overflow-wrap: anywhere; }
+.radar-change-row > span:first-child { color: #718e9d; }
+.radar-change-row strong { color: #b4d1db; font-weight: 500; }
+.radar-ema-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 0; }
+.radar-ema-values div { padding: 7px; border-radius: 4px; background: #0e191f; }
+.radar-ema-values dt { color: #77929f; font-size: 11px; }
+.radar-ema-values dd { margin: 3px 0 0; color: #b8d0db; font: 12px var(--mono); overflow-wrap: anywhere; }
+.radar-ema-values dd small { display: block; margin-top: 4px; color: #c5ac78; font: 10px var(--sans); }
+.radar-detail-note { margin: 8px 0 0; color: #78939f; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.radar-gap-details { color: #c5ac78; }
+.radar-gap-details ul { margin: 0; padding-left: 17px; overflow-wrap: anywhere; }
+.radar-gap-details li + li { margin-top: 5px; }
+.radar-gap-details p { margin: 7px 0 0; color: #a09274; font-size: 11px; }
+.radar-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 13px; }
+.radar-card-actions button:last-child { background: transparent; border-color: #344b56; color: #9ab4c0; }
+#technical-radar .technical-radar-empty { padding: 22px 10px; color: #819da9; font-size: 12px; text-align: left; }
+.technical-radar-empty strong { color: #bacdd5; font-size: 13px; }
+#technical-radar .technical-radar-advisory { padding: 12px 10px; color: #78929d; font-size: 11px; }
+.radar-settings { padding: 14px 10px; }
+.radar-settings h2 { margin: 0; color: #b9cfd8; font-size: 14px; }
+.radar-settings > p { margin: 7px 0 10px; color: #819da9; font-size: 12px; line-height: 1.6; }
+#technical-radar .technical-watchlist-form { padding: 0 0 10px; border: 0; }
+#technical-radar .technical-watchlist-form input, #technical-radar .technical-watchlist-form button { min-height: 32px; font-size: 12px; }
+#technical-radar .technical-watchlist-chip button { height: 30px; font-size: 12px; }
+#technical-radar .technical-watchlist-chip button:last-child { min-width: 28px; }
+#technical-radar .technical-watchlist-strip { padding: 7px; margin-bottom: 14px; }
+#technical-radar .technical-watchlist-strip > span { font-size: 12px; }
+#technical-radar .technical-linkage-editor summary { min-height: 38px; padding: 5px 7px; font-size: 13px; }
+#technical-radar .technical-linkage-state { font-size: 11px; }
+#technical-radar .technical-linkage-grid { grid-template-columns: 1fr; gap: 12px; }
+#technical-radar .technical-linkage-grid label { gap: 5px; font-size: 12px; color: #8ca9b7; }
+#technical-radar .technical-linkage-grid input { min-height: 34px; font-size: 13px; }
+#technical-radar .technical-linkage-grid textarea { min-height: 72px; max-height: 180px; padding: 7px; font-size: 13px; }
+#technical-radar .technical-linkage-editor form > p { margin: 12px 0; color: #7f99a5; font-size: 12px; line-height: 1.6; }
+#technical-radar .technical-linkage-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+#technical-radar .technical-linkage-actions button { min-height: 34px; height: auto; font-size: 12px; }
+#technical-radar .technical-linkage-actions span { flex: 1 0 100%; text-align: left; white-space: normal; font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { #technical-radar * { animation: none !important; transition: none !important; } }

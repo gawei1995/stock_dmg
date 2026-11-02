@@ -15,6 +15,117 @@ class MemoryStore {
   async set(key, value) { this.values.set(key, structuredClone(value)); }
 }
 
+function priceAuditLongbridge({ candidatePrice, candleRows, candleCalls = [] }) {
+  const peerFills = [
+    ["peer-1", "peer-fill-1", "2026-07-10T14:00:00.000Z", "198"],
+    ["peer-2", "peer-fill-2", "2026-07-17T14:00:00.000Z", "200"],
+    ["peer-3", "peer-fill-3", "2026-07-24T14:00:00.000Z", "202"],
+  ];
+  return {
+    connected: true,
+    supports: (name) => ["history_orders", "history_executions", "candlesticks"].includes(name),
+    async call(name, args) {
+      if (name === "history_orders") {
+        return { orders: [
+          {
+            order_id: "candidate-order",
+            symbol: "AAPL.US",
+            side: "Sell",
+            status: "FilledStatus",
+            quantity: "1",
+            executed_quantity: "1",
+            executed_price: candidatePrice,
+            submitted_at: "2026-07-31T13:30:00.000Z",
+            currency: "USD",
+          },
+          ...peerFills.map(([orderId, , doneAt, price]) => ({
+            order_id: orderId,
+            symbol: "AAPL.US",
+            side: "Buy",
+            status: "FilledStatus",
+            quantity: "1",
+            executed_quantity: "1",
+            executed_price: price,
+            submitted_at: doneAt,
+            currency: "USD",
+          })),
+        ], has_more: false };
+      }
+      if (name === "history_executions") {
+        return { trades: [
+          {
+            trade_id: "candidate-fill",
+            order_id: "candidate-order",
+            symbol: "AAPL.US",
+            quantity: "1",
+            price: candidatePrice,
+            trade_done_at: "2026-07-31T13:30:16.000Z",
+          },
+          ...peerFills.map(([orderId, tradeId, doneAt, price]) => ({
+            trade_id: tradeId,
+            order_id: orderId,
+            symbol: "AAPL.US",
+            quantity: "1",
+            price,
+            trade_done_at: doneAt,
+          })),
+        ], has_more: false };
+      }
+      if (name === "candlesticks") {
+        candleCalls.push(args);
+        return { candlesticks: candleRows };
+      }
+      throw new Error(`unexpected ${name}`);
+    },
+  };
+}
+
+function parentOnlyPriceAuditLongbridge({ candidatePrice, candleRows, candleCalls = [] }) {
+  const peerOrders = [
+    ["peer-parent-1", "2026-07-10T14:00:00.000Z", "198"],
+    ["peer-parent-2", "2026-07-17T14:00:00.000Z", "200"],
+    ["peer-parent-3", "2026-07-24T14:00:00.000Z", "202"],
+  ];
+  return {
+    connected: true,
+    supports: (name) => ["history_orders", "history_executions", "candlesticks"].includes(name),
+    async call(name, args) {
+      if (name === "history_orders") {
+        return { orders: [
+          {
+            order_id: "candidate-parent-only",
+            symbol: "AAPL.US",
+            side: "Sell",
+            status: "FilledStatus",
+            quantity: "1",
+            executed_quantity: "1",
+            executed_price: candidatePrice,
+            submitted_at: "2026-07-31T13:30:00.000Z",
+            currency: "USD",
+          },
+          ...peerOrders.map(([orderId, submittedAt, price]) => ({
+            order_id: orderId,
+            symbol: "AAPL.US",
+            side: "Buy",
+            status: "FilledStatus",
+            quantity: "1",
+            executed_quantity: "1",
+            executed_price: price,
+            submitted_at: submittedAt,
+            currency: "USD",
+          })),
+        ], has_more: false };
+      }
+      if (name === "history_executions") return { trades: [], has_more: false };
+      if (name === "candlesticks") {
+        candleCalls.push(args);
+        return { candlesticks: candleRows };
+      }
+      throw new Error(`unexpected ${name}`);
+    },
+  };
+}
+
 test("trade history merges history and today executions without duplicating fills", async () => {
   const calls = [];
   const longbridge = {
@@ -70,6 +181,68 @@ test("trade history merges history and today executions without duplicating fill
   assert.equal(archive.executions[0].side, "Buy");
   assert.equal(archive.executions[0].currency, "USD");
   assert.match(calls.find((item) => item.name === "history_orders").args.start_at, /^2026-08-01T/);
+});
+
+test("opaque account scope isolates cached history and prevents cross-account merges", async () => {
+  const store = new MemoryStore();
+  let scopeId = "scope-account-a";
+  const longbridge = {
+    connected: true,
+    supports: (name) => ["history_orders", "history_executions"].includes(name),
+    async call(name) {
+      if (name === "history_orders") return { orders: [{
+        order_id: `order-${scopeId}`,
+        symbol: "AAPL.US",
+        side: "Buy",
+        status: "FilledStatus",
+        quantity: "1",
+        executed_quantity: "1",
+        executed_price: "200",
+        submitted_at: "1785801600",
+        currency: "USD",
+      }], has_more: false };
+      if (name === "history_executions") return { trades: [{
+        trade_id: `trade-${scopeId}`,
+        order_id: `order-${scopeId}`,
+        symbol: "AAPL.US",
+        quantity: "1",
+        price: "200",
+        trade_done_at: "1785801700",
+      }], has_more: false };
+      throw new Error(`unexpected ${name}`);
+    },
+  };
+  const service = new TradeHistoryService({
+    longbridge,
+    store,
+    getAccountScopeId: () => scopeId,
+    requireAccountScope: true,
+  });
+  const first = await service.sync({
+    startAt: "2026-08-01T00:00:00.000Z",
+    endAt: "2026-08-09T00:00:00.000Z",
+  });
+  assert.equal(first.accountScopeId, "scope-account-a");
+  assert.deepEqual(first.orders.map((item) => item.orderId), ["order-scope-account-a"]);
+
+  scopeId = "scope-account-b";
+  const isolated = await service.cached();
+  assert.equal(isolated.accountScopeId, "scope-account-b");
+  assert.equal(isolated.orders.length, 0);
+  assert.match(isolated.warnings[0], /另一匿名账户作用域/);
+
+  const second = await service.sync({
+    startAt: "2026-08-01T00:00:00.000Z",
+    endAt: "2026-08-09T00:00:00.000Z",
+  });
+  assert.deepEqual(second.orders.map((item) => item.orderId), ["order-scope-account-b"]);
+  assert.equal(second.orders.some((item) => item.orderId === "order-scope-account-a"), false);
+  scopeId = "scope-account-a";
+  const returnedToFirst = await service.cached();
+  assert.deepEqual(returnedToFirst.orders.map(item => item.orderId), ["order-scope-account-a"]);
+  assert.equal(returnedToFirst.orders.some(item => item.orderId === "order-scope-account-b"), false);
+  const restarted = new TradeHistoryService({ longbridge, store, getAccountScopeId: () => scopeId, requireAccountScope: true });
+  assert.deepEqual((await restarted.cached()).orders.map(item => item.orderId), ["order-scope-account-a"]);
 });
 
 test("orphan executions backfill each unique parent once and are renormalized from read-only order detail", async () => {
@@ -759,6 +932,7 @@ test("default review intake excludes non-trading orders but keeps partially-fill
     expired_unfilled: 1,
     open_or_pending_unfilled: 1,
     unfilled_or_unverified: 0,
+    price_unverified: 0,
   });
 
   const audit = buildTradeHistoryIntake(archive, { includeExcludedOrders: true });
@@ -984,6 +1158,200 @@ test("sync adds unadjusted daily-range provenance to an internally inconsistent 
   )));
 });
 
+test("sync excludes a robust local equity price outlier only after an unadjusted daily range disproves it", async () => {
+  const candleCalls = [];
+  const longbridge = priceAuditLongbridge({
+    candidatePrice: "4.92",
+    candleRows: [{
+      timestamp: "2026-07-31T04:00:00.000Z",
+      trade_date: "2026-07-31",
+      symbol: "AAPL.US",
+      open: "202",
+      high: "205",
+      low: "199",
+      close: "203",
+      volume: "1000000",
+    }],
+    candleCalls,
+  });
+  const service = new TradeHistoryService({ longbridge, store: new MemoryStore() });
+  const archive = await service.sync({
+    startAt: "2026-07-01T00:00:00.000Z",
+    endAt: "2026-08-02T00:00:00.000Z",
+  });
+
+  const execution = archive.executions.find((item) => item.tradeId === "candidate-fill");
+  assert.equal(execution.reportedPrice, 4.92);
+  assert.equal(execution.price, null);
+  assert.equal(execution.priceAudit.status, "excluded");
+  assert.equal(execution.priceAudit.reason, "execution_price_outside_unadjusted_daily_range");
+  assert.equal(execution.priceAudit.marketReference.reportedPriceInsideRange, false);
+  assert.equal(buildTradeHistoryIntake(archive).records.some(
+    (item) => item.recordId === "execution:candidate-fill",
+  ), false);
+  assert.equal(candleCalls.length, 1);
+  assert.equal(candleCalls[0].forward_adjust, false);
+});
+
+test("sync retains an outlier candidate when its unadjusted trade-date candle verifies the price", async () => {
+  const candleCalls = [];
+  const service = new TradeHistoryService({
+    longbridge: priceAuditLongbridge({
+      // This resembles a four-for-one split relative to nearby fills. The
+      // exact unadjusted trade-date candle is authoritative and keeps it.
+      candidatePrice: "50",
+      candleRows: [{
+        timestamp: "2026-07-31T04:00:00.000Z",
+        trade_date: "2026-07-31",
+        symbol: "AAPL.US",
+        open: "49",
+        high: "52",
+        low: "48",
+        close: "51",
+        volume: "1000000",
+      }],
+      candleCalls,
+    }),
+    store: new MemoryStore(),
+  });
+  const archive = await service.sync({
+    startAt: "2026-07-01T00:00:00.000Z",
+    endAt: "2026-08-02T00:00:00.000Z",
+  });
+
+  const execution = archive.executions.find((item) => item.tradeId === "candidate-fill");
+  assert.equal(execution.price, 50);
+  assert.equal(execution.priceAudit.status, "accepted");
+  assert.equal(execution.priceAudit.reason, null);
+  assert.equal(execution.priceAudit.marketReference.reportedPriceInsideRange, true);
+  assert.equal(candleCalls.length, 1);
+});
+
+test("sync fails closed for a strong local equity price outlier when its trade-date candle is unavailable", async () => {
+  const candleCalls = [];
+  const service = new TradeHistoryService({
+    longbridge: priceAuditLongbridge({
+      candidatePrice: "4.92",
+      candleRows: [],
+      candleCalls,
+    }),
+    store: new MemoryStore(),
+  });
+  const archive = await service.sync({
+    startAt: "2026-07-01T00:00:00.000Z",
+    endAt: "2026-08-02T00:00:00.000Z",
+  });
+
+  const execution = archive.executions.find((item) => item.tradeId === "candidate-fill");
+  assert.equal(execution.price, null);
+  assert.equal(execution.priceAudit.status, "excluded");
+  assert.equal(execution.priceAudit.reason, "execution_price_unverified_strong_local_outlier");
+  assert.equal(execution.priceAudit.marketReference.status, "unavailable");
+  const intake = buildTradeHistoryIntake(archive);
+  assert.equal(intake.records.some((item) => item.recordId === "execution:candidate-fill"), false);
+  const audit = buildTradeHistoryIntake(archive, { includeExcludedOrders: true });
+  assert.equal(
+    audit.records.find((item) => item.recordId === "execution:candidate-fill")
+      .reviewEligibility.reason,
+    "price_unverified",
+  );
+  assert.equal(candleCalls.length, 1);
+});
+
+test("parent-only filled equity order is audit-only when its executed price contradicts the unadjusted trade-date candle", async () => {
+  const candleCalls = [];
+  const service = new TradeHistoryService({
+    longbridge: parentOnlyPriceAuditLongbridge({
+      candidatePrice: "4.92",
+      candleRows: [{
+        timestamp: "2026-07-31T04:00:00.000Z",
+        trade_date: "2026-07-31",
+        symbol: "AAPL.US",
+        open: "202",
+        high: "205",
+        low: "199",
+        close: "203",
+        volume: "1000000",
+      }],
+      candleCalls,
+    }),
+    store: new MemoryStore(),
+  });
+  const archive = await service.sync({
+    startAt: "2026-07-01T00:00:00.000Z",
+    endAt: "2026-08-02T00:00:00.000Z",
+  });
+
+  const order = archive.orders.find((item) => item.orderId === "candidate-parent-only");
+  assert.equal(order.executedPrice, null);
+  assert.equal(order.reportedExecutedPrice, 4.92);
+  assert.equal(order.priceAudit.status, "excluded");
+  assert.equal(order.priceAudit.reason, "parent_order_price_outside_unadjusted_daily_range");
+  assert.equal(order.priceAudit.marketReference.adjustment, "none");
+  assert.equal(order.priceAudit.marketReference.reportedPriceInsideRange, false);
+  assert.equal(order.brokerEvidenceAudit.reason, "price_unverified");
+  assert.equal(buildTradeHistoryIntake(archive).records.some(
+    (item) => item.recordId === "order:candidate-parent-only",
+  ), false);
+  const audit = buildTradeHistoryIntake(archive, { includeExcludedOrders: true });
+  assert.equal(
+    audit.records.find((item) => item.recordId === "order:candidate-parent-only")
+      .reviewEligibility.reason,
+    "price_unverified",
+  );
+  assert.throws(
+    () => resolveBrokerRecordSelection(archive, {
+      recordIds: ["order:candidate-parent-only"],
+    }),
+    /只供审计查看/,
+  );
+  assert.equal(candleCalls[0].forward_adjust, false);
+});
+
+test("strong parent-only price outlier is audit-only when exact candle evidence is unavailable", async () => {
+  const service = new TradeHistoryService({
+    longbridge: parentOnlyPriceAuditLongbridge({
+      candidatePrice: "4.92",
+      candleRows: [],
+    }),
+    store: new MemoryStore(),
+  });
+  const archive = await service.sync({
+    startAt: "2026-07-01T00:00:00.000Z",
+    endAt: "2026-08-02T00:00:00.000Z",
+  });
+
+  const order = archive.orders.find((item) => item.orderId === "candidate-parent-only");
+  assert.equal(order.executedPrice, null);
+  assert.equal(order.priceAudit.status, "excluded");
+  assert.equal(order.priceAudit.reason, "parent_order_price_unverified_strong_local_outlier");
+  assert.equal(buildTradeHistoryIntake(archive).records.some(
+    (item) => item.recordId === "order:candidate-parent-only",
+  ), false);
+});
+
+test("ordinary parent-only filled order remains reviewable when no strong anomaly is present", async () => {
+  const service = new TradeHistoryService({
+    longbridge: parentOnlyPriceAuditLongbridge({
+      candidatePrice: "201",
+      candleRows: [],
+    }),
+    store: new MemoryStore(),
+  });
+  const archive = await service.sync({
+    startAt: "2026-07-01T00:00:00.000Z",
+    endAt: "2026-08-02T00:00:00.000Z",
+  });
+
+  const order = archive.orders.find((item) => item.orderId === "candidate-parent-only");
+  assert.equal(order.executedPrice, 201);
+  assert.equal(order.priceAudit.status, "unavailable");
+  assert.equal(order.priceAudit.reason, "parent_order_trade_date_candle_unavailable");
+  assert.equal(buildTradeHistoryIntake(archive).records.some(
+    (item) => item.recordId === "order:candidate-parent-only",
+  ), true);
+});
+
 test("review-cycle record selection supports a closed multi-symbol portfolio package without inventing an event", () => {
   const archive = {
     schemaVersion: 2,
@@ -1205,9 +1573,9 @@ test("every selected record must fall inside the same earnings-event window", ()
 test("event matching uses symbol and the configured earnings window", () => {
   const archive = {
     executions: [
-      { tradeId: "before", symbol: "NVDA.US", doneAt: "2026-08-01T12:00:00.000Z" },
-      { tradeId: "inside", symbol: "NVDA.US", doneAt: "2026-08-08T12:00:00.000Z" },
-      { tradeId: "other", symbol: "AAPL.US", doneAt: "2026-08-08T12:00:00.000Z" },
+      { tradeId: "before", symbol: "NVDA.US", side: "Buy", quantity: 1, price: 100, currency: "USD", doneAt: "2026-08-01T12:00:00.000Z" },
+      { tradeId: "inside", symbol: "NVDA.US", side: "Buy", quantity: 1, price: 101, currency: "USD", doneAt: "2026-08-08T12:00:00.000Z" },
+      { tradeId: "other", symbol: "AAPL.US", side: "Buy", quantity: 1, price: 200, currency: "USD", doneAt: "2026-08-08T12:00:00.000Z" },
     ],
   };
   assert.deepEqual(
@@ -1221,7 +1589,7 @@ test("event matching uses symbol and the configured earnings window", () => {
   );
 });
 
-test("event matching keeps unfilled historical orders even without executions", () => {
+test("event matching excludes unfilled historical orders without executions", () => {
   const archive = {
     orders: [
       { orderId: "open-1", symbol: "MU.US", submittedAt: "2026-07-15T14:00:00.000Z" },
@@ -1233,6 +1601,6 @@ test("event matching keeps unfilled historical orders even without executions", 
       symbol: "MU.US",
       eventAt: "2026-07-20T20:00:00.000Z",
     }).map((item) => item.orderId),
-    ["open-1"],
+    [],
   );
 });

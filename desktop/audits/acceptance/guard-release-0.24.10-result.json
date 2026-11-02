@@ -1,0 +1,25 @@
+{
+  "version": "0.24.10",
+  "dateLocal": "2026-10-10",
+  "status": "passed_scoped_synthetic_ui_acceptance",
+  "gate": "../../release/verification-0.24.10-2026-10-09T18-51-29-654Z.json",
+  "driver": "guard-release-0.24.10.cjs",
+  "profile": "isolated_temporary_synthetic_only",
+  "renderer": "packaged_app_asar",
+  "computerUsePassCount": 1,
+  "checks": [
+    "guard_reason_and_affected_tool_visible",
+    "system_status_opens_from_guard_repair_action",
+    "system_status_closes_back_to_guard_panel",
+    "explicit_recheck_clears_guard_reminder_and_shows_CODEX_READY",
+    "synthetic_window_closed_after_acceptance"
+  ],
+  "realBrokerOrModelRequests": false,
+  "installedAppReplaced": false,
+  "userProfileRead": false,
+  "limits": [
+    "Not an installed-user-profile migration verification",
+    "Not live broker, model or TradingView OAuth verification",
+    "New-session configuration enforcement is covered by automated service regressions, not this synthetic visual pass"
+  ]
+}

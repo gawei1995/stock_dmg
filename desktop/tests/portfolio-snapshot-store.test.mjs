@@ -6,6 +6,7 @@ import {
   PortfolioSnapshotStore,
   REGULAR_CLOSE_VALUATION_METHOD_VERSION,
 } from "../src/data/portfolio-snapshot-store.mjs";
+import { deriveBrokerAccountScopeIdentity } from "../src/data/account-scope-identity.mjs";
 
 function memoryStore({ persistent = true } = {}) {
   const values = new Map();
@@ -101,6 +102,74 @@ test("appends an encrypted, immutable EOD snapshot with account and quality prov
   assert.equal((await snapshots.verifyIntegrity()).valid, true);
 });
 
+test("verified opaque broker scopes survive persistence, isolate account switches, and never store raw account numbers", async () => {
+  const rawFirstAccountNumber = "LB-REAL-ACCOUNT-000123";
+  const rawSecondAccountNumber = "LB-REAL-ACCOUNT-999876";
+  const firstIdentity = deriveBrokerAccountScopeIdentity({
+    broker: "Longbridge",
+    environment: "production",
+    accountIdentifiers: [{ kind: "account_number", value: rawFirstAccountNumber }],
+  });
+  const secondIdentity = deriveBrokerAccountScopeIdentity({
+    broker: "Longbridge",
+    environment: "production",
+    accountIdentifiers: [{ kind: "account_number", value: rawSecondAccountNumber }],
+  });
+  const verifiedScope = (identity, rawAccountNumber) => ({
+    ...identity,
+    // Even if an upstream caller accidentally carries raw identity fields,
+    // the ledger's account-scope normalizer has no persistence slot for them.
+    rawAccountNumber,
+    accountIdentifiers: [{ kind: "account_number", value: rawAccountNumber }],
+    accounts: [{
+      accountRef: "verified-broker-scope",
+      accountType: "verified_scope_aggregate_read_only",
+      baseCurrency: "USD",
+    }],
+  });
+  const holdings = [{
+    ...fixture().holdings[0],
+    accountRef: "verified-broker-scope",
+  }];
+  const { snapshots, backing } = makeStore();
+
+  const first = await snapshots.appendSnapshot(fixture({
+    idempotencyKey: "eod:verified-scope:2026-08-19",
+    accountScope: verifiedScope(firstIdentity, rawFirstAccountNumber),
+    holdings,
+  }));
+  const second = await snapshots.appendSnapshot(fixture({
+    // Idempotency is intentionally identical: different verified scopes must
+    // remain independent evidence partitions rather than conflict or merge.
+    idempotencyKey: "eod:verified-scope:2026-08-19",
+    accountScope: verifiedScope(secondIdentity, rawSecondAccountNumber),
+    holdings,
+  }));
+
+  assert.equal(first.snapshot.accountScope.scopeId, firstIdentity.scopeId);
+  assert.equal(first.snapshot.accountScope.status, "verified");
+  assert.equal(first.snapshot.accountScope.environment, "production");
+  assert.deepEqual(first.snapshot.accountScope.identifierKinds, ["account_number"]);
+  assert.equal(first.snapshot.accountScope.identifierCount, 1);
+  assert.equal(first.snapshot.accountScope.version, "account-scope-identity/v1");
+  assert.equal(first.snapshot.accountScope.provenance.rawIdentifiersPersisted, false);
+  assert.equal(first.snapshot.accountScope.provenance.mutablePortfolioContentUsed, false);
+  assert.equal(second.snapshot.accountScope.scopeId, secondIdentity.scopeId);
+  assert.notEqual(second.snapshot.accountScope.scopeId, first.snapshot.accountScope.scopeId);
+  assert.equal((await snapshots.listSnapshots({ scopeId: firstIdentity.scopeId })).length, 1);
+  assert.equal((await snapshots.listSnapshots({ scopeId: secondIdentity.scopeId })).length, 1);
+  assert.equal((await snapshots.verifyIntegrity()).valid, true);
+
+  const persisted = backing.unsafeRead(PORTFOLIO_SNAPSHOT_STORE_KEY);
+  const serialized = JSON.stringify(persisted);
+  assert.doesNotMatch(serialized, new RegExp(rawFirstAccountNumber, "i"));
+  assert.doesNotMatch(serialized, new RegExp(rawSecondAccountNumber, "i"));
+  assert.doesNotMatch(serialized, /rawAccountNumber/);
+  assert.doesNotMatch(serialized, /accountIdentifiers/);
+  assert.match(serialized, new RegExp(firstIdentity.scopeId));
+  assert.match(serialized, new RegExp(secondIdentity.scopeId));
+});
+
 test("records the quote session and keeps a regular close distinct from a broker after-hours mark", async () => {
   const { snapshots } = makeStore();
   const result = await snapshots.appendSnapshot(fixture({
@@ -131,6 +200,45 @@ test("records the quote session and keeps a regular close distinct from a broker
   assert.equal(result.snapshot.valuation.methodVersion, REGULAR_CLOSE_VALUATION_METHOD_VERSION);
   assert.equal(isCurrentRegularCloseSnapshot(result.snapshot), true);
   assert.equal(result.snapshot.dataQuality.completeForPeriodReturn, false);
+});
+
+test("accepts a verified market-close observation for a zero-position cash account", async () => {
+  const { snapshots } = makeStore();
+  const input = fixture({
+    idempotencyKey: "cash-only-close:2026-08-19",
+    holdings: [],
+    summary: {
+      ...fixture().summary,
+      totalAssets: 100_000,
+      cash: 100_000,
+      grossExposure: 0,
+      netExposure: 0,
+      longExposure: 0,
+      shortExposure: 0,
+    },
+    valuation: {
+      session: "regular_close",
+      quoteAsOf: null,
+      quoteLatestAsOf: null,
+      observedAt: "2026-08-19T20:10:00.000Z",
+      totalAssetsBasis: "capture_cash_only_after_verified_market_close",
+      brokerObservedNetAssets: 100_000,
+      afterHoursMarksExcluded: true,
+      methodVersion: REGULAR_CLOSE_VALUATION_METHOD_VERSION,
+    },
+    dataQuality: {
+      status: "partial",
+      completeForPeriodReturn: false,
+      issues: [{
+        code: "regular_close_cash_observed_after_close",
+        message: "Cash was observed after the verified market close.",
+      }],
+    },
+  });
+  const result = await snapshots.appendSnapshot(input);
+  assert.equal(isCurrentRegularCloseSnapshot(result.snapshot), true);
+  assert.equal(result.snapshot.summary.positionCount, 0);
+  assert.equal(result.snapshot.valuation.totalAssetsBasis, "capture_cash_only_after_verified_market_close");
 });
 
 test("legacy EOD history does not block the current regular-close valuation version", async () => {
@@ -250,6 +358,16 @@ test("concurrent appends are serialized and preserve the integrity chain", async
   assert.equal(integrity.recordCount, 2);
   const all = await snapshots.listSnapshots({ order: "asc" });
   assert.equal(all[1].integrity.previousHash, all[0].integrity.entryHash);
+});
+
+test("month queries use actual UTC month ends, including leap years and year boundaries", async () => {
+  const { snapshots } = makeStore();
+  for (const [month, lastDay] of [["2026-09", "30"], ["2026-02", "28"], ["2024-02", "29"], ["2026-12", "31"], ["2027-01", "31"]]) {
+    const result = await snapshots.queryMonth({ scopeId: "longbridge-main", month });
+    assert.equal(result.startTradingDate, `${month}-01`);
+    assert.equal(result.endTradingDate, `${month}-${lastDay}`);
+    assert.equal(result.snapshots.length, 0);
+  }
 });
 
 test("period, month and nearest queries return only actual observations", async () => {

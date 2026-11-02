@@ -1,3 +1,5 @@
+import { canonicalReviewEvidenceIdentity, phaseRunFollowsLegacyMigration } from "./review-learning-source.mjs";
+
 const FORWARD_RANK = Object.freeze({
   forward: 3,
   overlapping: 2,
@@ -13,37 +15,75 @@ const FORWARD_RANK = Object.freeze({
  * They remain manual, non-formal observations; only cycles whose activity
  * starts after the frozen protocol are labelled as forward candidates.
  */
-export function buildValidationCandidateIndex({ tests = [], cycles = [], now = Date.now(), limit = 100 } = {}) {
+export function buildValidationCandidateIndex(options = {}) {
+  return buildValidationCandidateReport(options).candidatesByTest;
+}
+
+export function buildValidationCandidateReport({ tests = [], cycles = [], now = Date.now(), limit = 100 } = {}) {
   const rows = Array.isArray(cycles) ? cycles : [];
   const cycleById = new Map(rows.map((cycle) => [cleanId(cycle?.id), cycle]));
   const result = {};
+  const exclusionsByTest = {};
 
   for (const test of Array.isArray(tests) ? tests : []) {
     const testId = cleanId(test?.id);
     if (!testId || test?.testKind !== "protocol" || !Array.isArray(test?.samples)) continue;
     const sourceCycleId = cleanId(test?.sourceReviewCycleId);
     const sourceCycle = cycleById.get(sourceCycleId) ?? null;
+    const sourceIdentity = sourceCycle ? canonicalReviewEvidenceIdentity(sourceCycle) : null;
+    const sourceCaseId = sourceIdentity?.sourceCaseId || cleanId(test?.sourceCaseId ?? test?.caseId);
+    const sourceAccountScopeId = sourceIdentity?.accountScopeId || cleanId(test?.accountScopeId);
     const included = new Set(test.samples.map((sample) => cleanId(sample?.reviewCycleId)).filter(Boolean));
+    const includedIdentities = new Set(test.samples.map((sample) => {
+      const linkedCycle = cycleById.get(cleanId(sample?.reviewCycleId));
+      return linkedCycle ? canonicalReviewEvidenceIdentity(linkedCycle).key : sample?.canonicalEvidenceIdentity?.key;
+    }).filter(Boolean));
     const candidates = [];
+    const exclusions = [];
+    const exclude = (cycleId, reason, identity = null, duplicateOfCycleId = null) => exclusions.push({
+      cycleId, reason, canonicalEvidenceIdentity: identity, duplicateOfCycleId,
+    });
 
     for (const cycle of rows) {
       const candidateCycleId = cleanId(cycle?.id);
-      if (!candidateCycleId || candidateCycleId === sourceCycleId || included.has(candidateCycleId)) continue;
+      if (!candidateCycleId) continue;
+      const identity = canonicalReviewEvidenceIdentity(cycle);
+      if (!identity.key) { exclude(candidateCycleId, identity.reason, identity); continue; }
+      const matchesLegacySourceCase = sourceCaseId && identity.sourceCaseId === sourceCaseId
+        && (!sourceAccountScopeId || identity.accountScopeId === sourceAccountScopeId);
+      if (candidateCycleId === sourceCycleId || (sourceIdentity?.key && identity.key === sourceIdentity.key)
+        || matchesLegacySourceCase) {
+        exclude(candidateCycleId, "same_evidence_as_hypothesis_source", identity, sourceCycleId || null); continue;
+      }
+      const includedLegacyCase = identity.sourceCaseId && test.samples.some((sample) => (
+        cleanId(sample?.caseId ?? sample?.sourceCaseId) === identity.sourceCaseId
+        && (!cleanId(sample?.accountScopeId) || cleanId(sample.accountScopeId) === identity.accountScopeId)
+      ));
+      if (included.has(candidateCycleId) || includedIdentities.has(identity.key) || includedLegacyCase) {
+        exclude(candidateCycleId, "same_evidence_already_included", identity); continue;
+      }
       if (String(cycle?.status ?? "").toLowerCase() === "cancelled") continue;
       const reviewRun = currentValidationReviewRun(cycle);
-      if (!reviewRun) continue;
+      if (!reviewRun) { exclude(candidateCycleId, "no_current_cycle_phase_run", identity); continue; }
       const endAt = parseTime(cycle?.endAt);
       if (!Number.isFinite(endAt) || endAt > Number(now)) continue;
 
-      const timing = validationCandidateTiming(cycle, test?.observationStartedAt ?? test?.registeredAt);
+      const technicalValidation = compactTechnicalValidationCandidate(reviewRun?.result?.technicalValidation);
+      const timing = validationCandidateTiming(
+        cycle,
+        test?.observationStartedAt ?? test?.registeredAt,
+        technicalValidation,
+      );
       const relevance = validationCandidateRelevance({ test, cycle, sourceCycle });
       candidates.push({
         cycleId: candidateCycleId,
+        canonicalEvidenceIdentity: identity,
         timing,
         relevance: relevance.label,
         relevanceScore: relevance.score,
         reviewCompletedAt: reviewRun.completedAt ?? reviewRun.recordedAt ?? null,
         reason: candidateReason(timing, relevance),
+        technicalValidation: classifyTechnicalValidationForProtocol(technicalValidation, timing),
       });
     }
 
@@ -51,11 +91,73 @@ export function buildValidationCandidateIndex({ tests = [], cycles = [], now = D
       (FORWARD_RANK[right.timing] ?? 0) - (FORWARD_RANK[left.timing] ?? 0)
       || right.relevanceScore - left.relevanceScore
       || parseTime(right.reviewCompletedAt) - parseTime(left.reviewCompletedAt)
+      || left.cycleId.localeCompare(right.cycleId)
     ));
-    result[testId] = candidates.slice(0, Math.max(1, Number(limit) || 100));
+    const uniqueCandidates = [];
+    const selectedIdentities = new Map();
+    for (const candidate of candidates) {
+      const duplicate = selectedIdentities.get(candidate.canonicalEvidenceIdentity.key);
+      if (duplicate) {
+        exclude(candidate.cycleId, "duplicate_legacy_evidence", candidate.canonicalEvidenceIdentity, duplicate.cycleId);
+      } else {
+        selectedIdentities.set(candidate.canonicalEvidenceIdentity.key, candidate);
+        uniqueCandidates.push(candidate);
+      }
+    }
+    result[testId] = uniqueCandidates.slice(0, Math.max(1, Number(limit) || 100));
+    exclusionsByTest[testId] = exclusions;
   }
 
-  return result;
+  return { candidatesByTest: result, exclusionsByTest };
+}
+
+function compactTechnicalValidationCandidate(value) {
+  if (!value || typeof value !== "object") {
+    return {
+      status: "unavailable",
+      reason: "该复盘没有持久化的入场前技术雷达样本。",
+      validationMode: null,
+      sampleStatus: null,
+      eligibleForFormalStatistics: false,
+      ruleKey: null,
+      radarTradingDate: null,
+      radarRecordedAt: null,
+      entryCutoffAt: null,
+      exitAt: null,
+    };
+  }
+  const validationMode = String(value?.validationMode?.classification ?? "").trim() || null;
+  const sampleStatus = String(value?.sampleCandidate?.status ?? "").trim() || null;
+  const reasonCodes = Array.isArray(value?.reasonCodes)
+    ? value.reasonCodes.map((item) => String(item ?? "").trim()).filter(Boolean).slice(0, 12)
+    : [];
+  return {
+    status: String(value?.status ?? "unavailable"),
+    reason: reasonCodes.length ? reasonCodes.join(" · ") : null,
+    validationMode,
+    sampleStatus,
+    eligibleForFormalStatistics: value?.sampleCandidate?.eligibleForFormalStatistics === true,
+    ruleKey: cleanId(value?.ruleCandidate?.ruleKey) || null,
+    radarTradingDate: cleanId(value?.entrySnapshot?.batch?.tradingDate) || null,
+    radarRecordedAt: value?.entrySnapshot?.batch?.recordedAt ?? null,
+    entryCutoffAt: value?.cycle?.entryCutoffAt ?? value?.evidenceBinding?.entryCutoffAt ?? null,
+    exitAt: value?.cycle?.exitAt ?? value?.evidenceBinding?.exitAt ?? null,
+    resultHash: cleanId(value?.resultHash) || null,
+    sampleId: cleanId(value?.sampleCandidate?.sampleId) || null,
+  };
+}
+
+function classifyTechnicalValidationForProtocol(value, timing) {
+  const forwardTiming = timing === "forward";
+  return {
+    ...value,
+    protocolTiming: timing,
+    validationMode: forwardTiming ? "walk_forward_candidate" : "historical_calibration",
+    eligibleForFormalStatistics: false,
+    formalEligibilityReason: forwardTiming
+      ? "需在纳入时绑定冻结协议哈希，并由确定性结果引擎核验；候选列表本身不能晋级样本。"
+      : "交易入场不晚于观察协议边界，只能作为历史/跨界校准。",
+  };
 }
 
 /** Latest completed phase run that still cites the cycle's current evidence. */
@@ -81,13 +183,14 @@ export function currentValidationReviewRun(cycle) {
       || Number(run?.evidenceFilterPolicyVersion ?? 0) >= 2)
     && (phase !== "retrospective"
       || positiveInteger(run?.retrospectiveVersion) === currentRetrospectiveVersion)
+    && phaseRunFollowsLegacyMigration(cycle, run)
   )).at(-1) ?? null;
 }
 
-export function validationCandidateTiming(cycle, observationStartedAt) {
+export function validationCandidateTiming(cycle, observationStartedAt, technicalValidation = null) {
   const boundary = parseTime(observationStartedAt);
-  const startAt = parseTime(cycle?.startAt);
-  const endAt = parseTime(cycle?.endAt);
+  const startAt = parseTime(technicalValidation?.entryCutoffAt ?? cycle?.startAt);
+  const endAt = parseTime(technicalValidation?.exitAt ?? cycle?.endAt);
   if (!Number.isFinite(boundary) || !Number.isFinite(startAt) || !Number.isFinite(endAt)) return "unknown";
   if (startAt >= boundary) return "forward";
   if (endAt >= boundary) return "overlapping";

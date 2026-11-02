@@ -1,3 +1,5 @@
+import { buildReviewSetMetrics } from "./review-set-metrics.mjs";
+
 const MAX_REVIEW_CASES = 100;
 
 /** Build a sanitized, order-backed evidence run for the existing Codex harness. */
@@ -26,6 +28,18 @@ export function buildReviewAnalysisRun({
   if (unconfirmedCases.length) {
     throw new Error("复盘 Agent 仅接受已由用户确认关联的历史订单或成交；请先完成订单关联。");
   }
+  const archiveAccountScopeId = cleanText(archive?.accountScopeId, 160);
+  const accountScopeFailures = selectedCases.filter((item) => (
+    cleanText(item?.brokerLinks?.accountScopeId, 160) !== archiveAccountScopeId
+  ));
+  if (!archiveAccountScopeId || accountScopeFailures.length) {
+    const hasMismatchedScope = accountScopeFailures.some((item) => (
+      cleanText(item?.brokerLinks?.accountScopeId, 160)
+    ));
+    throw new Error(hasMismatchedScope
+      ? "复盘案例与当前长桥历史属于不同匿名账户作用域；已拒绝跨账户分析。"
+      : "该旧复盘缺少匿名账户作用域；请在当前账户重新选择订单后再分析。");
+  }
   const mode = reviewMode(selectedCases);
   const orderById = new Map((archive?.orders ?? []).map((item) => [String(item.orderId), item]));
   const executionById = new Map((archive?.executions ?? []).map((item) => [String(item.tradeId), item]));
@@ -43,6 +57,7 @@ export function buildReviewAnalysisRun({
   const relatedRules = (workspace?.rules ?? [])
     .filter((item) => linkedRuleIds.has(String(item.id)))
     .map(sanitizeRule);
+  const reviewSetMetrics = buildReviewSetMetrics({ cases, tests: relatedTests });
   const singleSymbol = new Set(cases.map((item) => item.symbol)).size === 1
     ? cases[0].symbol
     : null;
@@ -74,12 +89,7 @@ export function buildReviewAnalysisRun({
       reviewMode: mode,
       basedOnEvidenceRevisions: reviewEvidenceRevisions,
       sampleUnit: "symbol × earnings_event × decision_package",
-      portfolioSummary: portfolio ? {
-        snapshotAt: portfolio.syncedAt ?? null,
-        baseCurrency: portfolio.account?.baseCurrency ?? "USD",
-        netAssets: finiteOrNull(portfolio.totals?.netAssets),
-        grossExposurePercent: finiteOrNull(portfolio.totals?.grossExposurePercent),
-      } : null,
+      portfolioSummary: sanitizePortfolioSummary(portfolio),
       dataCoverage: {
         brokerSource: archive?.source ?? "Longbridge MCP · read only",
         brokerSyncedAt: archive?.syncedAt ?? null,
@@ -93,6 +103,7 @@ export function buildReviewAnalysisRun({
       cases,
       tests: relatedTests,
       rules: relatedRules,
+      reviewSetMetrics,
       evidencePolicy: {
         factLayers: [
           "broker_facts",
@@ -204,6 +215,7 @@ function sanitizeCase(reviewCase, orderById, executionById) {
     updatedAt: reviewCase.updatedAt ?? null,
     brokerAssociation: {
       revision: brokerLinkRevision(reviewCase),
+      accountScopeStatus: "matched",
       confirmedAt: reviewCase.brokerLinks?.confirmedAt ?? null,
       linkedOrderCount: linkedOrderIds.length,
       linkedExecutionCount: linkedExecutionIds.length,
@@ -247,6 +259,7 @@ function sanitizeOrder(item, recordRef) {
     executedQuantity: finiteOrNull(item.executedQuantity),
     submittedPrice: finiteOrNull(item.submittedPrice),
     executedPrice: finiteOrNull(item.executedPrice),
+    contractMultiplier: positiveFiniteOrNull(item.contractMultiplier),
     currency: item.currency ?? null,
     submittedAt: item.submittedAt ?? null,
     updatedAt: item.updatedAt ?? null,
@@ -262,6 +275,7 @@ function sanitizeExecution(item, recordRef, orderRecordRef) {
     side: item.side ?? null,
     quantity: finiteOrNull(item.quantity),
     price: finiteOrNull(item.price),
+    contractMultiplier: positiveFiniteOrNull(item.contractMultiplier),
     currency: item.currency ?? null,
     doneAt: item.doneAt ?? null,
   };
@@ -276,9 +290,14 @@ function sanitizeTest(item) {
     hypothesis: item.hypothesis ?? null,
     primaryMetric: item.primaryMetric ?? null,
     primaryHorizon: item.primaryHorizon ?? null,
+    minimumCases: finiteOrNull(item.minimumCases),
+    successCriteria: item.successCriteria ?? null,
+    successOperator: item.successOperator ?? null,
+    successThreshold: finiteOrNull(item.successThreshold),
     status: item.status ?? null,
     registeredAt: item.registeredAt ?? null,
     completedAt: item.completedAt ?? null,
+    recordedAt: item.recordedAt ?? null,
     outcomeR: finiteOrNull(item.outcomeR),
     outcomeVerified: item.outcomeVerified === true,
     censored: item.censored === true,
@@ -355,8 +374,38 @@ function cleanText(value, limit) {
   return text ? text.slice(0, limit) : null;
 }
 
+function sanitizePortfolioSummary(portfolio) {
+  if (!portfolio || typeof portfolio !== "object") return null;
+  const netAssets = finiteOrNull(
+    portfolio.account?.netAssets
+      ?? portfolio.netAssets
+      ?? portfolio.totals?.netAssets,
+  );
+  const grossNotional = finiteOrNull(portfolio.totals?.positionsGrossMarketValueBase);
+  const explicitGrossExposure = finiteOrNull(
+    portfolio.grossExposurePercent
+      ?? portfolio.totals?.grossExposurePercent,
+  );
+  return {
+    snapshotAt: portfolio.syncedAt ?? portfolio.snapshotAt ?? null,
+    baseCurrency: portfolio.account?.baseCurrency ?? portfolio.baseCurrency ?? "USD",
+    netAssets,
+    grossExposurePercent: explicitGrossExposure
+      ?? (netAssets != null && netAssets > 0 && grossNotional != null
+        ? (grossNotional / netAssets) * 100
+        : null),
+  };
+}
+
 function finiteOrNull(value) {
-  if (value == null || value === "") return null;
+  if (value == null || typeof value === "boolean") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  if (!["number", "string"].includes(typeof value)) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function positiveFiniteOrNull(value) {
+  const number = finiteOrNull(value);
+  return number != null && number > 0 ? number : null;
 }
