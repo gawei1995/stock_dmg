@@ -1,0 +1,30 @@
+{
+  "dateLocal": "2026-11-03",
+  "status": "passed_scoped_source_synthetic",
+  "consolidatedComputerUsePassCount": 1,
+  "failedPathRechecks": 0,
+  "driver": "desktop/tests/research-ui-smoke.cjs --interactive",
+  "profile": "temporary_synthetic_memory_only",
+  "inspected": [
+    "compact sidebar checkbox and label layout",
+    "v2 adopted edited market belief shown",
+    "AI source remains not independently verified",
+    "expanded adopted draft shows original suggested value",
+    "expanded v1 retains original judgment",
+    "open original review cycle navigates to exact synthetic cycle"
+  ],
+  "manualFlowActionsClaimed": [
+    "expand adopted draft",
+    "expand original judgment",
+    "navigate original synthetic cycle",
+    "close fixture window"
+  ],
+  "manualCreateOrAdoptClaimed": false,
+  "realModelOrBrokerViaUi": false,
+  "installedAppOpened": false,
+  "fixtureClosed": true,
+  "limits": [
+    "Source renderer only, not a new packaged or installed application acceptance",
+    "Creation and adoption exercised by automated synthetic Chromium driver; native manual pass inspected their result"
+  ]
+}

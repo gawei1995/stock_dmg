@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "preparedOn": "2026-11-03",
+  "version": "0.24.13",
+  "purpose": "Historical frozen-input evidence; this publication is not a new build, security approval, installed-app acceptance or live-service verification.",
+  "originalManifest": {
+    "path": "verification.json",
+    "sha256": "5993230abd608bad210bc5a00b665a2048045632577f7584667c1b9861908920",
+    "createdAt": "2026-10-21T17:47:18.142Z",
+    "byteIdenticalCopy": true
+  },
+  "originalLocalSourceArchive": {
+    "sha256": "a9d8388e27f89d9f2b9627db260a62d2e362a9a6346e75406e6c18eeb8864b77",
+    "bytes": 2643159,
+    "included": false,
+    "reason": "Preserved locally unchanged. The shared derivative excludes macOS metadata and files outside the original release input inventories, including runtime project configuration."
+  },
+  "sharedSourceArchive": {
+    "path": "source-inputs.tar.gz",
+    "sha256": "5160b4c76b2977032b67952380b67144febc7c96759cd137cbdfa96146e6b475",
+    "bytes": 1835694,
+    "derivative": true,
+    "fileCount": 219,
+    "contentPolicy": "Exactly the 211 desktop source input files and 8 bundled project review skill input files in verification.json; file bytes, relative paths and permission modes are unchanged. Container timestamps and owners are normalized. No credentials, user profile, runtime project config, private account/history or AppleDouble metadata is included."
+  },
+  "originalVerificationRecord": {
+    "unitTestsPassed": 1342,
+    "releaseChecksPassed": 17,
+    "runtimeModulesImported": 79,
+    "sourceUiGroupsPassed": 5,
+    "packagedUiGroupsPassed": 5,
+    "consolidatedComputerUsePasses": 1,
+    "failedPathRechecks": 1,
+    "reference": "../../acceptance/research-mainline-0.24.13-result.json",
+    "verificationRunDateLocal": "2026-10-22",
+    "rerunForEvidencePublication": false
+  },
+  "inputFingerprint": "e63d32cfbfda12b8ec0e494548d491118e4f4b975c0ad7a2336aa92a5f9e8a89",
+  "dependencyLockSha256": "74a0f3a7ea71ba1759f6ef5b29850127c0a42ac2809ab1ead4a66bd4ddfa5ce5",
+  "distribution": {
+    "developerIdSigning": "not_performed",
+    "appleNotarization": "not_performed",
+    "status": "trusted_local_testing_only"
+  },
+  "limits": [
+    "Historical SDK and transitive dependencies are vulnerable according to the 2026-11-03 production audit. Preserve this baseline for audit; do not treat it as a security-fixed release.",
+    "Default evidence verification reads and hashes the archive without extracting or executing frozen source and does not install dependencies.",
+    "The Git repository contains source input evidence and binary hashes, not the DMG/ZIP. Original binary bytes need a separately obtained trusted copy to be checked with --artifact-root.",
+    "No GitHub Release publication or binary-download availability is claimed.",
+    "Hashes show content consistency, not independent signed attestation or byte-identical future DMG reproducibility.",
+    "Historical manual acceptance remains pending where recorded; present installed profile, model, broker and TradingView services are not verified by this evidence."
+  ]
+}

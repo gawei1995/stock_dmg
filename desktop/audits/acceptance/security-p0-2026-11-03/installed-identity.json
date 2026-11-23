@@ -1,0 +1,11 @@
+{
+  "dateLocal": "2026-11-03",
+  "installedVersion": "0.24.11",
+  "source": "installed_bundle_readonly_inventory",
+  "expectedTreeHash": "5445b2043de6489e8224e7d5a95b53d8cc664fddc05d252157eae7db102d5ac0",
+  "actualTreeHash": "5445b2043de6489e8224e7d5a95b53d8cc664fddc05d252157eae7db102d5ac0",
+  "fileCount": 281,
+  "matchesFrozenBuild": true,
+  "installedProfileRead": false,
+  "appLaunched": false
+}

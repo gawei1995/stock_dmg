@@ -369,6 +369,9 @@ export function classifyLongbridgeError(error) {
   const message = error instanceof Error ? error.message : String(error ?? "");
   const normalized = message.toLowerCase();
   const explicitCode = Number(error?.code);
+  if (error?.code === "LONGBRIDGE_OAUTH_ISSUER_REQUIRED") {
+    return { kind: "auth", code: 401, retryable: false, reauth: true };
+  }
   if (
     error?.name === "StreamableHTTPError"
     || /streamable http error|failed to fetch|fetch failed|econnreset|socket|network|session (?:closed|expired)|transport|net::err_[a-z0-9_]+|err_(?:connection|proxy|tunnel|name_not_resolved|internet_disconnected)/.test(normalized)

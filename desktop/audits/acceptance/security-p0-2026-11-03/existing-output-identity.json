@@ -1,0 +1,9 @@
+{
+  "purpose": "read_only_preparation_for_future_batch_freeze",
+  "version": "0.24.13",
+  "matchesFrozenManifest": true,
+  "treeHash": "152f3f8f46c6c53d2c14bad03c9efd8cb755ad7b4a30148e27434417bbb6b732",
+  "fileCount": 281,
+  "newVersionArtifactsGenerated": false,
+  "existingOutputReplaced": false
+}

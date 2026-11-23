@@ -1,0 +1,109 @@
+{
+  "schemaVersion": "p0-live-research/v1",
+  "startedAt": "2026-11-02T17:25:15.220Z",
+  "status": "passed_scoped",
+  "scope": {
+    "scope": "production_service_with_temporary_synthetic_file_store",
+    "liveModelCalls": 2,
+    "networkMode": "system_native_process_switch",
+    "accountAccess": "none",
+    "installedProfileAccess": "none",
+    "personalConversationAccess": "none",
+    "globalSettingsWrites": "none",
+    "workspace": "new_temporary_directory",
+    "requestedSkillsAndSources": "none",
+    "localToolPolicy": "prompt_forbids_tools_and_first_tool_event_aborts; not_a_native_zero_tool_sandbox",
+    "nativeHistory": "only_new_probe_threads; archive_on_exit"
+  },
+  "fullMode": {
+    "mode": "full",
+    "ready": true,
+    "diagnosticState": "ready",
+    "diagnosticCode": "ready",
+    "networkStatus": "ready",
+    "networkStage": "under development",
+    "externalMcpCount": 7,
+    "appCount": 8,
+    "blockedToolCount": 133,
+    "blockedAppCount": 1,
+    "prepareMs": 44176
+  },
+  "restrictedMode": {
+    "mode": "restricted",
+    "ready": true,
+    "diagnosticState": "ready",
+    "diagnosticCode": "restricted_ready",
+    "networkStatus": "ready",
+    "networkStage": "under development",
+    "externalMcpCount": 4,
+    "appCount": 0,
+    "blockedToolCount": 133,
+    "blockedAppCount": 1
+  },
+  "calls": [
+    {
+      "startedAt": 1793640359450,
+      "intent": "update",
+      "turnSubmittedMs": 18,
+      "nativeTerminalMs": 123254,
+      "serviceTerminalMs": 123257,
+      "finalDeliveryMs": 123257,
+      "modelElapsedMs": 123255,
+      "firstActivityMs": 17433,
+      "resultDelivery": {
+        "terminalStatus": "completed",
+        "terminalSource": "turn_completed_notification",
+        "complete": true,
+        "historyStatus": "verified",
+        "historyReason": null
+      },
+      "outputBytes": 30,
+      "outputHash": "320b7d352d6ab699fa6b3e7214f319a0317995909aa4d645b6576a9a63b7c45a",
+      "draftPersistenceMs": 4
+    },
+    {
+      "startedAt": 1793640483096,
+      "intent": "discuss",
+      "turnSubmittedMs": 7,
+      "nativeTerminalMs": 119795,
+      "serviceTerminalMs": 119796,
+      "finalDeliveryMs": 119796,
+      "modelElapsedMs": 119790,
+      "firstActivityMs": 17136,
+      "resultDelivery": {
+        "terminalStatus": "completed",
+        "terminalSource": "turn_completed_notification",
+        "complete": true,
+        "historyStatus": "verified",
+        "historyReason": null
+      },
+      "outputBytes": 30,
+      "outputHash": "4f5767bb27857e08628161f4564f6bc20ade542de94a17b400fdc1cecab6008c"
+    }
+  ],
+  "checks": {
+    "draftPendingBeforeConfirmation": true,
+    "onlyExplicitEditedFieldAdopted": true,
+    "noSourcesAutomaticallyAdopted": true,
+    "ownHistoryReopened": true,
+    "syntheticStateAndBindingSurviveServiceRestart": true,
+    "realModelContinuedOriginalThread": true,
+    "realOrderLinkage": "unverified_requires_selected_user_account_and_cycle"
+  },
+  "toolEvents": 0,
+  "serverToolRequests": 0,
+  "cleanup": {
+    "threadsArchived": 2,
+    "temporaryDirectoryRemoved": true
+  },
+  "limits": [
+    "Not an installed-user-profile, encrypted-store or real-order-cycle acceptance.",
+    "Full mode is checked by native metadata only; both model calls use an independently verified restricted thread.",
+    "No source fetching, Skills or real financial research are requested.",
+    "A no-tools prompt plus cancellation observes tool compliance; it is not a hard native prohibition of local tools."
+  ],
+  "sourceVersion": "0.24.13",
+  "threadFingerprint": "9f941e26e73b1c0812f89cfb08b5f6de1c70180c621d5f30f96a8b76be755d75",
+  "finishedAt": "2026-11-02T17:30:02.953Z",
+  "totalMs": 287733
+}

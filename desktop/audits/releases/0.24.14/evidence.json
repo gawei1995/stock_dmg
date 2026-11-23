@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "preparedOn": "2026-11-07",
+  "version": "0.24.14",
+  "purpose": "Frozen-input evidence for the verified local security/P0 build; not an installed-app acceptance, real-account acceptance, new live-service check or public release.",
+  "originalManifest": {
+    "path": "verification.json",
+    "sha256": "9091f809af40d9ba3fad3f0be4067dca2364efb123ad042197c0780b169cf761",
+    "createdAt": "2026-11-07T12:42:39.154Z",
+    "byteIdenticalCopy": true
+  },
+  "originalLocalSourceArchive": {
+    "sha256": "d5ef96890167ec98d1a44da6494bdf2a6bf933abebe9cc476a173ab27292d97e",
+    "bytes": 1980009,
+    "included": false,
+    "reason": "Preserved locally unchanged. The shared deterministic derivative contains only original manifest input inventories; eight additional project metadata/documentation files in the local archive are excluded."
+  },
+  "sharedSourceArchive": {
+    "path": "source-inputs.tar.gz",
+    "sha256": "13571a47d5e8ce4d56a33a4f45a3622c3c2d96a9b90e926c5cb01290bcc78c45",
+    "bytes": 1844052,
+    "derivative": true,
+    "fileCount": 223,
+    "contentPolicy": "Exactly the 215 desktop source input files and 8 bundled project review skill input files in verification.json, read from the frozen local source archive. File bytes, relative paths and permission modes are unchanged. Container timestamps and owners are normalized. No credentials, user profile, runtime project config, private account/history, user Skills or AppleDouble metadata is included."
+  },
+  "originalVerificationRecord": {
+    "unitTestsPassed": 1352,
+    "releaseChecksPassed": 18,
+    "runtimeModulesImported": 79,
+    "sourceUiGroupsPassed": 5,
+    "packagedUiGroupsPassed": 5,
+    "completedGateRuns": 1,
+    "interruptedAttempts": 1,
+    "verificationRunDateLocal": "2026-11-07",
+    "reference": "../../acceptance/release-0.24.14-2026-11-07/completed-gate.json",
+    "interruptedAttemptReference": "../../acceptance/release-0.24.14-2026-11-07/interrupted-attempt.json",
+    "rerunForEvidencePublication": false,
+    "newComputerUsePass": false,
+    "newLiveModelCalls": 0
+  },
+  "productionDependencyAudit": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "scope": "production",
+    "command": [
+      "npm",
+      "audit",
+      "--omit=dev",
+      "--ignore-scripts",
+      "--json"
+    ],
+    "auditedAt": "2026-11-07T12:41:30.964Z",
+    "lockSha256": "8c5d40bcfd95acf5e23a73710edbf1a33c9929ebcce92fba2104bd30abd33aee",
+    "reportSha256": "362aff47e4870924cbad26f6f5f07146e2bab2f14247bbeb557e1422fb24df15",
+    "npmAuditReportVersion": 2,
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "dependencies": {
+      "prod": 101,
+      "dev": 255,
+      "optional": 23,
+      "peer": 14,
+      "peerOptional": 0,
+      "total": 356
+    },
+    "affectedPackages": []
+  },
+  "priorScopedAcceptance": {
+    "dateLocal": "2026-11-03",
+    "reference": "../../acceptance/security-p0-2026-11-03/",
+    "scope": "Prior synthetic source UI Computer Use and two restricted native real-model turns with synthetic research, persistence and resume. No new Computer Use pass or live-model call is claimed for the 2026-11-07 release gate.",
+    "installedProfileAccepted": false,
+    "realAccountOrOrderCycleAccepted": false
+  },
+  "inputFingerprint": "07414f4b9274e652b186817431c0ada4beed202612406a18d668061019288f4a",
+  "dependencyLockSha256": "8c5d40bcfd95acf5e23a73710edbf1a33c9929ebcce92fba2104bd30abd33aee",
+  "distribution": {
+    "developerIdSigning": "not_performed",
+    "appleNotarization": "not_performed",
+    "status": "trusted_local_testing_only"
+  },
+  "limits": [
+    "Production npm audit reported zero vulnerabilities at its recorded 2026-11-07 timestamp and lock hash. This is a time-scoped dependency check, not a guarantee of zero defects or future advisory absence.",
+    "The first gate attempt was interrupted during the unit-test stage before producing new-version artifacts; one later complete gate passed. Only completedGateRuns is one; the gate was not attempted only once overall.",
+    "Default evidence verification reads and hashes the archive without extracting or executing frozen source and does not install dependencies.",
+    "The Git repository contains source input evidence and binary hashes, not the DMG/ZIP. Binary bytes need a separately obtained trusted copy to be checked with --artifact-root.",
+    "This evidence is prepared in the current worktree. No commit, push, GitHub Release publication or binary-download availability is claimed.",
+    "Hashes show content consistency, not independent signed attestation or byte-identical future DMG reproducibility.",
+    "Installed-app replacement, installed user profile, broker/TradingView OAuth, real-account order-cycle association and continuous trading-day coverage remain pending. No Developer ID signing or Apple notarization was performed.",
+    "Prior scoped P0 model observations retain about 123/120 second latency; this build does not claim a response-performance fix or a new live-service test."
+  ]
+}

@@ -1,0 +1,1746 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-21T17:47:18.142Z",
+  "status": "verified_local_build",
+  "releaseStatus": "not_published",
+  "target": "mac",
+  "reproducibility": "Source and dependency inputs are recorded; byte-identical DMG output is not promised because packaging metadata can vary.",
+  "app": {
+    "name": "trading-cockpit-desktop",
+    "productName": "交易驾驶舱",
+    "version": "0.24.13"
+  },
+  "source": {
+    "algorithm": "sha256",
+    "treeHash": "c5c18b32daf3241acefd646bd2ccd9298f00f7bac7a830ac233d829f50a4d3ff",
+    "files": [
+      {
+        "path": "assets/icon.png",
+        "kind": "file",
+        "bytes": 630026,
+        "mode": 420,
+        "sha256": "5ad84de5937fde5fe41315544f6d12de8c4474a2108bc632f27fb79c75ed05dd"
+      },
+      {
+        "path": "assets/icon.svg",
+        "kind": "file",
+        "bytes": 1886,
+        "mode": 420,
+        "sha256": "7d7030425431075ec149ef17c3d44748e48bdf4a89ff76f2c6b11c88cb79eee0"
+      },
+      {
+        "path": "main.mjs",
+        "kind": "file",
+        "bytes": 249656,
+        "mode": 420,
+        "sha256": "1078aaf887acf8a736f11050c6993690a5896b96552ea787ae5e6031b503bad5"
+      },
+      {
+        "path": "package-lock.json",
+        "kind": "file",
+        "bytes": 159604,
+        "mode": 420,
+        "sha256": "74a0f3a7ea71ba1759f6ef5b29850127c0a42ac2809ab1ead4a66bd4ddfa5ce5"
+      },
+      {
+        "path": "package.json",
+        "kind": "file",
+        "bytes": 1609,
+        "mode": 420,
+        "sha256": "fec7813ddb0ee7ff210ad6734a961ddc9ece6ddd20655aed215e87954f1d0f36"
+      },
+      {
+        "path": "preload.cjs",
+        "kind": "file",
+        "bytes": 7119,
+        "mode": 420,
+        "sha256": "fe7734ca79e1c4ae2b48555bb4772fde275994d0d13cff604e8309800ea0d46d"
+      },
+      {
+        "path": "renderer/health.css",
+        "kind": "file",
+        "bytes": 5101,
+        "mode": 420,
+        "sha256": "0dba99b6eacc313a425f032da31c55e748ff549654313fafe9d3e1f57583451f"
+      },
+      {
+        "path": "renderer/health.js",
+        "kind": "file",
+        "bytes": 10805,
+        "mode": 420,
+        "sha256": "71eeca74e95e1d2d1373b6e71604b5c63ea247655858c5cadac2794090592b5e"
+      },
+      {
+        "path": "renderer/index.html",
+        "kind": "file",
+        "bytes": 74246,
+        "mode": 420,
+        "sha256": "0a3c9d9b6023258d4574ae6169ba327dc1509a72f656f8ae68f1a4914d450c82"
+      },
+      {
+        "path": "renderer/markdown.js",
+        "kind": "file",
+        "bytes": 16776,
+        "mode": 420,
+        "sha256": "1105854a8ec68e342639411d2bff15052c5d19ed41ab58af4febd4dc19b8ad4b"
+      },
+      {
+        "path": "renderer/radar-view.js",
+        "kind": "file",
+        "bytes": 4346,
+        "mode": 420,
+        "sha256": "e1d8eddebbf6f06fb9212a0345ef7d4c8edbc7274b80de16a616e7bc1e956924"
+      },
+      {
+        "path": "renderer/radar.css",
+        "kind": "file",
+        "bytes": 9396,
+        "mode": 420,
+        "sha256": "6ad484c3127b0cade51f5fdf37f95561059a35e8aaf94927242ee07da154b286"
+      },
+      {
+        "path": "renderer/renderer.js",
+        "kind": "file",
+        "bytes": 237792,
+        "mode": 420,
+        "sha256": "2e9bd479d8d3f07d8190b4f111ef1714cd056c2ffc2506600d9dc446c009944c"
+      },
+      {
+        "path": "renderer/research.css",
+        "kind": "file",
+        "bytes": 6672,
+        "mode": 420,
+        "sha256": "1b1a37cf6034d5a75a2ad172f84733616deb1f2e3e804b4b2219c7ae9b530a65"
+      },
+      {
+        "path": "renderer/research.js",
+        "kind": "file",
+        "bytes": 35102,
+        "mode": 420,
+        "sha256": "59a8c537df4518226a672514dcfe263c641da4d62f5593e2a64690b388d08a61"
+      },
+      {
+        "path": "renderer/review.css",
+        "kind": "file",
+        "bytes": 50568,
+        "mode": 420,
+        "sha256": "cb893139211acf1b112b7d85bb456c19964650a01b65f8b8863d57e089c2cd6c"
+      },
+      {
+        "path": "renderer/review.js",
+        "kind": "file",
+        "bytes": 265656,
+        "mode": 420,
+        "sha256": "7f7a4f4230ad1ed70e080cb8cbe2d6642d87c5abc2f0e62f237e15c480f061c4"
+      },
+      {
+        "path": "renderer/styles.css",
+        "kind": "file",
+        "bytes": 65579,
+        "mode": 420,
+        "sha256": "ee62c169c69a769872328899298d384217ca29503bae9a01b36307db9c4db1ec"
+      },
+      {
+        "path": "scripts/release-manifest.mjs",
+        "kind": "file",
+        "bytes": 7629,
+        "mode": 420,
+        "sha256": "489eb8b424343ffc5b559bb727c7c87ac5ad7d6306fc42713548f4838e8846e2"
+      },
+      {
+        "path": "scripts/verify-release.mjs",
+        "kind": "file",
+        "bytes": 11253,
+        "mode": 420,
+        "sha256": "ca0f1a12e85f44e080cb359b3dd50b5a9bc678dddbdf53e2c3d5d045c6178ea3"
+      },
+      {
+        "path": "src/brokers/ibkr-client.mjs",
+        "kind": "file",
+        "bytes": 14645,
+        "mode": 420,
+        "sha256": "565ccb56b1dea8625280a522f29b8a00e5dc02ac595e6b8d3a5ffa04b4f8bfa3"
+      },
+      {
+        "path": "src/brokers/ibkr-tws.mjs",
+        "kind": "file",
+        "bytes": 11657,
+        "mode": 420,
+        "sha256": "f57e883b9b290c9908ec4e61ea5b55f47573d5f2ed5de0597b0f0649e3085803"
+      },
+      {
+        "path": "src/brokers/tws-application.mjs",
+        "kind": "file",
+        "bytes": 2554,
+        "mode": 420,
+        "sha256": "8c6facd662ab762133587cc510d7456aa84f6646b9ff1583cd7de3b55562904b"
+      },
+      {
+        "path": "src/config/symbol-map.mjs",
+        "kind": "file",
+        "bytes": 886,
+        "mode": 420,
+        "sha256": "77bbb21bfbfd186d0b05fc91e60355daf3958dbaee1cac712f788a204b89f17b"
+      },
+      {
+        "path": "src/data/account-scope-identity.mjs",
+        "kind": "file",
+        "bytes": 16304,
+        "mode": 420,
+        "sha256": "80535446b3c3d827c2131e948a3e7ad79528c68397bdee8fac54f505f4505a3b"
+      },
+      {
+        "path": "src/data/agent-result-store.mjs",
+        "kind": "file",
+        "bytes": 3972,
+        "mode": 420,
+        "sha256": "eb7746db2925a5aef8ead6a66f9e5335ede1aa164289eba45858024ca7a05ba8"
+      },
+      {
+        "path": "src/data/authorization-generation.mjs",
+        "kind": "file",
+        "bytes": 4036,
+        "mode": 420,
+        "sha256": "0540b1e1234c1bd884972ce6e645a4c156060781921cfa3c95bfdaba5ecd90e6"
+      },
+      {
+        "path": "src/data/broker-portfolios.mjs",
+        "kind": "file",
+        "bytes": 9906,
+        "mode": 420,
+        "sha256": "166995b66fbcd63d0dde5844f3a3f882256b0726ed258571e983c670360c0f30"
+      },
+      {
+        "path": "src/data/freshness.mjs",
+        "kind": "file",
+        "bytes": 4351,
+        "mode": 420,
+        "sha256": "4ade6ef6b1eed295b7122b5c726da94e12d8a655e512bf6d362ea310c27f36bf"
+      },
+      {
+        "path": "src/data/ibkr-portfolio.mjs",
+        "kind": "file",
+        "bytes": 8984,
+        "mode": 420,
+        "sha256": "0f718b82b72e9e2908f42ca85180f2c3d07567ef0a42db8f9494d9641592554f"
+      },
+      {
+        "path": "src/data/market-history-store.mjs",
+        "kind": "file",
+        "bytes": 8806,
+        "mode": 420,
+        "sha256": "21ec7fdb1345845346a16257369906b5192c7f63aba998dc2b729c46b7a9f43d"
+      },
+      {
+        "path": "src/data/market-series-store.mjs",
+        "kind": "file",
+        "bytes": 9826,
+        "mode": 420,
+        "sha256": "4c7b9a855e8c9a9248871babb46475741f49473f1593a3edbbdc12d72348042f"
+      },
+      {
+        "path": "src/data/normalize.mjs",
+        "kind": "file",
+        "bytes": 29638,
+        "mode": 420,
+        "sha256": "9c3408e02d693ea227c2a621a4737ebd3d8541430f83cf9a8de0a9ffc34edc59"
+      },
+      {
+        "path": "src/data/portfolio-service.mjs",
+        "kind": "file",
+        "bytes": 51137,
+        "mode": 420,
+        "sha256": "3973d30b77e9421aca61eeadf4e4523798469910fb9eebf6fa6ed61472c43bfb"
+      },
+      {
+        "path": "src/data/portfolio-snapshot-store.mjs",
+        "kind": "file",
+        "bytes": 39905,
+        "mode": 420,
+        "sha256": "76797be2ccb2307c7e66064385b5ae482f0dd375b6828d476c9a5cb8595ad179"
+      },
+      {
+        "path": "src/data/portfolio-valuation-gate.mjs",
+        "kind": "file",
+        "bytes": 37201,
+        "mode": 420,
+        "sha256": "fc8d23d1aed4a677163b42264d3f5927a57cc3321e8b4de2cea6ab9fc1fcb5a5"
+      },
+      {
+        "path": "src/data/reference-fx.mjs",
+        "kind": "file",
+        "bytes": 6432,
+        "mode": 420,
+        "sha256": "6b9e9e382aee546cd1470e9392afc563deba038747319eb352fa43890661cd61"
+      },
+      {
+        "path": "src/data/research-thesis-store.mjs",
+        "kind": "file",
+        "bytes": 36811,
+        "mode": 420,
+        "sha256": "74d2d56be13baced88bc0e75dfbe6259b2be9f01af12f62f1b55af1cab6fae0e"
+      },
+      {
+        "path": "src/data/review-cycle-store.mjs",
+        "kind": "file",
+        "bytes": 118010,
+        "mode": 420,
+        "sha256": "50c2eb6bfcf03cda61957ac9873d68fa2587a72989dd9f5f0f6560da4ec5e95b"
+      },
+      {
+        "path": "src/data/review-store.mjs",
+        "kind": "file",
+        "bytes": 95513,
+        "mode": 420,
+        "sha256": "0ae2da240ca5f1736ed60fd4af807a97bba60c01e6fec8c11ad1070bf2b3e227"
+      },
+      {
+        "path": "src/data/snapshot-background-reliability.mjs",
+        "kind": "file",
+        "bytes": 22349,
+        "mode": 420,
+        "sha256": "0d55d63a66adcf084c67d54a1ac4113a644fff5627742808dc6137ca1649e57c"
+      },
+      {
+        "path": "src/data/snapshot-coverage-reconcile.mjs",
+        "kind": "file",
+        "bytes": 3191,
+        "mode": 420,
+        "sha256": "7f9dbfd82b6d34aca318575634d3a2c4beb427600a4ae48766fedb1c7e5cfdd4"
+      },
+      {
+        "path": "src/data/snapshot-coverage.mjs",
+        "kind": "file",
+        "bytes": 20658,
+        "mode": 420,
+        "sha256": "205211ac426f09430c9402b2072ebaae7135509efaf3c7a0aff9c0946712059a"
+      },
+      {
+        "path": "src/data/technical-linkage-store.mjs",
+        "kind": "file",
+        "bytes": 10625,
+        "mode": 420,
+        "sha256": "92c9abe9142ae07205227f122bd3df79d01ff97b13b5bce82576ab965cc151fb"
+      },
+      {
+        "path": "src/data/technical-radar-service.mjs",
+        "kind": "file",
+        "bytes": 27026,
+        "mode": 420,
+        "sha256": "8f35a1cf8f8b0be2933683b25dbaebfdfb0e46ac1eed706263b9f2040ba6771f"
+      },
+      {
+        "path": "src/data/technical-radar-store.mjs",
+        "kind": "file",
+        "bytes": 14500,
+        "mode": 420,
+        "sha256": "c5a4125f036eb092fce5ec9f9b5a26696cbdcc1734c9367ec2eca09a1809de4d"
+      },
+      {
+        "path": "src/data/technical-watchlist-store.mjs",
+        "kind": "file",
+        "bytes": 6623,
+        "mode": 420,
+        "sha256": "ce5199ce611aa836b650217b444bb43a7b4c8ce0aacd5bd2494346f3b7a6c90a"
+      },
+      {
+        "path": "src/data/trade-history-service.mjs",
+        "kind": "file",
+        "bytes": 112628,
+        "mode": 420,
+        "sha256": "7fe1b00249f31f73a0df207fe7e18af7298a96ac573789cadf0563c4bd029ca9"
+      },
+      {
+        "path": "src/engine/agent.mjs",
+        "kind": "file",
+        "bytes": 115713,
+        "mode": 420,
+        "sha256": "7a1b7930525b4624429932636a635d8538dffc61d93846c9c1eba09b2fe089d9"
+      },
+      {
+        "path": "src/engine/anchored-vwap.mjs",
+        "kind": "file",
+        "bytes": 12842,
+        "mode": 420,
+        "sha256": "f17f24ec451d54ed7090e8a950f34c7d8d1fae89b1c7ea571ffad136bae87672"
+      },
+      {
+        "path": "src/engine/broker-tool-policy.mjs",
+        "kind": "file",
+        "bytes": 8047,
+        "mode": 420,
+        "sha256": "69d7ce1afc58c618957d0c1cbf16f306cd3e7e6fe6ae07fc279f1642acb7e2cd"
+      },
+      {
+        "path": "src/engine/codex-network.mjs",
+        "kind": "file",
+        "bytes": 6335,
+        "mode": 420,
+        "sha256": "b7e355f7413294c2cb52254873833fc45759f2c90eb2f2ce2b63f62a9310278d"
+      },
+      {
+        "path": "src/engine/codex-turn-history.mjs",
+        "kind": "file",
+        "bytes": 2997,
+        "mode": 420,
+        "sha256": "1ffdfff380aef435d9a318a064ad4d7ee1ea84c7430677ddd163d7bc04f28904"
+      },
+      {
+        "path": "src/engine/codex-workspace.mjs",
+        "kind": "file",
+        "bytes": 357416,
+        "mode": 420,
+        "sha256": "81905c066e41a0bb2016d74dbf0e846db7f59d35b560772fb31e3974acae0f06"
+      },
+      {
+        "path": "src/engine/cost-concentration.mjs",
+        "kind": "file",
+        "bytes": 20718,
+        "mode": 420,
+        "sha256": "1c64fc50be472ec1e367d3fc2f09382218d37b894b73d253428bd359810ae711"
+      },
+      {
+        "path": "src/engine/daily-sequence.mjs",
+        "kind": "file",
+        "bytes": 15585,
+        "mode": 420,
+        "sha256": "29131f6fd51bcd3e91ad5de8c940822c945e48883f0af1efc63c91e5e44d5632"
+      },
+      {
+        "path": "src/engine/fx-evidence.mjs",
+        "kind": "file",
+        "bytes": 1899,
+        "mode": 420,
+        "sha256": "3f051824c15c3fb8b2568a842e1b461ed5adf0df4275648e316e695443a0fbfe"
+      },
+      {
+        "path": "src/engine/market-evidence.mjs",
+        "kind": "file",
+        "bytes": 8927,
+        "mode": 420,
+        "sha256": "30377f385c486d922e918dd26dd190e8989c9174288f161a517b2ce81591d967"
+      },
+      {
+        "path": "src/engine/numeric-claim-audit.mjs",
+        "kind": "file",
+        "bytes": 18320,
+        "mode": 420,
+        "sha256": "03782dc6416722dbc1091d26fe80148fa9fbf39a27f872ca1f7d42855288b4fc"
+      },
+      {
+        "path": "src/engine/numeric-evidence-adapter.mjs",
+        "kind": "file",
+        "bytes": 12013,
+        "mode": 420,
+        "sha256": "20a364fe23771cb2351a527007093ab62028353438c8ec3f8f58ad70394c5694"
+      },
+      {
+        "path": "src/engine/numeric-evidence.mjs",
+        "kind": "file",
+        "bytes": 19617,
+        "mode": 420,
+        "sha256": "11834a6704162d61b0c29e5c95af2a940862e1910b16598cdeba6aaa06730b3a"
+      },
+      {
+        "path": "src/engine/read-only-guard-diagnostics.mjs",
+        "kind": "file",
+        "bytes": 9981,
+        "mode": 420,
+        "sha256": "e735f89d0030b0e68d083a9fc63f25538bbf9b7a113a1fc49667330b9b973a4e"
+      },
+      {
+        "path": "src/engine/research-contract.mjs",
+        "kind": "file",
+        "bytes": 10474,
+        "mode": 420,
+        "sha256": "f6a37b149b9b6e383284456f68b541286cd471fd7f8f9827f83a2aaa68c26885"
+      },
+      {
+        "path": "src/engine/restricted-tool-policy.mjs",
+        "kind": "file",
+        "bytes": 4892,
+        "mode": 420,
+        "sha256": "4fedc39c02a20d0089ae9a131e220ea770e6e0c04dc39ad90d3ac0b8c2ae5fa1"
+      },
+      {
+        "path": "src/engine/review-evidence-delivery.mjs",
+        "kind": "file",
+        "bytes": 15385,
+        "mode": 420,
+        "sha256": "d63a17aa7eb542fd408b42f964e147917190820a4246a47a5c4ea5b3581ff098"
+      },
+      {
+        "path": "src/engine/review-thread-binding.mjs",
+        "kind": "file",
+        "bytes": 6017,
+        "mode": 420,
+        "sha256": "7d44ba1139ea524da4822b1d2ca6953237a6881ee659e368fe8ee08ab96b412e"
+      },
+      {
+        "path": "src/engine/technical-numeric-evidence.mjs",
+        "kind": "file",
+        "bytes": 10744,
+        "mode": 420,
+        "sha256": "d17c23d359f14bb0c55e663f47d42cb62f6ee9795f2107fdf5005b11ab3b8046"
+      },
+      {
+        "path": "src/engine/technical-v2.mjs",
+        "kind": "file",
+        "bytes": 26164,
+        "mode": 420,
+        "sha256": "46116ea5ed743efeadd9bc30c88c5d5ffbcb273f93d2d3ca835b20dcb859a992"
+      },
+      {
+        "path": "src/engine/technical.mjs",
+        "kind": "file",
+        "bytes": 20698,
+        "mode": 420,
+        "sha256": "50d01f737da5af3970cd5564c14d65c2045ce86ac5f3aeff670c42f2c8d59b3f"
+      },
+      {
+        "path": "src/engine/tier-a-technical-scan.mjs",
+        "kind": "file",
+        "bytes": 49535,
+        "mode": 420,
+        "sha256": "d32fdb31d14a7ba56a6668eabf38315182248bc7283b86e5599960897b29053a"
+      },
+      {
+        "path": "src/engine/tier-b-technical-evidence.mjs",
+        "kind": "file",
+        "bytes": 67828,
+        "mode": 420,
+        "sha256": "fc6d7d6279e7b75e92b0a8801642327ac70a90d338d09703e6ce17d7dfd34740"
+      },
+      {
+        "path": "src/engine/tradingview-mcp-policy.mjs",
+        "kind": "file",
+        "bytes": 2642,
+        "mode": 420,
+        "sha256": "0f6307f2ba32e19db61f2b3067a3f0cb513606eaf2c56d63e1f22b55b00507f3"
+      },
+      {
+        "path": "src/engine/workspace-review-skills.mjs",
+        "kind": "file",
+        "bytes": 6489,
+        "mode": 420,
+        "sha256": "7aaf077c8ef8c8718527d0b4b927c968de71657065d915e9ffe59335be6a5bf5"
+      },
+      {
+        "path": "src/mcp/longbridge-client.mjs",
+        "kind": "file",
+        "bytes": 16565,
+        "mode": 420,
+        "sha256": "d66686a74c8f40abdb1ed3df45640ab4ae612ef7998fca0ce0436ab85fb4bcd1"
+      },
+      {
+        "path": "src/mcp/loopback-callback.mjs",
+        "kind": "file",
+        "bytes": 4018,
+        "mode": 420,
+        "sha256": "cbbb3376ed3482ddebc5f571704069f34c0c68e7edd74a2a491b6c1d3c001480"
+      },
+      {
+        "path": "src/mcp/oauth-provider.mjs",
+        "kind": "file",
+        "bytes": 4276,
+        "mode": 420,
+        "sha256": "f83c69e7b75a11bc53926c935904137e48c819910fc0a90d32c4ad39d9911535"
+      },
+      {
+        "path": "src/mcp/proxy-aware-fetch.mjs",
+        "kind": "file",
+        "bytes": 439,
+        "mode": 420,
+        "sha256": "9b011930b81b75980fd50b005e09c71ddfb2f8739d569e8fad248a698f5e81d6"
+      },
+      {
+        "path": "src/review/evidence/registry.mjs",
+        "kind": "file",
+        "bytes": 3994,
+        "mode": 420,
+        "sha256": "d63d90a5adc7f275cf1385283f577805aa383f2d5146771d09cbe48c82de2116"
+      },
+      {
+        "path": "src/review/research-links.mjs",
+        "kind": "file",
+        "bytes": 4577,
+        "mode": 420,
+        "sha256": "87dddea76f94deb1772d9cc992e8af9dc866850434e73e792ee6ff0520da7e52"
+      },
+      {
+        "path": "src/review/review-analysis.mjs",
+        "kind": "file",
+        "bytes": 15356,
+        "mode": 420,
+        "sha256": "cb055c22ec277d0129ddb699a2e259ece9e6440b8eb3679a85499d4d1d1da0c4"
+      },
+      {
+        "path": "src/review/review-calendar.mjs",
+        "kind": "file",
+        "bytes": 4243,
+        "mode": 420,
+        "sha256": "54ef61a99f1b6d5d03925d88c544f03deb195f2f50fed9435dd69f71461b0dd1"
+      },
+      {
+        "path": "src/review/review-case-migration.mjs",
+        "kind": "file",
+        "bytes": 14534,
+        "mode": 420,
+        "sha256": "eb6a95f80904283cdb2c98728a77ef3c88fa8ad9740593ea0379aa2facc13e47"
+      },
+      {
+        "path": "src/review/review-cycle-analysis.mjs",
+        "kind": "file",
+        "bytes": 68795,
+        "mode": 420,
+        "sha256": "8258c86357020ebb6fdef81344c5b17454a5b14382885077881752bf5c8fbf59"
+      },
+      {
+        "path": "src/review/review-cycle-outcome-metrics.mjs",
+        "kind": "file",
+        "bytes": 35180,
+        "mode": 420,
+        "sha256": "5ee24122e30290948da37c8faf50f8bb3aedc208328fda23ed428f899c8d676a"
+      },
+      {
+        "path": "src/review/review-learning-source.mjs",
+        "kind": "file",
+        "bytes": 7276,
+        "mode": 420,
+        "sha256": "1b387fbb7913cdc1116bd16ee7c7892686dda7e1f182c8e05b3a3381f089d32c"
+      },
+      {
+        "path": "src/review/review-reconciliation.mjs",
+        "kind": "file",
+        "bytes": 36083,
+        "mode": 420,
+        "sha256": "8f21ed6221c4ef3dc42ed03046ee342d64fd6ead45cae76835c0805c10276b5d"
+      },
+      {
+        "path": "src/review/review-set-metrics.mjs",
+        "kind": "file",
+        "bytes": 9592,
+        "mode": 420,
+        "sha256": "1e547e25f2673e1d6d7b3974aae180e275c362fe5a691990d3261f17259b5558"
+      },
+      {
+        "path": "src/review/review-technical-validation.mjs",
+        "kind": "file",
+        "bytes": 44607,
+        "mode": 420,
+        "sha256": "cb41b64c9519f284571b4797eecb03cf102b2d1f9e9109f18d16abf6485de3b0"
+      },
+      {
+        "path": "src/review/review-trade-price-path.mjs",
+        "kind": "file",
+        "bytes": 41610,
+        "mode": 420,
+        "sha256": "da3f9fa49d43f2bd948093b312cf4c17d1ed185391804ebfa11d09b4fd07d116"
+      },
+      {
+        "path": "src/review/review-validation-candidates.mjs",
+        "kind": "file",
+        "bytes": 11745,
+        "mode": 420,
+        "sha256": "1a012566ef12dfdc2f9079c2971de78b3c614ac723ea2e00977f079b9e65124e"
+      },
+      {
+        "path": "src/review/review-workflow.mjs",
+        "kind": "file",
+        "bytes": 4933,
+        "mode": 420,
+        "sha256": "bfb46060f1a92b75bed4e565f1e0b26f196c9da0b87711b86991511e1b51e1a7"
+      },
+      {
+        "path": "src/runtime/system-health.mjs",
+        "kind": "file",
+        "bytes": 25768,
+        "mode": 420,
+        "sha256": "7e646bb729acd0faf7319105854b0fe68b8616039c442532b25e7e2ff03b6c57"
+      },
+      {
+        "path": "src/runtime/view-events.mjs",
+        "kind": "file",
+        "bytes": 2565,
+        "mode": 420,
+        "sha256": "60ad3100757abfbd793b3f70ef8689f4e462b2ef5655e2f4c1c7cf7af62f64c5"
+      },
+      {
+        "path": "src/security/archive-backup-capacity.mjs",
+        "kind": "file",
+        "bytes": 5407,
+        "mode": 420,
+        "sha256": "6ab4dc53eb5426e86c417470220535752f7c7635e45ae7b701cf86ab886ae53c"
+      },
+      {
+        "path": "src/security/business-state-store.mjs",
+        "kind": "file",
+        "bytes": 16362,
+        "mode": 420,
+        "sha256": "c4b56d0e0e5dedf2a972825442ec579338957303dc65099c54462b8d7e549945"
+      },
+      {
+        "path": "src/security/encrypted-store.mjs",
+        "kind": "file",
+        "bytes": 9914,
+        "mode": 420,
+        "sha256": "04c54eec8e33a95c0275c5eb09bd952fc3712d7471ff0f04bcdf2963e69ab57f"
+      },
+      {
+        "path": "src/security/navigation.mjs",
+        "kind": "file",
+        "bytes": 1807,
+        "mode": 420,
+        "sha256": "a5dfc378885f57e3fb054e5e2071e7f9d24870aea11eea3a11706d242dc49a96"
+      },
+      {
+        "path": "src/security/segmented-ledger-store.mjs",
+        "kind": "file",
+        "bytes": 34594,
+        "mode": 420,
+        "sha256": "2d9d58ed0df55bad88a7bcad5d78a6b240cb8b282fc0146b087a23633518a2a0"
+      },
+      {
+        "path": "src/security/trusted-backup-bundle.mjs",
+        "kind": "file",
+        "bytes": 43837,
+        "mode": 420,
+        "sha256": "4f2cee2652ce6537a39cc743dc048421fa85d93118a68d2edfc0c8ca348103f9"
+      },
+      {
+        "path": "tests/account-scope-identity.test.mjs",
+        "kind": "file",
+        "bytes": 9708,
+        "mode": 420,
+        "sha256": "418aa9315378cfdec3af6e34b471880ffeadd24184d8345109d1dae697318d2d"
+      },
+      {
+        "path": "tests/agent-network-host.test.mjs",
+        "kind": "file",
+        "bytes": 5154,
+        "mode": 420,
+        "sha256": "071e580657e95596ce9cf19db57237fb227b24ccb8f6c09ee67bf9a4c4d537ef"
+      },
+      {
+        "path": "tests/agent-network-renderer.test.mjs",
+        "kind": "file",
+        "bytes": 13330,
+        "mode": 420,
+        "sha256": "162bf9bb2295775efedf6f68bb63a0606ef2d9da2b5b5d58a9303f3238440639"
+      },
+      {
+        "path": "tests/agent-result-store.test.mjs",
+        "kind": "file",
+        "bytes": 4023,
+        "mode": 420,
+        "sha256": "704ab13c412029e86dfac1fa436e44f78cf75db41211824cee8de0d905514f9b"
+      },
+      {
+        "path": "tests/agent.test.mjs",
+        "kind": "file",
+        "bytes": 46016,
+        "mode": 420,
+        "sha256": "2e2fb78d1b6b8c7e6269218699a77564d9df775af6bd82b3e3282a12ed6f75ab"
+      },
+      {
+        "path": "tests/anchored-vwap.test.mjs",
+        "kind": "file",
+        "bytes": 8349,
+        "mode": 420,
+        "sha256": "43708f28a6f81a983f11a8d4349f7fc69b741e7552ef8501356b4610feb678bd"
+      },
+      {
+        "path": "tests/archive-backup-capacity.test.mjs",
+        "kind": "file",
+        "bytes": 7867,
+        "mode": 420,
+        "sha256": "210478eb1847cbe480f7aaceeb48726bc5f381c0d3523f613651b01ca682bbd0"
+      },
+      {
+        "path": "tests/authorization-generation.test.mjs",
+        "kind": "file",
+        "bytes": 2638,
+        "mode": 420,
+        "sha256": "b4b8e30ab87950da5a891dc3f48da69f5bde424483c28ba83f662ac07695a433"
+      },
+      {
+        "path": "tests/broker-tool-policy.test.mjs",
+        "kind": "file",
+        "bytes": 5729,
+        "mode": 420,
+        "sha256": "2b51de25450797c533c77d634f8a2a97bffd2aac53047c05e98fadf499677893"
+      },
+      {
+        "path": "tests/business-state-store.test.mjs",
+        "kind": "file",
+        "bytes": 16079,
+        "mode": 420,
+        "sha256": "6477c97e5a76e9bfe3b99cc2612336092eb98c11606ae0d5900a566baad9fc97"
+      },
+      {
+        "path": "tests/codex-network.test.mjs",
+        "kind": "file",
+        "bytes": 6072,
+        "mode": 420,
+        "sha256": "7d610a1310ccad99fbff6ed1367761aad4920c161cce5f8877ea75f4a204c767"
+      },
+      {
+        "path": "tests/codex-turn-history.test.mjs",
+        "kind": "file",
+        "bytes": 2718,
+        "mode": 420,
+        "sha256": "db3d83dda27b5ac55af7615ac531d09b76339a2b894bce26a97f2d92647ff4cb"
+      },
+      {
+        "path": "tests/codex-workspace.test.mjs",
+        "kind": "file",
+        "bytes": 266521,
+        "mode": 420,
+        "sha256": "bd63a238fc1c5a74051e3a14c00c54784d6668109042c2bc0c30ea3d869c56ca"
+      },
+      {
+        "path": "tests/context-policy.test.mjs",
+        "kind": "file",
+        "bytes": 2892,
+        "mode": 420,
+        "sha256": "1858fcf73e9407841bddc41e424a4b6055c679919d66ce0132a079fb39dccfc4"
+      },
+      {
+        "path": "tests/cost-concentration.test.mjs",
+        "kind": "file",
+        "bytes": 5063,
+        "mode": 420,
+        "sha256": "0454c684e4a7f6f917eb868e039fe272cb8f59f2c774d4415a7d624058158562"
+      },
+      {
+        "path": "tests/daily-sequence.test.mjs",
+        "kind": "file",
+        "bytes": 7509,
+        "mode": 420,
+        "sha256": "492a8c73f06ba64e64dc6b96a9b07ffab6897eacc24707954286ce266f366d8d"
+      },
+      {
+        "path": "tests/encrypted-store.test.mjs",
+        "kind": "file",
+        "bytes": 14347,
+        "mode": 420,
+        "sha256": "3f5325525d51ce0a468ddb74ab0e7e47304fb591d5d1aa16c75a0d68be674ca2"
+      },
+      {
+        "path": "tests/evidence-registry.test.mjs",
+        "kind": "file",
+        "bytes": 1207,
+        "mode": 420,
+        "sha256": "ee73ba3c5bd35eb7ebcbc2d157ccc3705f4bbe5a40d9e2dbe2c7c8baa146b955"
+      },
+      {
+        "path": "tests/fixtures/numeric-semantic-eval.mjs",
+        "kind": "file",
+        "bytes": 5900,
+        "mode": 420,
+        "sha256": "7cc9678dbab93bff5be8546a871418cab2d47cf3456c3dffbaf4b03b1e4b932e"
+      },
+      {
+        "path": "tests/free-research.test.mjs",
+        "kind": "file",
+        "bytes": 3260,
+        "mode": 420,
+        "sha256": "bd91f5098566f63ccb8de14ed56a3537feb16370b063df0e6fa83aecdc5724b2"
+      },
+      {
+        "path": "tests/freshness.test.mjs",
+        "kind": "file",
+        "bytes": 6986,
+        "mode": 420,
+        "sha256": "cf6ed01b985046ed203559a1d511bf707b5331e12061c6b9390d7aea6dbc394d"
+      },
+      {
+        "path": "tests/health-ui-smoke.cjs",
+        "kind": "file",
+        "bytes": 21838,
+        "mode": 420,
+        "sha256": "95c1b7f9a15b27283a9ef9c46eaf8df1ccf5cf6633fffbcedeb6b01fda43d92b"
+      },
+      {
+        "path": "tests/health-ui.test.mjs",
+        "kind": "file",
+        "bytes": 12158,
+        "mode": 420,
+        "sha256": "47e6c083616d5f35b94799eb154a6c940d0e88856611140b066ff30408f19a50"
+      },
+      {
+        "path": "tests/ibkr-packaged-smoke.cjs",
+        "kind": "file",
+        "bytes": 964,
+        "mode": 420,
+        "sha256": "f9391deb25af9a78feb60019583b54892efaaae8aa80d3879ccbcfc66d51be21"
+      },
+      {
+        "path": "tests/ibkr-tws.test.mjs",
+        "kind": "file",
+        "bytes": 11034,
+        "mode": 420,
+        "sha256": "690d60d761f6fe3720ecdf03a18897f0754752ef7a80ca17676b87abb60d6857"
+      },
+      {
+        "path": "tests/ibkr-ui-smoke.cjs",
+        "kind": "file",
+        "bytes": 7186,
+        "mode": 420,
+        "sha256": "be6027c9d8f4ce6ff17f79f97009ed83a31412f3fd267fb6c9aefd4d6b4ede04"
+      },
+      {
+        "path": "tests/ibkr.test.mjs",
+        "kind": "file",
+        "bytes": 15668,
+        "mode": 420,
+        "sha256": "79c633320b788dc9477833a00400a7940818e706f44668207d04d65a21b3345e"
+      },
+      {
+        "path": "tests/ledger-archive-host.test.mjs",
+        "kind": "file",
+        "bytes": 15479,
+        "mode": 420,
+        "sha256": "c7029a7ac285147e6e96078b2ebed19e7dc413861d577f7343ca86809477237d"
+      },
+      {
+        "path": "tests/legacy-store-migration.test.mjs",
+        "kind": "file",
+        "bytes": 9295,
+        "mode": 420,
+        "sha256": "3afb930ede233d82b50431ae7f4b2ce994d339937c7939ce7b015e4c90ee5ced"
+      },
+      {
+        "path": "tests/main-reliability.test.mjs",
+        "kind": "file",
+        "bytes": 14579,
+        "mode": 420,
+        "sha256": "0b926fb53c153915c422e2d3acb9d4cecdf1f5423b852af36fafa4de802e7f89"
+      },
+      {
+        "path": "tests/markdown.test.mjs",
+        "kind": "file",
+        "bytes": 6349,
+        "mode": 420,
+        "sha256": "12c3f42761d100155577955612310713951d00980c8c575883d7f39ea3f10820"
+      },
+      {
+        "path": "tests/market-evidence.test.mjs",
+        "kind": "file",
+        "bytes": 2777,
+        "mode": 420,
+        "sha256": "271fa6142026c820bea2175c6efe1e48738dcabe11138dd0b1b33970b3a16786"
+      },
+      {
+        "path": "tests/market-history-store.test.mjs",
+        "kind": "file",
+        "bytes": 5983,
+        "mode": 420,
+        "sha256": "cdd84127fcb2db179e232af191167068f6e117d15f960a9131b0dcdc6f2d876a"
+      },
+      {
+        "path": "tests/market-series-store.test.mjs",
+        "kind": "file",
+        "bytes": 4604,
+        "mode": 420,
+        "sha256": "30f5e43b67abf5b711bdd1d428cdc4f6b8396a32008a3ae28f4d5894dfcacc7e"
+      },
+      {
+        "path": "tests/mcp-security.test.mjs",
+        "kind": "file",
+        "bytes": 20481,
+        "mode": 420,
+        "sha256": "1131c98afb79204d44c16ace46b4ac10971a235e8366c3bfabe2016b06525a85"
+      },
+      {
+        "path": "tests/normalize.test.mjs",
+        "kind": "file",
+        "bytes": 15530,
+        "mode": 420,
+        "sha256": "3d123e54fc775c5575d7f7a2d4429d48c03273fe5bff03de9c616f97e896c9b2"
+      },
+      {
+        "path": "tests/numeric-claim-audit.test.mjs",
+        "kind": "file",
+        "bytes": 18173,
+        "mode": 420,
+        "sha256": "ff74f694150e7885a8bedac47900e9de509f1c6971900bdd04f38e1202661f6b"
+      },
+      {
+        "path": "tests/numeric-evidence-adapter.test.mjs",
+        "kind": "file",
+        "bytes": 5472,
+        "mode": 420,
+        "sha256": "0b9a00c266fd75ee784a0b6df42f0cc4c45e2e5d1d0de9971a93295600b78554"
+      },
+      {
+        "path": "tests/numeric-evidence.test.mjs",
+        "kind": "file",
+        "bytes": 10092,
+        "mode": 420,
+        "sha256": "2cc23e78c6e3324290a6d18eaa65e1ec84dd0f5dba9d3faf2e142b5f68293c30"
+      },
+      {
+        "path": "tests/numeric-semantic-eval.test.mjs",
+        "kind": "file",
+        "bytes": 19810,
+        "mode": 420,
+        "sha256": "7f6b5dfaa927ad32782d498361b0a5079f56f732e50b56792d532aed91fe214f"
+      },
+      {
+        "path": "tests/portfolio-ledger-safety-static.test.mjs",
+        "kind": "file",
+        "bytes": 23458,
+        "mode": 420,
+        "sha256": "7a9c4cd600fcf96e02857c672d67801d91ac5d6c3d81375d9818de56723213d6"
+      },
+      {
+        "path": "tests/portfolio-service.test.mjs",
+        "kind": "file",
+        "bytes": 47283,
+        "mode": 420,
+        "sha256": "7362127671fa116168961f5b05bf0658dc4bcabafa43a9205e0829c4d9ff2cba"
+      },
+      {
+        "path": "tests/portfolio-snapshot-store.test.mjs",
+        "kind": "file",
+        "bytes": 24260,
+        "mode": 420,
+        "sha256": "09eb23313464cbff27fd872419061dd79e78113645b285cb0fc82f9a8fdaa14a"
+      },
+      {
+        "path": "tests/portfolio-valuation-gate.test.mjs",
+        "kind": "file",
+        "bytes": 14677,
+        "mode": 420,
+        "sha256": "a20de5e5a2de1f6c7f2512816ac36babf735815f7fc3638a08a0d7e4a544026e"
+      },
+      {
+        "path": "tests/proxy-aware-fetch.test.mjs",
+        "kind": "file",
+        "bytes": 2804,
+        "mode": 420,
+        "sha256": "8bb5b14e8113a2a1ba19e046e89a09a2bb40fe02b6849ac9de71053344fb8ecd"
+      },
+      {
+        "path": "tests/radar-ui-smoke.cjs",
+        "kind": "file",
+        "bytes": 9997,
+        "mode": 420,
+        "sha256": "b02383103f0147df9152f3a1f885c3cd3809aaf3fc4ff90f4c76d7dfe8c172de"
+      },
+      {
+        "path": "tests/radar-view.test.mjs",
+        "kind": "file",
+        "bytes": 2384,
+        "mode": 420,
+        "sha256": "4ba8079ce466c31c6f7246e122ab7608f4e39e21df522111c38a43f82e1e3d77"
+      },
+      {
+        "path": "tests/read-only-guard-diagnostics.test.mjs",
+        "kind": "file",
+        "bytes": 9617,
+        "mode": 420,
+        "sha256": "8a225de66e8a3b20a1f6e8251489ae4336f2bef4462b5f4296324fde64f4d8c7"
+      },
+      {
+        "path": "tests/read-only-guard-recovery.test.mjs",
+        "kind": "file",
+        "bytes": 15292,
+        "mode": 420,
+        "sha256": "cd54069b057b59f39aeac6a16bd0594510772404914d97d6ac1c8273531ade9f"
+      },
+      {
+        "path": "tests/reference-fx.test.mjs",
+        "kind": "file",
+        "bytes": 3834,
+        "mode": 420,
+        "sha256": "8dbcb6db790a205e4530ab61c04b1e71a1feaf158c417003ae1ad8b760f11ff7"
+      },
+      {
+        "path": "tests/release-gate.test.mjs",
+        "kind": "file",
+        "bytes": 7855,
+        "mode": 420,
+        "sha256": "1f20f53f52f66d359cdaa9425d452e739a8b2ffc12061237026fc55e4de74e7e"
+      },
+      {
+        "path": "tests/release-packaged-smoke.cjs",
+        "kind": "file",
+        "bytes": 2913,
+        "mode": 420,
+        "sha256": "3be0bc9d41510397740bea06513333960ce8da822d7bb38c30a39c6300ac2d4b"
+      },
+      {
+        "path": "tests/renderer-stability.test.mjs",
+        "kind": "file",
+        "bytes": 13929,
+        "mode": 420,
+        "sha256": "ac409c34beeb1c938933522c6920d2c2e3aeaa5deeab4038de83cde7b5f23191"
+      },
+      {
+        "path": "tests/renderer-static.test.mjs",
+        "kind": "file",
+        "bytes": 28974,
+        "mode": 420,
+        "sha256": "94f2d81be1fcc82e7010f9d2ada7f4e1709b824716bd4fb3a2516f418ddb96a5"
+      },
+      {
+        "path": "tests/research-agent-context.test.mjs",
+        "kind": "file",
+        "bytes": 23204,
+        "mode": 420,
+        "sha256": "5e700872f66b1abd4b7bee257e3abb432705e9abfaa93fa213f6cce3a936a0c1"
+      },
+      {
+        "path": "tests/research-availability-renderer.test.mjs",
+        "kind": "file",
+        "bytes": 13452,
+        "mode": 420,
+        "sha256": "81fdc0e6ea769b0292e3d16441020f80a97e3d84011bb13eb9a7f96a0217289f"
+      },
+      {
+        "path": "tests/research-host.test.mjs",
+        "kind": "file",
+        "bytes": 13086,
+        "mode": 420,
+        "sha256": "547356deadabdd7c66c277c9860469a005b84467aad28d0a91dc047dfa2e2bc8"
+      },
+      {
+        "path": "tests/research-links.test.mjs",
+        "kind": "file",
+        "bytes": 5575,
+        "mode": 420,
+        "sha256": "a1b64432045eae21a31dfb9246897c74fcf4b558cee91282e5fc91c48ece510f"
+      },
+      {
+        "path": "tests/research-mainline-renderer.test.mjs",
+        "kind": "file",
+        "bytes": 17775,
+        "mode": 420,
+        "sha256": "1536d225898f26de75c73c084535f3e0067600405c10293da7d9b9944ff54a24"
+      },
+      {
+        "path": "tests/research-thesis-store.test.mjs",
+        "kind": "file",
+        "bytes": 29449,
+        "mode": 420,
+        "sha256": "2be5ad93f09ade756f2cb352d4921c08b958941e500b04e9830c2ae25ed96b87"
+      },
+      {
+        "path": "tests/research-ui-smoke.cjs",
+        "kind": "file",
+        "bytes": 22197,
+        "mode": 420,
+        "sha256": "7ac37171b8948270794c107d1fd45a54364270ebe18339661225a28133671919"
+      },
+      {
+        "path": "tests/restricted-research-session.test.mjs",
+        "kind": "file",
+        "bytes": 20301,
+        "mode": 420,
+        "sha256": "2d5a7523fac28372185c0127e6919c4be5b6c78808cffd8fa568c49a75fd6c09"
+      },
+      {
+        "path": "tests/restricted-tool-policy.test.mjs",
+        "kind": "file",
+        "bytes": 6128,
+        "mode": 420,
+        "sha256": "e9fdd754b41f29d1c4b24f0c7b6bef7dfd59904ca20173b6384f373c00d9a106"
+      },
+      {
+        "path": "tests/review-analysis.test.mjs",
+        "kind": "file",
+        "bytes": 8823,
+        "mode": 420,
+        "sha256": "133278c72ab5bf2e4a024dd8a58620c2faab25c9bb8f8e23f5b7cccc207214c4"
+      },
+      {
+        "path": "tests/review-calendar.test.mjs",
+        "kind": "file",
+        "bytes": 1340,
+        "mode": 420,
+        "sha256": "b0c29aa72a21f1ceba2bd9210527f416e67da0107f00ec1039530275593a1efc"
+      },
+      {
+        "path": "tests/review-cycle-analysis.test.mjs",
+        "kind": "file",
+        "bytes": 53705,
+        "mode": 420,
+        "sha256": "26e1dae1c0db6052f69ec226e15513977d26e7b41b0514e01d47a067350ec0e7"
+      },
+      {
+        "path": "tests/review-cycle-outcome-metrics.test.mjs",
+        "kind": "file",
+        "bytes": 26789,
+        "mode": 420,
+        "sha256": "b5bea7dffb7b211b143f3fddc4ab3843cd082a9214fafd8582355697f7dc7c50"
+      },
+      {
+        "path": "tests/review-cycle-store-migration.test.mjs",
+        "kind": "file",
+        "bytes": 19120,
+        "mode": 420,
+        "sha256": "42ba264d7ecd27aca0109f98ffcdb72fd71b22da0ccd1fd1eb749d3f6a2b5cb7"
+      },
+      {
+        "path": "tests/review-cycle-store.test.mjs",
+        "kind": "file",
+        "bytes": 71032,
+        "mode": 420,
+        "sha256": "d8123f5741cce900986f009b4c956c0a614354122bf77a639602347688bad993"
+      },
+      {
+        "path": "tests/review-evidence-delivery.test.mjs",
+        "kind": "file",
+        "bytes": 13935,
+        "mode": 420,
+        "sha256": "57e2fca449ddbf7a3c89d3ed3308f09485d4c646bbbc84ab977101c4e49a1c28"
+      },
+      {
+        "path": "tests/review-learning-source.test.mjs",
+        "kind": "file",
+        "bytes": 5573,
+        "mode": 420,
+        "sha256": "e0c4eb4d929a90a4272b09a40d60dda97e580a01e2940e97c6f4196223755ffe"
+      },
+      {
+        "path": "tests/review-reconciliation-host.test.mjs",
+        "kind": "file",
+        "bytes": 9060,
+        "mode": 420,
+        "sha256": "b70d503b1116c3a426ca10cf54cd81b97df493641360d95b4469cb321a723721"
+      },
+      {
+        "path": "tests/review-reconciliation.test.mjs",
+        "kind": "file",
+        "bytes": 28474,
+        "mode": 420,
+        "sha256": "41539d6dcd71c7862bfd151ab8def2c454fa80133ed28fc816ae7db4168c1de5"
+      },
+      {
+        "path": "tests/review-set-metrics.test.mjs",
+        "kind": "file",
+        "bytes": 6686,
+        "mode": 420,
+        "sha256": "a3acd6df810341d9d1a3f41426dfe8ce29c1a595d39cf0e95cb5f38942aa7c23"
+      },
+      {
+        "path": "tests/review-stability-ui-smoke.cjs",
+        "kind": "file",
+        "bytes": 24106,
+        "mode": 420,
+        "sha256": "47b8f604138bfc3d93ff06e720e97b084c58c4a8618449e645839f5462d72d6d"
+      },
+      {
+        "path": "tests/review-store.test.mjs",
+        "kind": "file",
+        "bytes": 48262,
+        "mode": 420,
+        "sha256": "83255fdde9007101afee0ff5c60b5084dc782663d4607202d752ad8cd72aed2b"
+      },
+      {
+        "path": "tests/review-technical-prefetch-host.test.mjs",
+        "kind": "file",
+        "bytes": 8846,
+        "mode": 420,
+        "sha256": "cf178ece174ac31ae48c852eac969c33d198f90d9fa24b5e1907f93aeff031c0"
+      },
+      {
+        "path": "tests/review-technical-validation.test.mjs",
+        "kind": "file",
+        "bytes": 20073,
+        "mode": 420,
+        "sha256": "b2c8d049a230fabe17ac4962130f778f694e1ceeb56a237c45c396b90df90de8"
+      },
+      {
+        "path": "tests/review-thread-binding.test.mjs",
+        "kind": "file",
+        "bytes": 2485,
+        "mode": 420,
+        "sha256": "1a4513f0f059fcedf0384052a4e5bed06a74ad5bbcf730a2f8c1b0e1ba2dd07d"
+      },
+      {
+        "path": "tests/review-trade-price-path.test.mjs",
+        "kind": "file",
+        "bytes": 16963,
+        "mode": 420,
+        "sha256": "d36853acc2922beeea60ae53665b8ae03edaa5c5b6e132b6fd9bd6ecfdd9cc7f"
+      },
+      {
+        "path": "tests/review-ui-static.test.mjs",
+        "kind": "file",
+        "bytes": 63760,
+        "mode": 420,
+        "sha256": "63e3431fd160c5d20276638a07252957d96dc1a18ac88dd3c0114ed59e466f1c"
+      },
+      {
+        "path": "tests/review-validation-candidates.test.mjs",
+        "kind": "file",
+        "bytes": 9470,
+        "mode": 420,
+        "sha256": "532b13eb31422d0434afbaa0806e74c7fa989c69c12323024c328caddff344b7"
+      },
+      {
+        "path": "tests/review-workflow.test.mjs",
+        "kind": "file",
+        "bytes": 14244,
+        "mode": 420,
+        "sha256": "5e4eebce3ffe5a7645f897908f0e965830a59392832deff528f791a599d726a0"
+      },
+      {
+        "path": "tests/security.test.mjs",
+        "kind": "file",
+        "bytes": 2566,
+        "mode": 420,
+        "sha256": "f9e99fd7553300bc68852243a1c98776f3eb811c54267145acf2d6584fdb9158"
+      },
+      {
+        "path": "tests/segmented-ledger-domain.test.mjs",
+        "kind": "file",
+        "bytes": 11553,
+        "mode": 420,
+        "sha256": "987b3d8173f05fc0dc4e613114e4fa8fb7d9eab331d5a1e903f4d8d8c4d1259b"
+      },
+      {
+        "path": "tests/segmented-ledger-store.test.mjs",
+        "kind": "file",
+        "bytes": 27787,
+        "mode": 420,
+        "sha256": "f3c616ce941d1bd2820be86662a045cb481f5fc52d286d6fb4412ee441fd0d72"
+      },
+      {
+        "path": "tests/snapshot-background-reliability.test.mjs",
+        "kind": "file",
+        "bytes": 12367,
+        "mode": 420,
+        "sha256": "4cac54bc87f42f33d17ff7055d41b179ce88bf0e82bfd40d135824a2efb96883"
+      },
+      {
+        "path": "tests/snapshot-coverage-reconcile.test.mjs",
+        "kind": "file",
+        "bytes": 5803,
+        "mode": 420,
+        "sha256": "a12237912345c34e68e69ceda846e1d4214aebb24bd9abf4a97d29075084c8a7"
+      },
+      {
+        "path": "tests/snapshot-coverage.test.mjs",
+        "kind": "file",
+        "bytes": 9478,
+        "mode": 420,
+        "sha256": "767e9cbd588191e3adddb47b84d2b112c15af02f4bb4330caf05d03ae5f56581"
+      },
+      {
+        "path": "tests/snapshot-multiday-host.test.mjs",
+        "kind": "file",
+        "bytes": 20959,
+        "mode": 420,
+        "sha256": "545211cc89e54cf9653425f2deced7fbeb7536963e7d3e3428066c57f5e94523"
+      },
+      {
+        "path": "tests/system-health-host.test.mjs",
+        "kind": "file",
+        "bytes": 4987,
+        "mode": 420,
+        "sha256": "68694071b21e60b5954f1bb8c0609506157647f530af071a3383230977507c0e"
+      },
+      {
+        "path": "tests/system-health.test.mjs",
+        "kind": "file",
+        "bytes": 16904,
+        "mode": 420,
+        "sha256": "45e08dbca9d6a63531382a87757671ce3a4ab3074030018b0fe90a3de75c54cc"
+      },
+      {
+        "path": "tests/technical-linkage-store.test.mjs",
+        "kind": "file",
+        "bytes": 4299,
+        "mode": 420,
+        "sha256": "cbc6b79c1b09e80ffe9f36e84b40c9547972ae3005015d13192831f2dee85ded"
+      },
+      {
+        "path": "tests/technical-numeric-evidence.test.mjs",
+        "kind": "file",
+        "bytes": 6418,
+        "mode": 420,
+        "sha256": "a39f5da85e5f13629db2c404a2c17ca39d5e46f5cd32428883041a788ec426c1"
+      },
+      {
+        "path": "tests/technical-radar-main-static.test.mjs",
+        "kind": "file",
+        "bytes": 3692,
+        "mode": 420,
+        "sha256": "009a9d9444ac2f39e8b84b79054076eb6fb98ee4c927ee492cbcae3d96c34827"
+      },
+      {
+        "path": "tests/technical-radar-service.test.mjs",
+        "kind": "file",
+        "bytes": 14066,
+        "mode": 420,
+        "sha256": "5fdf9c9e2867ae1d62ca4dbe901a55f67894e3457122e0dcadd0bb68bec52670"
+      },
+      {
+        "path": "tests/technical-radar-store.test.mjs",
+        "kind": "file",
+        "bytes": 4885,
+        "mode": 420,
+        "sha256": "c7f4402b225178cc0652c10ffbcdf3e381873e9e229714f27e0c5456007b3659"
+      },
+      {
+        "path": "tests/technical-v2.test.mjs",
+        "kind": "file",
+        "bytes": 6677,
+        "mode": 420,
+        "sha256": "6b91bd7f05970718cdf67948360f0f0089433735805233ac7ee4d8bc4d4d1bce"
+      },
+      {
+        "path": "tests/technical-watchlist-store.test.mjs",
+        "kind": "file",
+        "bytes": 2291,
+        "mode": 420,
+        "sha256": "d5381e22e51371bae0bfc5596216ba7fdd678f2244ee9471fc0c6ee6e1e9fcde"
+      },
+      {
+        "path": "tests/technical.test.mjs",
+        "kind": "file",
+        "bytes": 12719,
+        "mode": 420,
+        "sha256": "41dffba3850ccc8b2d90a378ca59e3f7b6e028ba026de1bc1f76615d92e735da"
+      },
+      {
+        "path": "tests/tier-a-technical-scan.test.mjs",
+        "kind": "file",
+        "bytes": 17429,
+        "mode": 420,
+        "sha256": "dfd8e0b8e3b3aa0aeb16271c41317bcf9751cf2e05195687162202eff7e69917"
+      },
+      {
+        "path": "tests/tier-b-technical-evidence.test.mjs",
+        "kind": "file",
+        "bytes": 15564,
+        "mode": 420,
+        "sha256": "274e151f8b8106c426e345c66e44951576e13ca2b31a55d38a78ec903fa85c57"
+      },
+      {
+        "path": "tests/trade-history-operations.test.mjs",
+        "kind": "file",
+        "bytes": 9502,
+        "mode": 420,
+        "sha256": "9ec1ca138312601df3b41e4d2d237d737529b797e32c5b9ab3d098aab791f8fe"
+      },
+      {
+        "path": "tests/trade-history-service.test.mjs",
+        "kind": "file",
+        "bytes": 60876,
+        "mode": 420,
+        "sha256": "a5193193afcf30f3e37919cc1a4b9cbf9b97f05c6fa0eeee630b0bf7c14b1e28"
+      },
+      {
+        "path": "tests/tradingview-agent-link.test.mjs",
+        "kind": "file",
+        "bytes": 6852,
+        "mode": 420,
+        "sha256": "c2db80210726a8052fe7b6049a75467ca8c75029d7a47c96b2392c8ebce2e0d0"
+      },
+      {
+        "path": "tests/tradingview-mcp-policy.test.mjs",
+        "kind": "file",
+        "bytes": 5213,
+        "mode": 420,
+        "sha256": "9d39842d56a1f2c6ea63c02ce20adb5d42e0196b8fde003cdd108676b8e5fbbd"
+      },
+      {
+        "path": "tests/trusted-backup-bundle.test.mjs",
+        "kind": "file",
+        "bytes": 46430,
+        "mode": 420,
+        "sha256": "7bddcd64488d492adeaa6ab1825a885140ff7735b3ad664b9d53b1c7cf678d19"
+      },
+      {
+        "path": "tests/trusted-backup-export-host.test.mjs",
+        "kind": "file",
+        "bytes": 14634,
+        "mode": 420,
+        "sha256": "66eda13dc8913431f8e6e5531beb870c55fc585fd5018e52db09463f5f22a114"
+      },
+      {
+        "path": "tests/trusted-backup-host.test.mjs",
+        "kind": "file",
+        "bytes": 19958,
+        "mode": 420,
+        "sha256": "9bd59a81f0ce7cf7a75fd2c9d5d1e917ddd7315b75b73ac7b6a0ed23d6de8342"
+      },
+      {
+        "path": "tests/tws-application.test.mjs",
+        "kind": "file",
+        "bytes": 5957,
+        "mode": 420,
+        "sha256": "54e4108c09432f1e64ba32377d1527c673f38fa9efc649844850b188493a33c5"
+      },
+      {
+        "path": "tests/view-events.test.mjs",
+        "kind": "file",
+        "bytes": 4125,
+        "mode": 420,
+        "sha256": "f0cb31ac91db10fc290a976c0a8febb737d4ba79c9e4209f8f938fdd21a7ce8e"
+      },
+      {
+        "path": "tests/workspace-review-skills.test.mjs",
+        "kind": "file",
+        "bytes": 4173,
+        "mode": 420,
+        "sha256": "52b77957c099bec036385d0dac68b0a99e6e081eb4b2e8c04d9a7f08688427e3"
+      }
+    ],
+    "inputHash": "e63d32cfbfda12b8ec0e494548d491118e4f4b975c0ad7a2336aa92a5f9e8a89",
+    "scope": "desktop runtime, assets, scripts, tests, package metadata; bundled review skills recorded separately",
+    "git": {
+      "available": true,
+      "commit": "92d1cb426f1a9bf0853993382aac99a6fc3e70f3",
+      "dirty": true,
+      "statusHash": "4ddd2983cefa7572cbcd0f3fb0dc00f1344db364cb9ad33ef80ada7600ab4b5a",
+      "reproducibility": "commit_plus_recorded_worktree_files_required"
+    }
+  },
+  "dependencyLock": {
+    "path": "package-lock.json",
+    "sha256": "74a0f3a7ea71ba1759f6ef5b29850127c0a42ac2809ab1ead4a66bd4ddfa5ce5"
+  },
+  "bundledSkills": {
+    "algorithm": "sha256",
+    "treeHash": "28e95c67643fc8b5516406346e2c6c1eb44a53cac6bc0fda1db95211f531c526",
+    "files": [
+      {
+        "path": "review-decision-cycles/agents/openai.yaml",
+        "kind": "file",
+        "bytes": 331,
+        "mode": 420,
+        "sha256": "64380e24d4fa387d79687e1277cbe7836984811d19a6b00cda8391d06de6cbfa"
+      },
+      {
+        "path": "review-decision-cycles/references/cycle-modes.md",
+        "kind": "file",
+        "bytes": 3840,
+        "mode": 420,
+        "sha256": "b5c2787c2eb59d7c89085506a1ecc6e664d9f662ae193c4ec90f57a3bc497a5b"
+      },
+      {
+        "path": "review-decision-cycles/references/evidence-protocol.md",
+        "kind": "file",
+        "bytes": 5164,
+        "mode": 420,
+        "sha256": "ed89ed5a65c59b8f10ca47305360f4ed32fad115eb4563d37ab94dd078425702"
+      },
+      {
+        "path": "review-decision-cycles/SKILL.md",
+        "kind": "file",
+        "bytes": 10367,
+        "mode": 420,
+        "sha256": "32b52e47e201be24a3ab38347b3a8efd2364576157f81a04e781fe25a7dc251e"
+      },
+      {
+        "path": "review-earnings-decisions/agents/openai.yaml",
+        "kind": "file",
+        "bytes": 307,
+        "mode": 420,
+        "sha256": "01399ba45ff16e73fd48dd8efa045ee26a1180cf475aefd75443254862edf0b6"
+      },
+      {
+        "path": "review-earnings-decisions/references/evidence-and-output.md",
+        "kind": "file",
+        "bytes": 4034,
+        "mode": 420,
+        "sha256": "d1d821e9bbec39305299650a6e560ab372744dc145d3e9eaed4fa98689bd9471"
+      },
+      {
+        "path": "review-earnings-decisions/references/metrics-and-validation.md",
+        "kind": "file",
+        "bytes": 5215,
+        "mode": 420,
+        "sha256": "41478e602d034899246a6656eaec853a4858c269cf8d78b7b8aad574ee2b8f35"
+      },
+      {
+        "path": "review-earnings-decisions/SKILL.md",
+        "kind": "file",
+        "bytes": 7234,
+        "mode": 420,
+        "sha256": "de7009e39708d9611f4bd1080dfb7be744b9a9a6eb68826ca960c7f3721e2e94"
+      }
+    ],
+    "policy": "Only bundled project review skills are hashed; global/user skills and credentials are neither read nor included."
+  },
+  "runtimeVersions": {
+    "node": "v24.2.0",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "electron": "43.1.1"
+  },
+  "codex": {
+    "observedVersion": "codex-cli 0.163.0-alpha.11",
+    "probe": "version_only",
+    "executableSha256": "8a6dc3938a2f5d30cc19c50b9ccad83a5aa2ca4a2e3411665430bb78a917220a",
+    "compatibility": "App Server fixture/contract tests passed; no version-range claim and no live model/MCP invocation.",
+    "liveIntegration": "not_run"
+  },
+  "packaged": {
+    "appVersion": "0.24.13",
+    "importedModuleCount": 79,
+    "dependencies": {
+      "@modelcontextprotocol/sdk": "1.30.0",
+      "@stoqey/ib": "1.6.10"
+    },
+    "installedDependencies": {
+      "@modelcontextprotocol/sdk": "1.30.0",
+      "@stoqey/ib": "1.6.10"
+    }
+  },
+  "verification": [
+    {
+      "name": "dependency-tree",
+      "status": "passed",
+      "durationMs": 348,
+      "isolation": "local_build_or_tests",
+      "treeSha256": "6abd1e7de807466a07cc88fcda877f891d8a8f9ad82a097c6fc58e219adaf3ea"
+    },
+    {
+      "name": "unit-tests",
+      "status": "passed",
+      "durationMs": 15487,
+      "isolation": "local_build_or_tests"
+    },
+    {
+      "name": "source-ibkr-ui",
+      "status": "passed",
+      "durationMs": 2088,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "source-radar-ui",
+      "status": "passed",
+      "durationMs": 2374,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "source-review-ui",
+      "status": "passed",
+      "durationMs": 5541,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "source-health-ui",
+      "status": "passed",
+      "durationMs": 3057,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "source-research-ui",
+      "status": "passed",
+      "durationMs": 1083,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "package",
+      "status": "passed",
+      "durationMs": 19519,
+      "isolation": "local_build_or_tests"
+    },
+    {
+      "name": "packaged-dependencies-and-content",
+      "status": "passed",
+      "durationMs": 355,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "packaged-source-and-skill-hash-match",
+      "status": "passed",
+      "durationMs": 0
+    },
+    {
+      "name": "packaged-ibkr-ui",
+      "status": "passed",
+      "durationMs": 1922,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "packaged-radar-ui",
+      "status": "passed",
+      "durationMs": 2318,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "packaged-review-ui",
+      "status": "passed",
+      "durationMs": 5525,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "packaged-health-ui",
+      "status": "passed",
+      "durationMs": 3079,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "packaged-research-ui",
+      "status": "passed",
+      "durationMs": 1081,
+      "isolation": "synthetic_profile_no_broker_or_model_requests"
+    },
+    {
+      "name": "artifact-integrity",
+      "status": "passed",
+      "durationMs": 3847
+    },
+    {
+      "name": "source-unchanged-during-verification",
+      "status": "passed",
+      "durationMs": 49
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "release/mac-arm64/交易驾驶舱.app",
+      "type": "app_bundle",
+      "treeHash": "152f3f8f46c6c53d2c14bad03c9efd8cb755ad7b4a30148e27434417bbb6b732",
+      "fileCount": 281
+    },
+    {
+      "path": "release/交易驾驶舱-0.24.13-arm64-mac.zip",
+      "type": "zip",
+      "bytes": 123744474,
+      "sha256": "c56cbf1540d07bf954e2a48897ed44f81a02790c6c27c17a4b58a32cbb458d0e"
+    },
+    {
+      "path": "release/交易驾驶舱-0.24.13-arm64.dmg",
+      "type": "dmg",
+      "bytes": 124516204,
+      "sha256": "935f035b13f1063a1d75e7ef44e9afecbf5a6c163a96b96795682bb4fb17d95d"
+    }
+  ],
+  "distribution": {
+    "developerIdSigning": "not_performed",
+    "appleNotarization": "not_performed",
+    "status": "trusted_local_testing_only"
+  },
+  "manualAcceptance": [
+    {
+      "status": "pending",
+      "step": "核对本清单的源码、依赖锁、Skill 与产物 SHA-256；dirty 构建需同时保留源码工作区，Git commit 本身不足以复现。"
+    },
+    {
+      "status": "pending",
+      "step": "仅在用户确认后安装；确认版本、原 TV 登录/布局、原券商授权与历史会话未被迁移或清空。"
+    },
+    {
+      "status": "pending",
+      "step": "经用户许可分别验证长桥与 IBKR 只读连接、真实持仓、汇率来源、期权缺失状态；不下单。"
+    },
+    {
+      "status": "pending",
+      "step": "经用户许可完成一次真实 Codex 会话的流式返回、历史恢复和取消；本门禁没有消耗模型额度。"
+    },
+    {
+      "status": "pending",
+      "step": "检查 EOD/后台状态与复盘范围提示；模拟检查通过不等于已验证每晚真实行情和交易日覆盖。"
+    }
+  ]
+}

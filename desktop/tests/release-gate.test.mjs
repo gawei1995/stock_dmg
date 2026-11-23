@@ -5,6 +5,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { assertPackagedContents, assertSameInputs, createReleaseManifest, inventoryFiles, readAppPackage, sha256 } from "../scripts/release-manifest.mjs";
 import { parseReleaseArgs, releaseEnvironment, releasePlan } from "../scripts/verify-release.mjs";
+import { assessProductionAudit } from "../scripts/audit-production-dependencies.mjs";
 
 async function temporary(t) {
   const root = await mkdtemp(path.join(tmpdir(), "cockpit-release-test-"));
@@ -12,12 +13,16 @@ async function temporary(t) {
   return root;
 }
 const passedSteps = () => [
-  ...releasePlan().map((step) => ({ name: step.name, status: "passed" })),
+  ...releasePlan().map((step) => ({ name: step.name, status: "passed", ...(step.tool === "audit" ? { audit: assessProductionAudit({
+    stdout: JSON.stringify({ auditReportVersion: 2, vulnerabilities: {}, metadata: {
+      vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 }, dependencies: { prod: 1, total: 1 },
+    } }), exitCode: 0,
+  }, { auditedAt: "2026-11-03T00:00:00.000Z", lockSha256: sha256("lock") }) } : {}) })),
   ...["packaged-source-and-skill-hash-match", "artifact-integrity", "source-unchanged-during-verification"].map((name) => ({ name, status: "passed" })),
 ];
 function manifestFixture() {
   return { appPackage: { name: "cockpit", version: "0.24.1", build: { productName: "交易驾驶舱" } },
-    fingerprint: { source: { files: [], treeHash: "source" }, inputHash: "input", skills: { files: [], treeHash: "skills" }, dependencyLock: { sha256: "lock" } },
+    fingerprint: { source: { files: [], treeHash: "source" }, inputHash: "input", skills: { files: [], treeHash: "skills" }, dependencyLock: { sha256: sha256("lock") } },
     git: { commit: "abc", dirty: true }, codex: { observedVersion: "codex-cli fixture", probe: "version_only" },
     environment: { node: "fixture", architecture: "arm64" }, steps: passedSteps(),
     artifacts: [{ path: "release/mac-arm64/cockpit.app", type: "app_bundle", treeHash: "app" }],
@@ -28,6 +33,8 @@ test("release gate requires tests, source and packaged UI, packaged dependencies
   for (const target of ["dir", "mac"]) {
     const plan = releasePlan({ target, architecture: "arm64" });
     assert.ok(plan.findIndex((step) => step.name === "unit-tests") < plan.findIndex((step) => step.name === "package"));
+    assert.ok(plan.findIndex((step) => step.name === "dependency-security") < plan.findIndex((step) => step.name === "unit-tests"));
+    assert.deepEqual(plan.find((step) => step.name === "dependency-security").args, ["scripts/audit-production-dependencies.mjs"]);
     assert.equal(plan.filter((step) => step.name.startsWith("source-") && step.name.endsWith("-ui")).length, 5);
     assert.equal(plan.filter((step) => step.name.startsWith("packaged-") && step.name.endsWith("-ui")).length, 5);
     assert.equal(plan.find((step) => step.name === "package").tool, "builder");
@@ -100,7 +107,17 @@ test("manifest records dirty inputs and pending manual acceptance without claimi
   assert.equal(manifest.codex.liveIntegration, "not_run"); assert.match(manifest.codex.compatibility, /no version-range claim/);
   assert.ok(manifest.manualAcceptance.every((step) => step.status === "pending"));
   assert.equal(manifest.distribution.appleNotarization, "not_performed");
+  assert.equal(manifest.verification.find((step) => step.name === "dependency-security").audit.lockSha256, sha256("lock"));
   assert.throws(() => createReleaseManifest({ ...input, steps: [{ name: "unit-tests", status: "passed" }] }), /missing/);
   assert.throws(() => createReleaseManifest({ ...input, steps: [...input.steps, { name: "failure", status: "failed" }] }), /every gate/);
   assert.throws(() => createReleaseManifest({ ...input, target: "mac" }), /artifacts/);
+});
+
+test("manifest refuses missing, mismatched or vulnerable security evidence even when a step is labelled passed", () => {
+  const input = manifestFixture();
+  assert.throws(() => createReleaseManifest({ ...input, steps: input.steps.filter((step) => step.name !== "dependency-security") }), /missing: dependency-security/);
+  for (const patch of [undefined, { lockSha256: sha256("other-lock") }, { vulnerabilities: { total: 1 } }, { reportSha256: null }, { status: "failed" }]) {
+    const steps = input.steps.map((step) => step.name === "dependency-security" ? { ...step, audit: patch === undefined ? undefined : { ...step.audit, ...patch } } : step);
+    assert.throws(() => createReleaseManifest({ ...input, steps }), /clean production dependency security audit/);
+  }
 });

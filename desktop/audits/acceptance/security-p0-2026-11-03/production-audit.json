@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "scope": "production",
+  "command": [
+    "npm",
+    "audit",
+    "--omit=dev",
+    "--ignore-scripts",
+    "--json"
+  ],
+  "auditedAt": "2026-11-02T17:23:46.247Z",
+  "lockSha256": "5029ee9098b67389444df8c71895b2dfb14de4ae94fd00e8028a80d7dad5ca9a",
+  "reportSha256": "362aff47e4870924cbad26f6f5f07146e2bab2f14247bbeb557e1422fb24df15",
+  "npmAuditReportVersion": 2,
+  "vulnerabilities": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "dependencies": {
+    "prod": 101,
+    "dev": 255,
+    "optional": 23,
+    "peer": 14,
+    "peerOptional": 0,
+    "total": 356
+  },
+  "affectedPackages": []
+}

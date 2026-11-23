@@ -1,0 +1,2312 @@
+{
+  "dateLocal": "2026-11-07",
+  "sourceMatchesPreviousConsolidatedCheck": true,
+  "previousSourceTreeHash": "0c8bd4f70420e2d70564d692ce50121950e870e2061544f26bae772682a8d81d",
+  "preservedApp": {
+    "path": "desktop/release/baselines/0.24.13-verified/application/交易驾驶舱.app",
+    "treeHash": "152f3f8f46c6c53d2c14bad03c9efd8cb755ad7b4a30148e27434417bbb6b732",
+    "fileCount": 281
+  },
+  "priorReleaseInventory": {
+    "algorithm": "sha256",
+    "treeHash": "0fd3c5460bb98f31e7269373f6fb41f5e28f36d41840e2aec305f9bbadbe9afb",
+    "files": [
+      {
+        "path": "baselines/0.24.1-before-stability/source.tar.gz",
+        "kind": "file",
+        "bytes": 1647659,
+        "mode": 420,
+        "sha256": "65dc20e35f1f0fc4d0343a17838f8851fffcb37a7447db71e8d3ec658a63dd1e"
+      },
+      {
+        "path": "baselines/0.24.10-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 2551971,
+        "mode": 420,
+        "sha256": "f62d3c017fad14121577d8e58a5387837847765830dd6637439601b11a1252c4"
+      },
+      {
+        "path": "baselines/0.24.10-verified/verification.json",
+        "kind": "file",
+        "bytes": 51615,
+        "mode": 420,
+        "sha256": "cb7d48e9d8001da041c31437ec229bd215fba9dc116b7239f7ac9b03a8535375"
+      },
+      {
+        "path": "baselines/0.24.10-verified/VERIFICATION.txt",
+        "kind": "file",
+        "bytes": 1348,
+        "mode": 420,
+        "sha256": "4e53f8f797fe6648bf05932152e2432f66ee712dbe58c6f10fa633a49fd431ee"
+      },
+      {
+        "path": "baselines/0.24.11-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 2572112,
+        "mode": 420,
+        "sha256": "19076e5f763284dcbea6d1ffbdb7d6f828617b6a604658323ea3f6de5bedd23a"
+      },
+      {
+        "path": "baselines/0.24.11-verified/verification.json",
+        "kind": "file",
+        "bytes": 52756,
+        "mode": 420,
+        "sha256": "0216be92171478ac2ab8807ed74d435f6b95bd63c93cb7768e57cb92283bcadf"
+      },
+      {
+        "path": "baselines/0.24.11-verified/VERIFICATION.txt",
+        "kind": "file",
+        "bytes": 2173,
+        "mode": 420,
+        "sha256": "e79b32e2dda1af5792472d620665199b816e10d273b362b86046dc28adb27ce5"
+      },
+      {
+        "path": "baselines/0.24.12-acceptance-failed/source.tar.gz",
+        "kind": "file",
+        "bytes": 1942928,
+        "mode": 420,
+        "sha256": "dc3bca756804123c2ea02cde3bc3a4bb3596df2664a1ce3a4483a6f5f90807a5"
+      },
+      {
+        "path": "baselines/0.24.12-acceptance-failed/verification.json",
+        "kind": "file",
+        "bytes": 55524,
+        "mode": 420,
+        "sha256": "ad1e880d812fd61fdf200e5777721807984e3962f81b3e68a3c774a7abc0f324"
+      },
+      {
+        "path": "baselines/0.24.12-acceptance-failed/VERIFICATION.txt",
+        "kind": "file",
+        "bytes": 1240,
+        "mode": 420,
+        "sha256": "74991bc470a8ea87b406dcd158813ee3fef1dea8c8b73be2dbea13547cd5c07f"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Electron Framework",
+        "kind": "symlink",
+        "target": "Versions/Current/Electron Framework",
+        "sha256": "36542878344780f376c0b91f24aeffb4cb21243d6c1dfd8f222add6cc617018e"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Helpers",
+        "kind": "symlink",
+        "target": "Versions/Current/Helpers",
+        "sha256": "bdc8c4c00015b2f00fce2e3f6206da685496214b15b40d45d626a3df37fb2486"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Libraries",
+        "kind": "symlink",
+        "target": "Versions/Current/Libraries",
+        "sha256": "9dcdccdc395427c6812de3e13a093956d81b0f87a4396d96d650f1b28079080b"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Resources",
+        "kind": "symlink",
+        "target": "Versions/Current/Resources",
+        "sha256": "59991b51b8ee15b59f07ec45942957a4ce90494257766964f5df60b7c7998e42"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework",
+        "kind": "file",
+        "bytes": 192433104,
+        "mode": 493,
+        "sha256": "728c7c4e9431740e14754dd2ec698d65b29b6ddccbcf41fe62112e3c55556afd"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Helpers/chrome_crashpad_handler",
+        "kind": "file",
+        "bytes": 1210848,
+        "mode": 493,
+        "sha256": "43f7214793f9d1b3282ebaf2ba20962b3cff700fd377892d7ae67b4c2b9e5616"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries/libEGL.dylib",
+        "kind": "file",
+        "bytes": 91952,
+        "mode": 493,
+        "sha256": "644b0ca9811fc781b3778ee7915e52296c47a786300189164d66253e2dd41fa0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries/libffmpeg.dylib",
+        "kind": "file",
+        "bytes": 2230784,
+        "mode": 493,
+        "sha256": "1bbacaa5c755faeb43c19c07ebce21e5d83b0858583b4180e1a93bfaaac09026"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries/libGLESv2.dylib",
+        "kind": "file",
+        "bytes": 6245376,
+        "mode": 493,
+        "sha256": "c5678a97720f0bb2c5a68f205672c9836b6cf1f97e503670950ffbda1f42fa2f"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries/libvk_swiftshader.dylib",
+        "kind": "file",
+        "bytes": 16574256,
+        "mode": 493,
+        "sha256": "4233942fcbc8b7fac329ca03d1df55979df37cfe6238bb1c3c6f6ed6c9594f39"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries/vk_swiftshader_icd.json",
+        "kind": "file",
+        "bytes": 110,
+        "mode": 420,
+        "sha256": "d717d915e31e7c27948b80b36ab34e2d897888114c5c7d0af835f93eb53e58f5"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/af_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/af_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/af_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/af.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 610346,
+        "mode": 420,
+        "sha256": "0f0ee2cf4e4ef9cbe35c559e5702590d8011534552f1bbead18a09c98a13e4f6"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/am_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/am_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/am_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/am.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 990779,
+        "mode": 420,
+        "sha256": "97b14b95ddc6214570e424601693d843ebe1b83b4d7109478137394d7943e734"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ar_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ar_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ar_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ar.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1091505,
+        "mode": 420,
+        "sha256": "5ce35c6fdbdc770b696083d71b8365863356eb8b857058777414f51d96050a12"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/bg_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/bg_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/bg_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/bg.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1131767,
+        "mode": 420,
+        "sha256": "f88bccd8b5b03119ac5f3c9f5e464523c1861710cd3dce522659eec7a0cdd341"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/bn_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/bn_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/bn_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/bn.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1452871,
+        "mode": 420,
+        "sha256": "23e54cafbf2eab5b949ca4519b0f0568e5f6bf346462e01a8a6aba79fc015a39"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ca_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ca_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ca_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ca.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 688268,
+        "mode": 420,
+        "sha256": "4739385308c8e9479a252b352298d86c7aa72dc02c42be69199974bc5daa9774"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/chrome_100_percent.pak",
+        "kind": "file",
+        "bytes": 119843,
+        "mode": 420,
+        "sha256": "a2bf32eceeab45214f2f46e3d1c1f619d55061fa09a22d860e0a9adf01cc722d"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/chrome_200_percent.pak",
+        "kind": "file",
+        "bytes": 196935,
+        "mode": 420,
+        "sha256": "b42323e72254a54862bdceb906ac009fc88d2472540251aaa22a7da4ca6b712d"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/cs_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/cs_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/cs_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/cs.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 714999,
+        "mode": 420,
+        "sha256": "102841f78e7f9bbd30ff93c7752dff3325898481ddb16b8e1109de930829fe2e"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/da_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/da_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/da_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/da.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 640881,
+        "mode": 420,
+        "sha256": "16529be184d535eee20ca66e01da4864a0ef858427313fda6360193ecccbd0cf"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/de_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/de_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/de_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/de.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 688928,
+        "mode": 420,
+        "sha256": "1b5eb67c1721f0af80934904a38eafcb6d309e07e5784c13d4d82252c9d29313"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/el_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/el_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/el_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/el.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1243288,
+        "mode": 420,
+        "sha256": "30e536807047b080caafad1c2c413082c3415b69a5ba330d3436ba2259df6f87"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/en_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/en_GB_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/en_GB_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/en_GB_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/en_GB.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 557061,
+        "mode": 420,
+        "sha256": "f53ec305ede7f831b41c415aad2ff1a6c2d50ad71def411f79ffffa12a51b60d"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/en_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/en_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/en.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 564093,
+        "mode": 420,
+        "sha256": "35ed493b53c7d3fb9d621f06f1ffc2fce6b5348c6d761a16c6dd29ffb5a5c6f8"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/es_419_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/es_419_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/es_419_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/es_419.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 679394,
+        "mode": 420,
+        "sha256": "88ea1c9a6715b664fbc0e9ff6eaa444f796323cf5949060939250b72428ac371"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/es_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/es_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/es_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/es.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 675839,
+        "mode": 420,
+        "sha256": "3a4703d24f58638ce866580bfd17190ad81440b186f27cecd61f7e62b44b7306"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/et_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/et_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/et_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/et.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 617366,
+        "mode": 420,
+        "sha256": "e017407498efa3ba6a2fe5e577b040cb12e92023113cdc097a45df91e24c2e31"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fa_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fa_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fa_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fa.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1021653,
+        "mode": 420,
+        "sha256": "01bc8b11f6ee7aa63e519d0a1e28907a53ffce93cc18893627d6de3c48df2b5f"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fi_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fi_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fi_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fi.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 629290,
+        "mode": 420,
+        "sha256": "a7782dada546a1cbf24caf20b3215e4d7b6268c06e0c379f74126201c1f5ec43"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fil_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fil_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fil_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fil.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 713186,
+        "mode": 420,
+        "sha256": "cda8c8e7cb7158f99d9f389dbe8b1c67282b1fe878d57851fd1ef415bd8b3c6c"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fr_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fr_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fr_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fr.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 734087,
+        "mode": 420,
+        "sha256": "68105444bcd797017d605d3578b14d5f0e1645332a2227fce5a15f38fd0f2359"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/gu_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/gu_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/gu_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/gu.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1434255,
+        "mode": 420,
+        "sha256": "fb88f5f61f56d92775efd71d9976f5d22197d4e4817c9ea3a6a71e51193fce5a"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/he_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/he_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/he_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/he.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 893768,
+        "mode": 420,
+        "sha256": "7705fd0676f404570b8c1e2a1930235c8c82c1d4ce97c155e5d6b68fdb2927ad"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hi_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hi_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hi_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hi.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1519062,
+        "mode": 420,
+        "sha256": "d2cf2f32aaf5d92af9e0f7974de8c0221f35558b35154f46c5b8136b4503e09d"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hr_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hr_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hr_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hr.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 687337,
+        "mode": 420,
+        "sha256": "89c0577923975bbecc6935a277a0b6f43529bf3cdf59d2387a7aef7f55bf7f9c"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hu_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hu_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hu_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/hu.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 734324,
+        "mode": 420,
+        "sha256": "f7eff6dff4af6f5f767e7397027c0a14066bc13be7b104722a0469cf9d828de1"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/icudtl.dat",
+        "kind": "file",
+        "bytes": 10876560,
+        "mode": 420,
+        "sha256": "bd8c145abdf3f8383276ce01dfa4ae48709bef9fef1c0711eb7c3fab4f6eb7c2"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/id_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/id_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/id_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/id.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 610770,
+        "mode": 420,
+        "sha256": "08feada28f4cd2b7aff7af8260ec2dee76e09ed8fff43937d143c3707d0f505d"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Info.plist",
+        "kind": "file",
+        "bytes": 920,
+        "mode": 420,
+        "sha256": "5d028dd38e715dd46302bc01729941ca7d2082d9f168a9d502c69b082c76c6e4"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/it_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/it_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/it_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/it.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 665079,
+        "mode": 420,
+        "sha256": "21b3151c0f152d6932cd82987ff7c7898c8e098914008378d24eca3ad99287aa"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ja_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ja_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ja_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ja.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 809668,
+        "mode": 420,
+        "sha256": "c6a31e477f95e7ad51dd4c561b8023a2a3ad40c6b76545307aa0a7cbb2e022a9"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/kn_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/kn_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/kn_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/kn.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1652368,
+        "mode": 420,
+        "sha256": "109eabce780a67ae4d204acaee9e8c1af1a4c5d5a6a10b58e267cb3257c067f8"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ko_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ko_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ko_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ko.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 688823,
+        "mode": 420,
+        "sha256": "52b44707f8e847db97dec0c9bc6c9697f1ef4cd0b3d3539b4a512441910cd902"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/lt_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/lt_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/lt_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/lt.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 748786,
+        "mode": 420,
+        "sha256": "e91aad8ad16487f607673ab4fb96ccce24d4ce61b5060730038bc65006beeb6b"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/lv_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/lv_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/lv_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/lv.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 745498,
+        "mode": 420,
+        "sha256": "7e52ce870d784bac4816ac225e7eb8d97aa5210edd63fe62220e5b4733882f73"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/MainMenu.nib",
+        "kind": "file",
+        "bytes": 2005,
+        "mode": 420,
+        "sha256": "4b2168de2d6d9a09b20faaa23139d5f25f73b2595671de25872d191b6939d819"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ml_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ml_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ml_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ml.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1698169,
+        "mode": 420,
+        "sha256": "79dad9e9164c30f3f64c2223643061eb0836afa7a03e6ebe9046b687642af077"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/mr_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/mr_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/mr_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/mr.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1406023,
+        "mode": 420,
+        "sha256": "52dea5b07bf00c62b80a28b806f875fd42d197f28ac310f7d1f7fd9330eb78e0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ms_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ms_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ms_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ms.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 642541,
+        "mode": 420,
+        "sha256": "7d18307f16cff590f08a10172e97eabfcb30ce792c81488318ec66bb28eb8594"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/nb_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/nb_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/nb_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/nb.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 612119,
+        "mode": 420,
+        "sha256": "42025a5ce424769b44414fef6cea2ce17d53d0e67c01c5faf6454a91449ced1e"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/nl_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/nl_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/nl_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/nl.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 638314,
+        "mode": 420,
+        "sha256": "4fa5b29f1142a9d337732fce85c86304226ff9ee9bcca779cd49d4aedfda7b4d"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pl_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pl_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pl_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pl.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 714134,
+        "mode": 420,
+        "sha256": "d88156d3c3597086cae8d80fdc3b89bbbd26ad1e3abc2b25f8b21e63275d62ac"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pt_BR_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pt_BR_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pt_BR_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pt_BR.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 669646,
+        "mode": 420,
+        "sha256": "b8db278fef9458741f4c409f4402c0c3181ab7cb5d8b9cbcceb78f8f30286f48"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pt_PT_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pt_PT_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pt_PT_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/pt_PT.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 673351,
+        "mode": 420,
+        "sha256": "4d5f7636418deace4be33d11d9707dbdc4fc68137de98ca95070ab2cb7c8ed00"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/resources.pak",
+        "kind": "file",
+        "bytes": 7143003,
+        "mode": 420,
+        "sha256": "a186e9d5610d745789bec9a1f2e81e5140bb066a425b7b290c38db03f9880b83"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ro_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ro_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ro_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ro.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 698814,
+        "mode": 420,
+        "sha256": "1c1ec16b004d731d396252dcbb8632bc3bb35f5cbb8287ac8762c87732b9138a"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ru_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ru_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ru_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ru.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1157403,
+        "mode": 420,
+        "sha256": "4fbb1903e82d2d47811ca82beb8b9660c01a81a761a91fb4bb94435ba4c75513"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sk_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sk_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sk_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sk.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 726670,
+        "mode": 420,
+        "sha256": "8ebfed877dcfcde71eefaf402793030db813fa0a77a63a1e725053ce24f78372"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sl_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sl_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sl_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sl.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 695640,
+        "mode": 420,
+        "sha256": "6944022e0fb57935792c378df31d96eabe68015ed569b0cf279563a34d558e01"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sr_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sr_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sr_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sr.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1069680,
+        "mode": 420,
+        "sha256": "5cae45933a6c04da2e43d1dedee59b5d77cbea17642e3a5070eee91f56e229cf"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sv_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sv_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sv_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sv.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 620240,
+        "mode": 420,
+        "sha256": "7e5d4bb93710f9c8427656302639da20c8f1d85927fbb5aafcf24dd543c34a31"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sw_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sw_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sw_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/sw.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 659361,
+        "mode": 420,
+        "sha256": "feb2cc57ac78f719b5eeb479b8d0b65384749b52596564c78cc7b9c1436409e9"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ta_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ta_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ta_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ta.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1689231,
+        "mode": 420,
+        "sha256": "1e33ab18138af71be950fefbcf73f184e4074ed6c6e7a82f92bd482f518d1f9f"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/te_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/te_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/te_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/te.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1563777,
+        "mode": 420,
+        "sha256": "69b1faa600bdbf4db855a434fbcd08bb8da9f2874e8b08c6d1d3b644ba677a75"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/th_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/th_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/th_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/th.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1312143,
+        "mode": 420,
+        "sha256": "612ef1b43ac19e3db7cf89337409a56ddb08f7331f8c5a8a98d388d3aa2599fc"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/tr_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/tr_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/tr_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/tr.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 670104,
+        "mode": 420,
+        "sha256": "0bd269b6bb8dac68083770f5de1f1705d155cbe026215c6398e1d279f5c0c523"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/uk_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/uk_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/uk_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/uk.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1167277,
+        "mode": 420,
+        "sha256": "8f9ab5d57a06692aed19ab21737ed8890706e0c56459ce72af053f9c224e2b06"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ur_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ur_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ur_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ur.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 1003673,
+        "mode": 420,
+        "sha256": "de95b0082c5cf0d1b7233ae0c287b8959519cd29021c5b10bc7129940f6103fb"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/v8_context_snapshot.arm64.bin",
+        "kind": "file",
+        "bytes": 740048,
+        "mode": 420,
+        "sha256": "5de52db3fbe341e68ccb7ea44c3a0677bd1e3a4d34c201dd0392466a9c2b0675"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/vi_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/vi_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/vi_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/vi.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 795405,
+        "mode": 420,
+        "sha256": "65579ee6ac5012cb934b84d71912f3a719fd5459efad3a940dcdda5c76db3c5d"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_CN_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_CN_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_CN_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_CN.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 568987,
+        "mode": 420,
+        "sha256": "594fae2903f8d830cc2948304ded1363c983489910e92c0acf7579c35218efa9"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_TW_FEMININE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_TW_MASCULINE.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_TW_NEUTER.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 18,
+        "mode": 420,
+        "sha256": "ca73097bd968b363b7145e86b64f3c595e533808b0763dc8863a27fc363cfa51"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_TW.lproj/locale.pak",
+        "kind": "file",
+        "bytes": 561326,
+        "mode": 420,
+        "sha256": "698fafc1ec744597ff83a74cc3133b30fff82a0c72093f6edd1c5995ed8b590c"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Electron Framework.framework/Versions/Current",
+        "kind": "symlink",
+        "target": "A",
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Mantle.framework/Mantle",
+        "kind": "symlink",
+        "target": "Versions/Current/Mantle",
+        "sha256": "f69b5e653cd4897d6ecebea03691fd06b4ae0d6638aac3bf3fa4e134efa6a05a"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Mantle.framework/Resources",
+        "kind": "symlink",
+        "target": "Versions/Current/Resources",
+        "sha256": "59991b51b8ee15b59f07ec45942957a4ce90494257766964f5df60b7c7998e42"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Mantle.framework/Versions/A/Mantle",
+        "kind": "file",
+        "bytes": 126544,
+        "mode": 493,
+        "sha256": "890f1e6bb680f5f26c5a7362b8cc1d8ecde049f6dd42298be116fb0c74c96aa0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Mantle.framework/Versions/A/Resources/Info.plist",
+        "kind": "file",
+        "bytes": 1020,
+        "mode": 420,
+        "sha256": "e93f0b4aaebea9bc158392ffa0c1150c16a0f30aecf11501b7871ce485f1a823"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Mantle.framework/Versions/Current",
+        "kind": "symlink",
+        "target": "A",
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/ReactiveObjC.framework/ReactiveObjC",
+        "kind": "symlink",
+        "target": "Versions/Current/ReactiveObjC",
+        "sha256": "2ad8d1454b30b433501d7aee80dbc75b3829f37cede077bf61e42b402225eaa3"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/ReactiveObjC.framework/Resources",
+        "kind": "symlink",
+        "target": "Versions/Current/Resources",
+        "sha256": "59991b51b8ee15b59f07ec45942957a4ce90494257766964f5df60b7c7998e42"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/ReactiveObjC.framework/Versions/A/ReactiveObjC",
+        "kind": "file",
+        "bytes": 352864,
+        "mode": 493,
+        "sha256": "732ac079f2c81e15511d638664cbce9562d2d1641721f7c24c65506aaf01e9a0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/ReactiveObjC.framework/Versions/A/Resources/Info.plist",
+        "kind": "file",
+        "bytes": 1138,
+        "mode": 420,
+        "sha256": "4ded0fe1f4647f5b1862a2a98998aa7c3ade9bd925d097258e24667c446e7496"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/ReactiveObjC.framework/Versions/Current",
+        "kind": "symlink",
+        "target": "A",
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Squirrel.framework/Resources",
+        "kind": "symlink",
+        "target": "Versions/Current/Resources",
+        "sha256": "59991b51b8ee15b59f07ec45942957a4ce90494257766964f5df60b7c7998e42"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Squirrel.framework/Squirrel",
+        "kind": "symlink",
+        "target": "Versions/Current/Squirrel",
+        "sha256": "ed47862045e18d686e255b35409006f90f8b56c804dbb498111d269e6ed54051"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Squirrel.framework/Versions/A/Resources/Info.plist",
+        "kind": "file",
+        "bytes": 1175,
+        "mode": 420,
+        "sha256": "f61ab349887360a2d84603ecff17ab6633cb7fe2e8e72861f4e38e9120f472bf"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Squirrel.framework/Versions/A/Resources/ShipIt",
+        "kind": "file",
+        "bytes": 125696,
+        "mode": 493,
+        "sha256": "c5fb9143f16f4fd783d5840cbf0dea6179d7f0d67e8cb5fe5f0977e5447cf5ec"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Squirrel.framework/Versions/A/Squirrel",
+        "kind": "file",
+        "bytes": 145408,
+        "mode": 493,
+        "sha256": "18e3ed6fbd38155857ccbcd4bd145692eb6680bc5c77dcf25cd2a1d3983d5ea3"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/Squirrel.framework/Versions/Current",
+        "kind": "symlink",
+        "target": "A",
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (GPU).app/Contents/Info.plist",
+        "kind": "file",
+        "bytes": 1150,
+        "mode": 420,
+        "sha256": "35583354cacf7d05d369c6344ff721d36638905485bec0f7a343265a91dc5e47"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (GPU).app/Contents/MacOS/交易驾驶舱 Helper (GPU)",
+        "kind": "file",
+        "bytes": 203600,
+        "mode": 493,
+        "sha256": "d10143df7f74fa5c84f6e89e94b3f756ff4556aea7fe28c6d2c2623e4dbddd67"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (GPU).app/Contents/PkgInfo",
+        "kind": "file",
+        "bytes": 8,
+        "mode": 420,
+        "sha256": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (Plugin).app/Contents/Info.plist",
+        "kind": "file",
+        "bytes": 1162,
+        "mode": 420,
+        "sha256": "07e4c0af74af2465d4a00d0397375cd5967ef2c519193b0c413665b9a546450e"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (Plugin).app/Contents/MacOS/交易驾驶舱 Helper (Plugin)",
+        "kind": "file",
+        "bytes": 203600,
+        "mode": 493,
+        "sha256": "82254b28a00d26018a8fa60e41b80578cdaffc3fc996b6ea4e61da63e273bebe"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (Plugin).app/Contents/PkgInfo",
+        "kind": "file",
+        "bytes": 8,
+        "mode": 420,
+        "sha256": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (Renderer).app/Contents/Info.plist",
+        "kind": "file",
+        "bytes": 1170,
+        "mode": 420,
+        "sha256": "ece6eae6dac1c96ecc0bf0fe4bddec33f2cedce846b8a38743a47c37f03f70ee"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (Renderer).app/Contents/MacOS/交易驾驶舱 Helper (Renderer)",
+        "kind": "file",
+        "bytes": 203600,
+        "mode": 493,
+        "sha256": "f6a7ccf7d7da73f70442deac001f559046b788b4145fce1f923f6e57bb462587"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper (Renderer).app/Contents/PkgInfo",
+        "kind": "file",
+        "bytes": 8,
+        "mode": 420,
+        "sha256": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper.app/Contents/Info.plist",
+        "kind": "file",
+        "bytes": 1128,
+        "mode": 420,
+        "sha256": "c50f896e1b004bf40fd38341400169136f6e88f5325e8efac95efadce2a2ebc2"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper.app/Contents/MacOS/交易驾驶舱 Helper",
+        "kind": "file",
+        "bytes": 203584,
+        "mode": 493,
+        "sha256": "4ec779ca8f2b9cfcd956fc4142c53d7c2ed3a89220e2103e112d8d9974f3469c"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Frameworks/交易驾驶舱 Helper.app/Contents/PkgInfo",
+        "kind": "file",
+        "bytes": 8,
+        "mode": 420,
+        "sha256": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Info.plist",
+        "kind": "file",
+        "bytes": 4095,
+        "mode": 420,
+        "sha256": "8dbf4411632b35d3f08c06919ed5a5d1ea953ae935f8c64a1ba02be27a2ff2a7"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/MacOS/交易驾驶舱",
+        "kind": "file",
+        "bytes": 33968,
+        "mode": 493,
+        "sha256": "997d6e26011b89344f98626987155158f13f492148f79bc00f24d841ae693b60"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/PkgInfo",
+        "kind": "file",
+        "bytes": 8,
+        "mode": 420,
+        "sha256": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/app.asar",
+        "kind": "file",
+        "bytes": 17155603,
+        "mode": 420,
+        "sha256": "f6c934599984f58dca0f5ee8b39b14f8108f4938ea590a9ce8df5492ec45df1d"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/default_app.asar",
+        "kind": "file",
+        "bytes": 111073,
+        "mode": 420,
+        "sha256": "06d4a28be095a80eff94dbd18edcfac5b5805e1b5538e0fb7cee7c7ae81db76a"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/icon.icns",
+        "kind": "file",
+        "bytes": 922734,
+        "mode": 420,
+        "sha256": "0fe2cf7417d535f1b39c7701ddf144acf2d6a233d2ecd3df7766bc0f940452b4"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/trading-agent-skills/review-decision-cycles/agents/openai.yaml",
+        "kind": "file",
+        "bytes": 331,
+        "mode": 420,
+        "sha256": "64380e24d4fa387d79687e1277cbe7836984811d19a6b00cda8391d06de6cbfa"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/trading-agent-skills/review-decision-cycles/references/cycle-modes.md",
+        "kind": "file",
+        "bytes": 3840,
+        "mode": 420,
+        "sha256": "b5c2787c2eb59d7c89085506a1ecc6e664d9f662ae193c4ec90f57a3bc497a5b"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/trading-agent-skills/review-decision-cycles/references/evidence-protocol.md",
+        "kind": "file",
+        "bytes": 5164,
+        "mode": 420,
+        "sha256": "ed89ed5a65c59b8f10ca47305360f4ed32fad115eb4563d37ab94dd078425702"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/trading-agent-skills/review-decision-cycles/SKILL.md",
+        "kind": "file",
+        "bytes": 10367,
+        "mode": 420,
+        "sha256": "32b52e47e201be24a3ab38347b3a8efd2364576157f81a04e781fe25a7dc251e"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/trading-agent-skills/review-earnings-decisions/agents/openai.yaml",
+        "kind": "file",
+        "bytes": 307,
+        "mode": 420,
+        "sha256": "01399ba45ff16e73fd48dd8efa045ee26a1180cf475aefd75443254862edf0b6"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/trading-agent-skills/review-earnings-decisions/references/evidence-and-output.md",
+        "kind": "file",
+        "bytes": 4034,
+        "mode": 420,
+        "sha256": "d1d821e9bbec39305299650a6e560ab372744dc145d3e9eaed4fa98689bd9471"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/trading-agent-skills/review-earnings-decisions/references/metrics-and-validation.md",
+        "kind": "file",
+        "bytes": 5215,
+        "mode": 420,
+        "sha256": "41478e602d034899246a6656eaec853a4858c269cf8d78b7b8aad574ee2b8f35"
+      },
+      {
+        "path": "baselines/0.24.13-verified/application/交易驾驶舱.app/Contents/Resources/trading-agent-skills/review-earnings-decisions/SKILL.md",
+        "kind": "file",
+        "bytes": 7234,
+        "mode": 420,
+        "sha256": "de7009e39708d9611f4bd1080dfb7be744b9a9a6eb68826ca960c7f3721e2e94"
+      },
+      {
+        "path": "baselines/0.24.13-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 2643159,
+        "mode": 420,
+        "sha256": "a9d8388e27f89d9f2b9627db260a62d2e362a9a6346e75406e6c18eeb8864b77"
+      },
+      {
+        "path": "baselines/0.24.13-verified/verification.json",
+        "kind": "file",
+        "bytes": 55524,
+        "mode": 420,
+        "sha256": "5993230abd608bad210bc5a00b665a2048045632577f7584667c1b9861908920"
+      },
+      {
+        "path": "baselines/0.24.13-verified/VERIFICATION.txt",
+        "kind": "file",
+        "bytes": 2135,
+        "mode": 420,
+        "sha256": "3740821fcf80c028c3e1635049466c8e2027a737591e2b13fbc4c00535838372"
+      },
+      {
+        "path": "baselines/0.24.2-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 1657397,
+        "mode": 420,
+        "sha256": "02e3d3af2e1349830bb00975e12fb4dd3ca0a87d1c981e65b7c7887797f96d5c"
+      },
+      {
+        "path": "baselines/0.24.3-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 1670106,
+        "mode": 420,
+        "sha256": "4c701225801d52743ddfca50b6ea2603703c373fbf99a9ca1a1f1a136389d5ce"
+      },
+      {
+        "path": "baselines/0.24.4-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 1700231,
+        "mode": 420,
+        "sha256": "af04d2a3a57d1de9da87df3e21796749385eb1f1cd4c77e4aee2448edf73948f"
+      },
+      {
+        "path": "baselines/0.24.5-build-reviewed/source.tar.gz",
+        "kind": "file",
+        "bytes": 1815097,
+        "mode": 420,
+        "sha256": "645625c6b65e9e96a0b79a704f5cbc50889f7bb726b03625b743774f2c46eb8b"
+      },
+      {
+        "path": "baselines/0.24.6-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 1822083,
+        "mode": 420,
+        "sha256": "61e01be60b73fe406f8be940187f202fd9914980b21007534cde477ec881fc6d"
+      },
+      {
+        "path": "baselines/0.24.6-verified/VERIFICATION.md",
+        "kind": "file",
+        "bytes": 1520,
+        "mode": 420,
+        "sha256": "9b1d775a90c6e03093978f34296e09aeaca0fba6e1d92ebe58736a55f67e18e4"
+      },
+      {
+        "path": "baselines/0.24.7-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 2473602,
+        "mode": 420,
+        "sha256": "0d7284c2faf7fafc55a1ab6747dd96fe5c6961a300aa5b9fc99064c44c0eac83"
+      },
+      {
+        "path": "baselines/0.24.7-verified/VERIFICATION.md",
+        "kind": "file",
+        "bytes": 1582,
+        "mode": 420,
+        "sha256": "992eb132ce6d2c60fc6add7c913cf168588e27b580049f32f1c93e9158c1db92"
+      },
+      {
+        "path": "baselines/0.24.8-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 2480526,
+        "mode": 420,
+        "sha256": "68001180f78f43ddf066fc104db7e62d289020f5827338b34530977d604e055b"
+      },
+      {
+        "path": "baselines/0.24.8-verified/verification.json",
+        "kind": "file",
+        "bytes": 48906,
+        "mode": 420,
+        "sha256": "9fbd4574acbdbb35dd820f56fb5f1f049d78de3349dd28f145b997ad347856af"
+      },
+      {
+        "path": "baselines/0.24.8-verified/VERIFICATION.md",
+        "kind": "file",
+        "bytes": 1243,
+        "mode": 420,
+        "sha256": "c5d4b9d6cb8628150072529ef50915e482831a99b68c57a47781eaca13fdd383"
+      },
+      {
+        "path": "baselines/0.24.9-verified/source.tar.gz",
+        "kind": "file",
+        "bytes": 2513132,
+        "mode": 420,
+        "sha256": "00b44c5df530a170dbf2aafcf917470f4d335990ac087416be53fce15b6d4768"
+      },
+      {
+        "path": "baselines/0.24.9-verified/verification.json",
+        "kind": "file",
+        "bytes": 49792,
+        "mode": 420,
+        "sha256": "6d15267b21e702485d586b80dd7da217ea59a3f85f5dc560b6e56994c38d2170"
+      },
+      {
+        "path": "baselines/0.24.9-verified/VERIFICATION.md",
+        "kind": "file",
+        "bytes": 1758,
+        "mode": 420,
+        "sha256": "03402f5b87e8175a0ba67f4c2cf599c6e2567914446d81982b7a5ea6f7d52553"
+      },
+      {
+        "path": "verification-0.24.10-2026-10-09T18-51-29-654Z.json",
+        "kind": "file",
+        "bytes": 51615,
+        "mode": 420,
+        "sha256": "cb7d48e9d8001da041c31437ec229bd215fba9dc116b7239f7ac9b03a8535375"
+      },
+      {
+        "path": "verification-0.24.11-2026-10-19T18-08-58-625Z.json",
+        "kind": "file",
+        "bytes": 52756,
+        "mode": 420,
+        "sha256": "0216be92171478ac2ab8807ed74d435f6b95bd63c93cb7768e57cb92283bcadf"
+      },
+      {
+        "path": "verification-0.24.12-2026-10-21T17-41-52-651Z.json",
+        "kind": "file",
+        "bytes": 55524,
+        "mode": 420,
+        "sha256": "ad1e880d812fd61fdf200e5777721807984e3962f81b3e68a3c774a7abc0f324"
+      },
+      {
+        "path": "verification-0.24.13-2026-10-21T17-46-10-232Z.json",
+        "kind": "file",
+        "bytes": 55524,
+        "mode": 420,
+        "sha256": "5993230abd608bad210bc5a00b665a2048045632577f7584667c1b9861908920"
+      },
+      {
+        "path": "verification-0.24.2-2026-09-17T16-24-21-391Z.json",
+        "kind": "file",
+        "bytes": 41583,
+        "mode": 420,
+        "sha256": "900d237f0aa4e5802585745649cd4ae4f2020c2cbfbeff9dd7f69f3ad6ed71bc"
+      },
+      {
+        "path": "verification-0.24.3-2026-09-17T16-52-35-068Z.json",
+        "kind": "file",
+        "bytes": 44330,
+        "mode": 420,
+        "sha256": "4d66609884ff4d1b6404c7425b2c6dd811b8ec8c2b590693030cb2a36b6f0cda"
+      },
+      {
+        "path": "verification-0.24.4-2026-09-17T17-06-17-771Z.json",
+        "kind": "file",
+        "bytes": 45466,
+        "mode": 420,
+        "sha256": "20e9e963875f996917038fb055fccb20697d53b9315fcb6cb289aa9181dc0ce1"
+      },
+      {
+        "path": "verification-0.24.5-2026-09-17T17-52-09-162Z.json",
+        "kind": "file",
+        "bytes": 48671,
+        "mode": 420,
+        "sha256": "8f623b53655c8d61139a1491f26a1c5e52a0a98ef2a13fbaf65ac4ea8cfeb2a2"
+      },
+      {
+        "path": "verification-0.24.6-2026-09-17T17-56-44-579Z.json",
+        "kind": "file",
+        "bytes": 48906,
+        "mode": 420,
+        "sha256": "ffaf61c60799af9a427aa754a7091ca3e32659b84bba0a41118b741ab4519cb1"
+      },
+      {
+        "path": "verification-0.24.7-2026-09-17T18-32-56-733Z.json",
+        "kind": "file",
+        "bytes": 48906,
+        "mode": 420,
+        "sha256": "e042a13e8a8f09bbed8b579d4fa8f2dbc8196d23a17e813b6b00c5070e3185d0"
+      },
+      {
+        "path": "verification-0.24.8-2026-09-17T18-59-46-369Z.json",
+        "kind": "file",
+        "bytes": 48906,
+        "mode": 420,
+        "sha256": "9fbd4574acbdbb35dd820f56fb5f1f049d78de3349dd28f145b997ad347856af"
+      },
+      {
+        "path": "verification-0.24.9-2026-09-23T16-49-06-573Z.json",
+        "kind": "file",
+        "bytes": 49792,
+        "mode": 420,
+        "sha256": "6d15267b21e702485d586b80dd7da217ea59a3f85f5dc560b6e56994c38d2170"
+      },
+      {
+        "path": "交易驾驶舱-0.24.10-arm64-mac.zip",
+        "kind": "file",
+        "bytes": 123706785,
+        "mode": 420,
+        "sha256": "420c32ea7fddc4717088f3863e2476a4fcdbe42c8101108d16068b5ce5fa4a9f"
+      },
+      {
+        "path": "交易驾驶舱-0.24.10-arm64.dmg",
+        "kind": "file",
+        "bytes": 124469205,
+        "mode": 420,
+        "sha256": "9d9f98af4c5e009241f87df3d302e39ab953d3fcca04d236ee2f15030a381a35"
+      },
+      {
+        "path": "交易驾驶舱-0.24.11-arm64-mac.zip",
+        "kind": "file",
+        "bytes": 123712559,
+        "mode": 420,
+        "sha256": "fb97c7fbcae5cbfee9b9b1a0a64e3fb0e8124f5fc0c4118e05293a2aaf345979"
+      },
+      {
+        "path": "交易驾驶舱-0.24.11-arm64.dmg",
+        "kind": "file",
+        "bytes": 124473419,
+        "mode": 420,
+        "sha256": "9448312f2ef3a06ffa8202212e069e05cb4907b4ac6a1fb64f373752057bf80f"
+      },
+      {
+        "path": "交易驾驶舱-0.24.12-arm64-mac.zip",
+        "kind": "file",
+        "bytes": 123744416,
+        "mode": 420,
+        "sha256": "7563d64f96430e7a9175766c292317f66e58e72801062a40023f05e7bc8d24ef"
+      },
+      {
+        "path": "交易驾驶舱-0.24.12-arm64.dmg",
+        "kind": "file",
+        "bytes": 124516484,
+        "mode": 420,
+        "sha256": "f84f641aa5a43466c9f8cf35c12161c5261a478f57d2b3d317fbb85e1695fc46"
+      },
+      {
+        "path": "交易驾驶舱-0.24.13-arm64-mac.zip",
+        "kind": "file",
+        "bytes": 123744474,
+        "mode": 420,
+        "sha256": "c56cbf1540d07bf954e2a48897ed44f81a02790c6c27c17a4b58a32cbb458d0e"
+      },
+      {
+        "path": "交易驾驶舱-0.24.13-arm64.dmg",
+        "kind": "file",
+        "bytes": 124516204,
+        "mode": 420,
+        "sha256": "935f035b13f1063a1d75e7ef44e9afecbf5a6c163a96b96795682bb4fb17d95d"
+      },
+      {
+        "path": "交易驾驶舱-0.24.9-arm64-mac.zip",
+        "kind": "file",
+        "bytes": 123696444,
+        "mode": 420,
+        "sha256": "4ad7a3d04101d52dbc9df8cd70290cddc171dc5da9ed6d8413b42e969f94422f"
+      },
+      {
+        "path": "交易驾驶舱-0.24.9-arm64.dmg",
+        "kind": "file",
+        "bytes": 124457780,
+        "mode": 420,
+        "sha256": "75534652e09ed5f607dfdd5ac8b2fc9bf27f8c710d1f972cee3b92a01926463c"
+      }
+    ]
+  }
+}

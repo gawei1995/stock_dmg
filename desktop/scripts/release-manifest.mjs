@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import path from "node:path";
+import { assertCleanProductionAudit } from "./audit-production-dependencies.mjs";
 
 export const BUNDLED_REVIEW_SKILLS = ["review-decision-cycles", "review-earnings-decisions"];
 const SOURCE_ENTRIES = ["main.mjs", "preload.cjs", "renderer", "src", "assets", "scripts", "tests", "package.json", "package-lock.json"];
@@ -80,9 +81,10 @@ export async function readAppPackage(desktopRoot) {
 
 export function createReleaseManifest({ appPackage, fingerprint, git, codex, environment, steps, artifacts, packaged, target, createdAt = new Date().toISOString() }) {
   if (!steps.length || steps.some((step) => step.status !== "passed")) throw new Error("A release manifest requires every gate to pass.");
-  for (const name of ["dependency-tree", "unit-tests", "source-ibkr-ui", "source-radar-ui", "source-review-ui", "source-health-ui", "source-research-ui", "package", "packaged-dependencies-and-content", "packaged-source-and-skill-hash-match", "packaged-ibkr-ui", "packaged-radar-ui", "packaged-review-ui", "packaged-health-ui", "packaged-research-ui", "artifact-integrity", "source-unchanged-during-verification"]) {
+  for (const name of ["dependency-tree", "dependency-security", "unit-tests", "source-ibkr-ui", "source-radar-ui", "source-review-ui", "source-health-ui", "source-research-ui", "package", "packaged-dependencies-and-content", "packaged-source-and-skill-hash-match", "packaged-ibkr-ui", "packaged-radar-ui", "packaged-review-ui", "packaged-health-ui", "packaged-research-ui", "artifact-integrity", "source-unchanged-during-verification"]) {
     if (!steps.some((step) => step.name === name)) throw new Error(`A required release gate is missing: ${name}`);
   }
+  assertCleanProductionAudit(steps.find((step) => step.name === "dependency-security").audit, fingerprint.dependencyLock.sha256);
   if (!artifacts.some((artifact) => artifact.type === "app_bundle") || target === "mac" && ["dmg", "zip"].some((type) => !artifacts.some((artifact) => artifact.type === type))) throw new Error("Required release artifacts are missing.");
   return {
     schemaVersion: 1, createdAt, status: "verified_local_build", releaseStatus: "not_published", target,

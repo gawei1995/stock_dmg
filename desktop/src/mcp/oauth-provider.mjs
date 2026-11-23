@@ -52,24 +52,38 @@ export class DesktopOAuthProvider {
   }
 
   async clientInformation() {
-    return this.store.get(this.#key("clientInformation"));
+    this.#assertCommitAllowed();
+    const value = await this.store.get(this.#key("clientInformation"));
+    this.#assertCommitAllowed();
+    return requireBoundCredentials(value);
   }
 
   async saveClientInformation(value) {
     this.#assertCommitAllowed();
+    requireBoundCredentials(value);
     await this.store.set(this.#key("clientInformation"), value);
   }
 
   async tokens() {
-    return this.store.get(this.#key("tokens"));
+    this.#assertCommitAllowed();
+    const value = await this.store.get(this.#key("tokens"));
+    this.#assertCommitAllowed();
+    return requireBoundCredentials(value);
   }
 
   async saveTokens(value) {
-    const previous = await this.tokens();
     this.#assertCommitAllowed();
+    requireBoundCredentials(value);
+    const previous = await this.store.get(this.#key("tokens"));
+    this.#assertCommitAllowed();
+    // A refresh response may omit the refresh token. Never carry one across
+    // issuers, or adopt an unstamped token from the pre-1.31 SDK on first use.
+    const sameIssuer = validIssuer(previous?.issuer)
+      && normalizedIssuer(previous.issuer) === normalizedIssuer(value.issuer);
     await this.store.set(this.#key("tokens"), {
       ...value,
-      refresh_token: value.refresh_token ?? previous?.refresh_token,
+      ...(value.refresh_token == null && sameIssuer && previous.refresh_token != null
+        ? { refresh_token: previous.refresh_token } : {}),
     });
   }
 
@@ -138,4 +152,27 @@ export class DesktopOAuthProvider {
     error.code = "STALE_LONGBRIDGE_AUTHORIZATION_GENERATION";
     throw error;
   }
+}
+
+function normalizedIssuer(value) {
+  return new URL(value).href.replace(/\/$/, "");
+}
+
+function validIssuer(value) {
+  if (typeof value !== "string" || !value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
+}
+
+function requireBoundCredentials(value) {
+  if (value != null && !validIssuer(value.issuer)) {
+    // Preserve the original entry. Only the existing explicit reauthorization
+    // confirmation may clear it; no migration guesses an issuer for secrets.
+    const error = new Error("长桥 OAuth 旧授权缺少有效的发行方绑定，请点击“重新授权”完成只读授权。原授权记录保留，未用于联网。");
+    error.code = "LONGBRIDGE_OAUTH_ISSUER_REQUIRED";
+    throw error;
+  }
+  return value;
 }

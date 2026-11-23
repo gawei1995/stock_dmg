@@ -1,0 +1,19 @@
+{
+  "dateLocal": "2026-11-07",
+  "version": "0.24.14",
+  "status": "installed_identity_verified_not_launched",
+  "userConfirmedReplacement": true,
+  "activeApplicationProcessesBeforeReplacement": 0,
+  "installedPath": "/Applications/交易驾驶舱.app",
+  "installedTreeHash": "e50c8d32c16029f25922ae9b274af8ae42497dbdcb6dd79eae89b59cf15278d2",
+  "expectedTreeHash": "e50c8d32c16029f25922ae9b274af8ae42497dbdcb6dd79eae89b59cf15278d2",
+  "fileCount": 281,
+  "previousInstalledVersion": "0.24.11",
+  "previousInstalledBackup": "/Applications/.TradingCockpit-0.24.11-before-0.24.14.app",
+  "previousInstalledTreeHash": "5445b2043de6489e8224e7d5a95b53d8cc664fddc05d252157eae7db102d5ac0",
+  "projectBackup": "desktop/release/baselines/0.24.14-verified/previous-installed-0.24.11.app",
+  "userProfileRead": false,
+  "userProfileModified": false,
+  "accountConnectionStarted": false,
+  "appLaunched": false
+}
