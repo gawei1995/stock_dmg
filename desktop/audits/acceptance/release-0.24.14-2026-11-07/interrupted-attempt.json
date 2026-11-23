@@ -1,0 +1,17 @@
+{
+  "dateLocal": "2026-11-07",
+  "version": "0.24.14",
+  "status": "interrupted_before_unit_stage_completed",
+  "originalProcessHandleMissing": true,
+  "matchingGateOrUnitProcessFound": false,
+  "newVersionArtifactsFound": false,
+  "logSha256": "92ddb89e585d5f6c586d36e7b28396cb05be73141f704593248f2bf423471516",
+  "log": "/tmp/cockpit-release-0.24.14-20261107.log",
+  "completedStages": [
+    "dependency-tree",
+    "dependency-security"
+  ],
+  "lastStartedStage": "unit-tests",
+  "reason": "turn_interrupted_and_original_process_terminated",
+  "nextAction": "one_complete_final_gate_attempt_same_candidate_no_intermediate_release"
+}

@@ -1,0 +1,20 @@
+{
+  "version": "0.24.14",
+  "sourceArchive": "desktop/release/baselines/0.24.14-verified/source.tar.gz",
+  "sha256": "d5ef96890167ec98d1a44da6494bdf2a6bf933abebe9cc476a173ab27292d97e",
+  "bytes": 1980009,
+  "manifestInputFiles": 223,
+  "additionalProjectMetadataFiles": [
+    "package.json",
+    "package-lock.json",
+    "AGENTS.md",
+    "README.md",
+    "NEXT_STEPS.md",
+    "desktop/README.md",
+    "desktop/RELEASE_NOTES.md",
+    "desktop/IBKR_SETUP.md"
+  ],
+  "inputHash": "07414f4b9274e652b186817431c0ada4beed202612406a18d668061019288f4a",
+  "noRuntimeConfigOrPrivateDataIncluded": true,
+  "createdFromVerifiedFileBytes": true
+}

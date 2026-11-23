@@ -1,0 +1,91 @@
+{
+  "dateLocal": "2026-11-07",
+  "version": "0.24.14",
+  "status": "verified_local_build",
+  "releaseStatus": "not_published",
+  "manifest": "desktop/release/verification-0.24.14-2026-11-07T12-41-27-573Z.json",
+  "manifestSha256": "9091f809af40d9ba3fad3f0be4067dca2364efb123ad042197c0780b169cf761",
+  "inputHash": "07414f4b9274e652b186817431c0ada4beed202612406a18d668061019288f4a",
+  "sourceFileCount": 215,
+  "bundledSkillFileCount": 8,
+  "testsPassed": 1352,
+  "releaseChecks": 18,
+  "allReleaseChecksPassed": true,
+  "productionAudit": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "scope": "production",
+    "command": [
+      "npm",
+      "audit",
+      "--omit=dev",
+      "--ignore-scripts",
+      "--json"
+    ],
+    "auditedAt": "2026-11-07T12:41:30.964Z",
+    "lockSha256": "8c5d40bcfd95acf5e23a73710edbf1a33c9929ebcce92fba2104bd30abd33aee",
+    "reportSha256": "362aff47e4870924cbad26f6f5f07146e2bab2f14247bbeb557e1422fb24df15",
+    "npmAuditReportVersion": 2,
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "dependencies": {
+      "prod": 101,
+      "dev": 255,
+      "optional": 23,
+      "peer": 14,
+      "peerOptional": 0,
+      "total": 356
+    },
+    "affectedPackages": []
+  },
+  "importedModuleCount": 79,
+  "artifacts": [
+    {
+      "path": "release/mac-arm64/交易驾驶舱.app",
+      "type": "app_bundle",
+      "treeHash": "e50c8d32c16029f25922ae9b274af8ae42497dbdcb6dd79eae89b59cf15278d2",
+      "fileCount": 281
+    },
+    {
+      "path": "release/交易驾驶舱-0.24.14-arm64-mac.zip",
+      "type": "zip",
+      "bytes": 124157466,
+      "sha256": "0d54e9b3fbc2b00ec873b6150207a0ae7865c44b0f987bb6f409a161d85349ec"
+    },
+    {
+      "path": "release/交易驾驶舱-0.24.14-arm64.dmg",
+      "type": "dmg",
+      "bytes": 124923941,
+      "sha256": "cf3587f65ea8748eee22b090f91872d25ba84f41cf3fe6ced71a7a8dde7afcd8"
+    }
+  ],
+  "priorReleaseFilesUnchanged": 330,
+  "completedGateRuns": 1,
+  "interruptedAttempts": 1,
+  "logSha256": "f88b770e20dbe43373b9a543e2ea84745e50043cd5b774ac10a00ceb612f94bb",
+  "installed": true,
+  "published": false,
+  "newComputerUsePass": false,
+  "newLiveModelCalls": 0,
+  "previousDecodedTextLogHash": "05dda2142bd88a1e9c13fd75819fad56260296ed47e5a7babff1f1d4eee7f3de",
+  "logHashEncoding": "raw_bytes",
+  "logHashCorrection": "Initial summary hashed UTF-8 decoded text; raw log includes invalid UTF-8 byte sequences. Raw-file hash now matches preserved original log; no verification result changed.",
+  "frozenLog": "desktop/release/baselines/0.24.14-verified/completed-gate.log",
+  "installationEvidence": "installation.json",
+  "installedProfileAccepted": false,
+  "sharedEvidence": {
+    "status": "verified_frozen_inputs",
+    "sourceFileCount": 215,
+    "bundledSkillFileCount": 8,
+    "archiveFileCount": 223,
+    "artifactHashesMatched": true,
+    "archiveSha256": "13571a47d5e8ce4d56a33a4f45a3622c3c2d96a9b90e926c5cb01290bcc78c45",
+    "command": "python3 desktop/audits/releases/verify-evidence.py --directory desktop/audits/releases/0.24.14 --artifact-root desktop"
+  }
+}

@@ -18,6 +18,7 @@ export function releasePlan({ target = "dir", architecture = process.arch } = {}
   if (!["dir", "mac"].includes(target) || !["arm64", "x64"].includes(architecture)) throw new Error("Unsupported release target or architecture.");
   return [
     { name: "dependency-tree", tool: "npm", args: ["ls", "--omit=dev", "--all", "--json"], timeoutMs: 60_000 },
+    { name: "dependency-security", tool: "audit", args: ["scripts/audit-production-dependencies.mjs"], timeoutMs: 90_000 },
     { name: "unit-tests", tool: "node", args: ["--test", "tests/*.test.mjs"], timeoutMs: 10 * 60_000 },
     { name: "source-ibkr-ui", tool: "electron", args: ["tests/ibkr-ui-smoke.cjs"], timeoutMs: 60_000 },
     { name: "source-radar-ui", tool: "electron", args: ["tests/radar-ui-smoke.cjs"], timeoutMs: 60_000 },
@@ -111,6 +112,7 @@ export async function verifyRelease({ desktopRoot, target = "dir" }) {
       await verifyStep("packaged-source-and-skill-hash-match", async () => assertPackagedContents(before, packaged));
     }
     if (step.tool === "npm") steps.at(-1).treeSha256 = sha256(result.stdout);
+    if (step.tool === "audit") steps.at(-1).audit = JSON.parse(result.stdout);
   }
   const artifacts = [];
   await verifyStep("artifact-integrity", async () => {

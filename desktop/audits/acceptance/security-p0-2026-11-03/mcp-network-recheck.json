@@ -1,0 +1,1 @@
+{"status":"passed","sdkVersion":"1.32.2","electronVersion":"43.1.1","networkStack":"actual_Electron_net.fetch","sourceRequestCount":2,"foreignRequestCount":0,"externalRequestAttempts":0,"crossOrigin307":"blocked_without_body_or_headers","sameOrigin307":"runtime_refused_manual_redirect","profile":"fresh_temporary","browserWindowsCreated":0,"realAccountOrAuthorizationRead":false}

@@ -1,0 +1,13 @@
+{
+  "version": "0.24.14",
+  "oldInstalledVersion": "0.24.11",
+  "oldAppBackup": "desktop/release/baselines/0.24.14-verified/previous-installed-0.24.11.app",
+  "oldAppBackupHash": "5445b2043de6489e8224e7d5a95b53d8cc664fddc05d252157eae7db102d5ac0",
+  "oldFileCount": 281,
+  "backupContainsUserProfile": false,
+  "installedReplaced": false,
+  "appLaunched": false,
+  "allowedBroker": "IBKR",
+  "symbolSelection": "user_selects_in_app",
+  "realOrderCycle": "IBKR_history_not_integrated; not_claimed_verified"
+}

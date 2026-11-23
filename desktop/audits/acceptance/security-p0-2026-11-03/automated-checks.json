@@ -1,0 +1,112 @@
+{
+  "scope": "source_and_isolated_synthetic_only",
+  "packaged": false,
+  "installedReplaced": false,
+  "results": [
+    {
+      "command": [
+        "npm",
+        "test"
+      ],
+      "exitCode": 0,
+      "durationMs": 15873,
+      "log": "/var/folders/h8/hfz53f3j4vdfk22ndzrh9wxh0000gn/T/stock-agent-batch-t_tgvi67/0.log",
+      "logSha256": "1e12f79a4b257c017416cef0c6af83422009fecf63c554b8b667f57d7eca562d"
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "desktop/audits/acceptance/p0-live-research.mjs"
+      ],
+      "exitCode": 0,
+      "durationMs": 43,
+      "log": "/var/folders/h8/hfz53f3j4vdfk22ndzrh9wxh0000gn/T/stock-agent-batch-t_tgvi67/1.log",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "node",
+        "desktop/node_modules/electron/cli.js",
+        "desktop/tests/mcp-network-smoke.cjs"
+      ],
+      "exitCode": 1,
+      "durationMs": 1835,
+      "log": "/var/folders/h8/hfz53f3j4vdfk22ndzrh9wxh0000gn/T/stock-agent-batch-t_tgvi67/2.log",
+      "logSha256": "1b19b8bba085fa3239c0eb5b9cfbea46be9790496e42f8b0c8f3825fa0634e6f"
+    },
+    {
+      "command": [
+        "node",
+        "desktop/node_modules/electron/cli.js",
+        "desktop/tests/ibkr-ui-smoke.cjs"
+      ],
+      "exitCode": 0,
+      "durationMs": 1928,
+      "log": "/var/folders/h8/hfz53f3j4vdfk22ndzrh9wxh0000gn/T/stock-agent-batch-t_tgvi67/3.log",
+      "logSha256": "4faa6fe136d5f8acf5ae3056d7aa81c9343412bf26d0345330f76a793526bd37"
+    },
+    {
+      "command": [
+        "node",
+        "desktop/node_modules/electron/cli.js",
+        "desktop/tests/radar-ui-smoke.cjs"
+      ],
+      "exitCode": 0,
+      "durationMs": 2428,
+      "log": "/var/folders/h8/hfz53f3j4vdfk22ndzrh9wxh0000gn/T/stock-agent-batch-t_tgvi67/4.log",
+      "logSha256": "58994213ec5c99d41cdeb5da67db84d810e3add217c21a3e101ecf6953a90e44"
+    },
+    {
+      "command": [
+        "node",
+        "desktop/node_modules/electron/cli.js",
+        "desktop/tests/review-stability-ui-smoke.cjs"
+      ],
+      "exitCode": 0,
+      "durationMs": 5645,
+      "log": "/var/folders/h8/hfz53f3j4vdfk22ndzrh9wxh0000gn/T/stock-agent-batch-t_tgvi67/5.log",
+      "logSha256": "3f7ee1c9ff652bc24141e0d6ff2959c42f675bb7707166e6b68b829c3eac501d"
+    },
+    {
+      "command": [
+        "node",
+        "desktop/node_modules/electron/cli.js",
+        "desktop/tests/health-ui-smoke.cjs"
+      ],
+      "exitCode": 0,
+      "durationMs": 3073,
+      "log": "/var/folders/h8/hfz53f3j4vdfk22ndzrh9wxh0000gn/T/stock-agent-batch-t_tgvi67/6.log",
+      "logSha256": "fca6c179c3c28c5f4edba17a62be1a15d8affe5c7ba1241c167a7379e7cb0feb"
+    },
+    {
+      "command": [
+        "node",
+        "desktop/node_modules/electron/cli.js",
+        "desktop/tests/research-ui-smoke.cjs"
+      ],
+      "exitCode": 0,
+      "durationMs": 1141,
+      "log": "/var/folders/h8/hfz53f3j4vdfk22ndzrh9wxh0000gn/T/stock-agent-batch-t_tgvi67/7.log",
+      "logSha256": "01aa228d9836ee628979c276ee1dd7707f2433dbcce7cbc9384da4b2fc165f78"
+    }
+  ],
+  "unitTestSummary": {
+    "total": 1352,
+    "passed": 1352,
+    "failed": 0,
+    "skipped": 0
+  },
+  "failedPathRecheck": {
+    "command": [
+      "node",
+      "desktop/node_modules/electron/cli.js",
+      "desktop/tests/mcp-network-smoke.cjs"
+    ],
+    "exitCode": 0,
+    "evidence": "mcp-network-recheck.json",
+    "cause": "Chromium net.fetch cancels manual redirects instead of returning a visible 307; corrected assertion, no production redirect-policy relaxation",
+    "fullSuiteRepeated": false
+  },
+  "finalStatus": "passed_after_network_assertion_recheck"
+}

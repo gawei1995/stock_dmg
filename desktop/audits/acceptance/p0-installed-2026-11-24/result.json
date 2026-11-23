@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "dateLocal": "2026-11-24",
+  "timezone": "Asia/Shanghai",
+  "scope": "installed_profile_nonprivate_research_P0",
+  "result": "passed_scoped_research_flow_with_degraded_external_dependencies",
+  "initialAccessAttempt": "preflight.json",
+  "accessResumedAfterExplicitUserGrant": true,
+  "identity": {
+    "applicationVersion": "0.24.14",
+    "observedCodexVersion": "0.169.1",
+    "gitHead": "5505f4e",
+    "installedTreeHash": "e50c8d32c16029f25922ae9b274af8ae42497dbdcb6dd79eae89b59cf15278d2",
+    "installedFileCount": 281,
+    "desktopReleaseInputFileCount": 215,
+    "desktopReleaseInputsMatchFrozenRelease": true
+  },
+  "modes": {
+    "restricted": {
+      "result": "passed",
+      "visibleStatus": "CODEX LIMITED",
+      "independentIsolationVerified": true,
+      "externalMcpAndAppsDisabled": true,
+      "brokerReadOnlyProtectionVerified": true,
+      "retainedAfterColdRestartAndReturnFromFullThread": true
+    },
+    "full": {
+      "result": "passed_guard_metadata_only",
+      "visibleStatus": "CODEX READY",
+      "newIndependentThreadCreated": true,
+      "brokerReadOnlyProtectionVerified": true,
+      "activeTasksObserved": 0,
+      "modelRequestsSent": 0,
+      "tradingViewMcpAvailable": false
+    }
+  },
+  "research": {
+    "alias": "installed-p0-research",
+    "publicSymbol": "SOXX.US",
+    "label": "P0验收-20261124",
+    "accountEvidenceAttachedToModel": false,
+    "v1SavedLocal": "2026-11-24 00:20:52",
+    "initialMyViewPreservedExactly": true,
+    "modelDraftSavedAsPending": true,
+    "fieldsExplicitlyEditedAndAdopted": [
+      "nextTrigger"
+    ],
+    "emptyFieldsAdopted": false,
+    "sourcesAdopted": 0,
+    "v2SavedLocal": "2026-11-24 00:24:28",
+    "savedVersion": 2,
+    "recordRevisionAfterAdoption": 3,
+    "originalV1ExpandedAndVerifiedBeforeAndAfterColdRestart": true,
+    "v2AndEditedNextTriggerVerifiedAfterColdRestart": true,
+    "followupDidNotAutomaticallyRewriteResearchRecord": true
+  },
+  "modelRounds": [
+    {
+      "purpose": "generate_research_draft_from_nonprivate_synthetic_record",
+      "mode": "restricted",
+      "visibleTerminalStatus": "RESEARCH_READY",
+      "delivery": "complete",
+      "uiDurationSeconds": 156.7,
+      "uiFirstResponseSeconds": 17,
+      "toolEvents": 0,
+      "syntheticEquationConfirmed": true
+    },
+    {
+      "purpose": "continue_same_thread_after_cold_restart",
+      "mode": "restricted",
+      "visibleTerminalStatus": "RESEARCH_READY",
+      "delivery": "complete",
+      "uiDurationSeconds": 106.3,
+      "uiFirstResponseSeconds": 2.5,
+      "toolEvents": 0,
+      "reconnectMessagesObserved": [
+        "Reconnecting... 2/5",
+        "Reconnecting... 4/5"
+      ],
+      "originalEquationRecalledCorrectly": true,
+      "editedNextTriggerRecalledExactly": true,
+      "latestVersionAndRevisionRecalledCorrectly": true,
+      "repeatRequestSent": false
+    }
+  ],
+  "timingLimits": "Values are displayed UI round durations and first-response indicators; separate preparation, upstream terminal, final delivery and persistence durations were not measured in this installed UI pass. No unique latency root cause is established.",
+  "recovery": {
+    "createdOwnBlankThreadThenSwitchedBack": true,
+    "originalRecentResultRecovered": true,
+    "activeTasksBeforeQuit": 0,
+    "normalQuitPerformed": true,
+    "applicationNotRunningObservedBeforeRelaunch": true,
+    "coldRelaunchPerformedOnce": true,
+    "samePersistentThreadRecovered": true,
+    "researchBindingRecovered": true,
+    "originalResultRecoveredAfterColdRelaunch": true,
+    "sameThreadContinuationSucceeded": true,
+    "latestFollowupResultRecoveredAfterFullModeCheck": true
+  },
+  "brokersAndServices": {
+    "selectedBroker": "IBKR",
+    "initialConnection": "connected",
+    "initialSnapshot": "stale",
+    "afterColdRestartConnection": "disconnected_with_cached_snapshot",
+    "manualReconnectOrRefreshPerformed": false,
+    "brokerageTradingWritePermission": "off",
+    "realIBKROrderCycleLinkage": "not_covered_current_application_capability",
+    "ibkrSizingAndEod": "not_supported_current_application_capability",
+    "longbridgeOAuth": "unverified_known_public_metadata_host_compatibility_gap",
+    "longbridgeDiagnostic": "longbridge-public-metadata.md",
+    "actualRejectedLongbridgeUrlRead": false,
+    "longbridgeReauthorizationPerformed": false,
+    "nativeTradingViewSessionObserved": true,
+    "nativeTradingViewControlsModified": false,
+    "officialTradingViewMcp": "unavailable",
+    "actualSourcedInvestmentResearch": "not_verified",
+    "privateAccountEvidenceModelConsumption": "not_authorized_or_performed"
+  },
+  "privacy": {
+    "userProfileUsedThroughAuthorizedUI": true,
+    "privateAccountValuesIncidentallyVisibleInUI": true,
+    "privateAccountValuesPersistedInRepository": false,
+    "privateAccountEvidenceSentToModel": false,
+    "credentialsOrRawProfileFilesRead": false,
+    "unrelatedPrivateConversationsOrCyclesOpened": false,
+    "userAuthoredExistingRecordsModified": false,
+    "newTestResearchRecordPreserved": true,
+    "ownThreadsCreated": 3,
+    "existingThreadsDeletedOrArchived": false,
+    "privateScreenshotsSavedInRepository": false,
+    "accountTransactionsPerformed": false,
+    "globalSettingsOrCapabilitiesRelaxed": false
+  },
+  "consolidatedVerification": {
+    "installedAcceptancePasses": 1,
+    "realModelRequests": 2,
+    "coldRestartsForRecovery": 1,
+    "newSourceTestsRun": 0,
+    "newBuildsRun": 0,
+    "newInstallationsPerformed": 0
+  },
+  "finalUI": {
+    "selectedBroker": "IBKR",
+    "threadAlias": "installed-p0-research",
+    "mode": "restricted",
+    "latestResult": "P0恢复成功",
+    "activeModelTasks": 0
+  },
+  "remaining": [
+    "Longbridge authorization-host compatibility fix as a separately bounded source batch, retaining issuer, path, scope, generation and redirect protections.",
+    "Slow or reconnecting upstream response remains unresolved; do not repeat model cases merely for timing.",
+    "IBKR live reconnect and fresh account/sizing evidence were not validated; history-order linkage remains unsupported.",
+    "Official TradingView MCP OAuth/tool-read acceptance and actual sourced research remain unverified."
+  ]
+}
